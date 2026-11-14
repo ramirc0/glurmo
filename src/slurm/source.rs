@@ -102,7 +102,8 @@ async fn live(argv: Vec<String>, timeout: Duration) -> Result<Exchange> {
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .env("SLURM_TIME_FORMAT", "%s")
-        .env("SLURM_BITSTR_LEN", "0");
+        .env("SLURM_BITSTR_LEN", "0")
+        .env("TZ", "UTC");
     for (key, _) in std::env::vars_os() {
         if is_scrubbed(&key.to_string_lossy()) {
             command.env_remove(key);
@@ -242,7 +243,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_sets_epoch_times_and_full_bitstrings() {
+    async fn live_sets_epoch_times_full_bitstrings_and_utc() {
         let exchange = live(argv(&["env"]), TIMEOUT).await.unwrap();
         assert_eq!(exchange.status, 0);
         assert!(
@@ -257,6 +258,7 @@ mod tests {
                 .lines()
                 .any(|line| line == "SLURM_BITSTR_LEN=0")
         );
+        assert!(exchange.stdout.lines().any(|line| line == "TZ=UTC"));
     }
 
     #[tokio::test]
