@@ -2,12 +2,15 @@
 
 mod diff;
 mod model;
+mod rollup;
 mod sampler;
 mod slurm;
+mod store;
+mod xdg;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -15,6 +18,7 @@ use model::{Cluster, JobState, Owner};
 use sampler::Sampler;
 use slurm::source::{Recorder, Replay, Source};
 use slurm::{Intervals, Sample, Slurm};
+use store::{Settings, Store};
 
 /// Live view of who holds which cores and GPUs on a cluster.
 #[derive(Parser)]
@@ -36,6 +40,15 @@ enum Command {
         /// Answer from a recording instead of the cluster.
         #[arg(long, value_name = "FILE")]
         replay: Option<PathBuf>,
+        /// Keep history in this SQLite file, which must be on a local disk.
+        #[arg(long, value_name = "FILE")]
+        store: Option<PathBuf>,
+        /// Days of accounting to backfill into a new store.
+        #[arg(long, default_value_t = 30)]
+        backfill_days: u32,
+        /// Days of history to keep. Without it, history is kept forever.
+        #[arg(long)]
+        keep_days: Option<u32>,
     },
     /// Sample the cluster and save every command's output as JSON lines.
     Record {
@@ -57,7 +70,13 @@ async fn main() -> Result<()> {
             let mut slurm = Slurm::connect(Source::Live).await?;
             print!("{}", slurm::probe::probe(&mut slurm).await?);
         }
-        Command::Sample { once, replay } => {
+        Command::Sample {
+            once,
+            replay,
+            store,
+            backfill_days,
+            keep_days,
+        } => {
             let source = match replay {
                 Some(path) => Source::Replay(Replay::open(&path)?),
                 None => Source::Live,
@@ -68,7 +87,11 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string(&sample)?);
                 summarize(&sample);
             } else {
-                stream(slurm, None).await?;
+                let store = match store {
+                    Some(path) => Some(open_store(&path, backfill_days, keep_days)?),
+                    None => None,
+                };
+                stream(slurm, store, None).await?;
             }
         }
         Command::Record {
@@ -79,20 +102,31 @@ async fn main() -> Result<()> {
             let slurm =
                 Slurm::connect(Source::Record(Recorder::create(&out, pseudonymize)?)).await?;
             let until = model::UnixTime(slurm.now().0 + minutes * 60);
-            stream(slurm, Some(until)).await?;
+            stream(slurm, None, Some(until)).await?;
             eprintln!("recorded to {}", out.display());
         }
     }
     Ok(())
 }
 
+/// Opens the store at `path`, with its nightly backup under `$XDG_DATA_HOME/rtviz`.
+fn open_store(path: &std::path::Path, backfill_days: u32, keep_days: Option<u32>) -> Result<Store> {
+    let name = path.file_name().context("the store path names no file")?;
+    let settings = Settings {
+        backfill_days,
+        keep_days,
+        backup: xdg::data_home()?.join("rtviz").join(name),
+    };
+    Store::open(path, settings)
+}
+
 /// Samples until `until`, printing each delta on stdout and a summary of the cluster after it on stderr.
-async fn stream(slurm: Slurm, until: Option<model::UnixTime>) -> Result<()> {
+async fn stream(slurm: Slurm, store: Option<Store>, until: Option<model::UnixTime>) -> Result<()> {
     let mut cluster = Cluster {
         hides_jobs: slurm.site().hides_jobs(),
         ..Cluster::default()
     };
-    let mut sampler = Sampler::new(slurm, Intervals::default());
+    let mut sampler = Sampler::new(slurm, Intervals::default(), store);
     let mut deltas = sampler.subscribe();
     let sampling = async move { sampler.run(until).await };
     let printing = async {

@@ -18,7 +18,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde::{Serialize, Serializer};
 
 use crate::model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
@@ -231,6 +231,17 @@ impl Slurm {
         self.query(sacct::argv(jobs), sacct::parse).await
     }
 
+    /// Every allocation accounting holds that was pending or running between `from` and `to`,
+    /// runaway records included.
+    ///
+    /// # Errors
+    ///
+    /// Fails when sacct fails, writes to stderr, or prints output that does not parse.
+    pub async fn history(&mut self, from: UnixTime, to: UnixTime) -> Result<Vec<Attempt>> {
+        self.query(sacct::history_argv(from, to)?, sacct::parse_history)
+            .await
+    }
+
     /// Scheduler and RPC counters.
     ///
     /// # Errors
@@ -299,11 +310,7 @@ fn checked<T>(exchange: &Exchange, parse: impl FnOnce(&str) -> Result<T>) -> Res
 
 /// Appends an exchange to `$XDG_STATE_HOME/rtviz/unparsed.jsonl`.
 fn keep_unparsed(exchange: &Exchange) -> Result<PathBuf> {
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .context("neither XDG_STATE_HOME nor HOME is set")?
-        .join("rtviz");
+    let state = crate::xdg::state_home()?.join("rtviz");
     fs::create_dir_all(&state)?;
     let path = state.join("unparsed.jsonl");
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;

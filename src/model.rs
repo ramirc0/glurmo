@@ -37,7 +37,7 @@ pub struct AttemptKey {
 }
 
 /// A user's login name.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct Login(pub String);
 
@@ -47,7 +47,7 @@ pub struct Login(pub String);
 pub struct NodeName(pub String);
 
 /// A partition, or a queue in schedulers that call it that.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct PartitionName(pub String);
 
@@ -68,7 +68,7 @@ pub enum JobState {
 }
 
 /// How a job finished.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndState {
     /// Exited with code 0.
@@ -89,6 +89,16 @@ pub enum EndState {
     Requeued,
     /// Left the scheduler unseen, and accounting holds no end for it.
     Lost,
+}
+
+impl EndState {
+    /// Whether the attempt failed to finish its work: it failed, ran out of memory or time, or lost its node.
+    pub fn is_failure(self) -> bool {
+        matches!(
+            self,
+            Self::Failed | Self::OutOfMemory | Self::Timeout | Self::NodeFail
+        )
+    }
 }
 
 /// The tasks of a job array that one queue row stands for.

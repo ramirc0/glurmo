@@ -1,6 +1,6 @@
 //! Turns each tick's listings into the events that changed since the last tick.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::model::{
     Attempt, AttemptKey, EndState, Event, JobId, JobState, Node, Partition, UnixTime,
@@ -121,6 +121,15 @@ impl Known {
             false
         });
         events
+    }
+
+    /// Attempts that wait in the queue or hold cores, as far as the listings show.
+    pub fn active(&self) -> HashSet<AttemptKey> {
+        self.attempts
+            .iter()
+            .filter(|(_, seen)| matches!(seen.phase, Phase::Waiting | Phase::Holding))
+            .map(|(key, _)| *key)
+            .collect()
     }
 
     /// Keeps a node listing, and returns it as an event when it changed.
@@ -394,14 +403,33 @@ mod tests {
         let withdrawn = Event::Withdrawn {
             attempt: cancelled.clone(),
         };
-        let (_, events) = ticks(&[&[job(1, PENDING)], &[cancelled.clone()]]);
+        let (known, events) = ticks(&[&[job(1, PENDING)], &[cancelled.clone()]]);
         assert_eq!(events, [withdrawn.clone(), Event::Queue(vec![])]);
+        assert_eq!(known.active(), HashSet::new());
         assert_eq!(
             ticks(&[&[], &[cancelled.clone()]]).1,
             [withdrawn],
             "submitted and cancelled between polls"
         );
         assert_eq!(ticks(&[&[cancelled]]).1, [], "history at a cold start");
+    }
+
+    #[test]
+    fn active_attempts_are_the_waiting_and_the_holding() {
+        let (known, _) = ticks(&[&[job(1, PENDING), job(2, RUNNING), job(3, COMPLETED)]]);
+        assert_eq!(known.active(), HashSet::from([key(1), key(2)]));
+    }
+
+    #[test]
+    fn lingering_ended_records_fire_nothing_more() {
+        let running: &[Attempt] = &[job(1, RUNNING)];
+        let done: &[Attempt] = &[job(1, COMPLETED)];
+        let (mut known, _) = ticks(&[running, done]);
+        for i in 0..3 {
+            assert_eq!(known.diff_jobs(done, UnixTime(2_000 + i)), []);
+        }
+        assert_eq!(known.diff_jobs(&[], UnixTime(3_000)), []);
+        assert_eq!(known.unsettled(), []);
     }
 
     fn array(id: u32, base: u32, spec: &str, count: u32, state: JobState) -> Attempt {

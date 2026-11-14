@@ -1,9 +1,12 @@
-//! Outcomes of jobs that left squeue before the sampler saw how they ended.
+//! What accounting holds: outcomes of jobs that left squeue unseen, and history for a backfill.
 
 use anyhow::{Context, Result};
 
-use super::fields::{columns, integer, job_state, time};
-use crate::model::{AttemptKey, JobId, JobState, UnixTime};
+use super::fields::{columns, integer, is_placeholder, job_state, seconds, time, tres};
+use super::hostlist::{count_ids, expand_hosts};
+use crate::model::{
+    ArrayTasks, Attempt, AttemptKey, JobId, JobState, Login, PartitionName, UnixTime,
+};
 
 /// What accounting holds for one attempt.
 #[derive(Debug, PartialEq, Eq)]
@@ -64,10 +67,186 @@ fn outcome(line: &str) -> Result<Outcome> {
     })
 }
 
+/// The `-o` fields of a history query, in the order [`parse_history`] reads them.
+pub const HISTORY_FIELDS: [&str; 14] = [
+    "JobIDRaw",
+    "JobID",
+    "User",
+    "Partition",
+    "State",
+    "AllocCPUS",
+    "ReqCPUS",
+    "AllocTRES",
+    "ReqTRES",
+    "Timelimit",
+    "Submit",
+    "Start",
+    "End",
+    "NodeList",
+];
+
+/// The command for every allocation that was pending or running between `from` and `to`.
+///
+/// sacct reads `-S` and `-E` as local time and rejects epoch seconds. The child environment sets
+/// `TZ=UTC`, so the times go in as UTC.
+///
+/// # Errors
+///
+/// Fails when a time is out of range for a calendar date.
+pub fn history_argv(from: UnixTime, to: UnixTime) -> Result<Vec<String>> {
+    let iso = |time: UnixTime| -> Result<String> {
+        Ok(jiff::Timestamp::from_second(time.0)?
+            .strftime("%Y-%m-%dT%H:%M:%S")
+            .to_string())
+    };
+    Ok(["sacct", "-a", "-X", "-D", "-n", "-P", "-o"]
+        .map(String::from)
+        .into_iter()
+        .chain([
+            HISTORY_FIELDS.join(","),
+            "-S".into(),
+            iso(from)?,
+            "-E".into(),
+            iso(to)?,
+        ])
+        .collect())
+}
+
+/// Parses the output of [`history_argv`] into attempts. Accounting keeps no reasons or names, so those stay empty.
+///
+/// # Errors
+///
+/// Fails on a line with too few columns or a value that does not parse.
+pub fn parse_history(stdout: &str) -> Result<Vec<Attempt>> {
+    stdout
+        .lines()
+        .map(|line| accounted(line).with_context(|| format!("sacct line {line:?}")))
+        .collect()
+}
+
+/// Reads one allocation. A pending job has no allocation yet, so its CPUs, memory and GPUs come from the request.
+fn accounted(line: &str) -> Result<Attempt> {
+    let [
+        id,
+        array_id,
+        login,
+        partitions,
+        state,
+        alloc_cpus,
+        req_cpus,
+        alloc_tres,
+        req_tres,
+        limit,
+        submit,
+        start,
+        end,
+        nodes,
+    ] = columns(line)?;
+    let state = state.split_once(' ').map_or(state, |(state, _)| state);
+    let allocated = integer::<u32>(alloc_cpus)? > 0;
+    let (cpus, tres) = if allocated {
+        (alloc_cpus, tres(alloc_tres)?)
+    } else {
+        (req_cpus, tres(req_tres)?)
+    };
+    Ok(Attempt {
+        key: AttemptKey {
+            job: JobId(integer(id)?),
+            submit: time(submit)?.context("no submit time")?,
+        },
+        array: array_tasks(array_id)?,
+        login: Login(login.to_owned()),
+        partitions: partitions
+            .split(',')
+            .map(|name| PartitionName(name.to_owned()))
+            .collect(),
+        state: job_state(state)?,
+        state_raw: state.to_owned(),
+        cpus: integer(cpus)?,
+        mem_mb: tres.mem_mb,
+        gpus: tres.gpus,
+        time_limit_s: seconds(limit)?,
+        start: time(start)?,
+        end: time(end)?,
+        nodes: expand_hosts(nodes)?,
+        reason: None,
+        name: String::new(),
+    })
+}
+
+/// Reads the array part of a sacct `JobID`, such as `12_7` for one task or `12_[0-3%2]` for a pending range.
+fn array_tasks(job_id: &str) -> Result<Option<ArrayTasks>> {
+    let Some((base, tasks)) = job_id.split_once('_') else {
+        return Ok(None);
+    };
+    let spec = tasks
+        .strip_prefix('[')
+        .and_then(|tasks| tasks.strip_suffix(']'))
+        .unwrap_or(tasks);
+    if is_placeholder(spec) {
+        return Ok(None);
+    }
+    let ids = spec.split_once('%').map_or(spec, |(ids, _)| ids);
+    Ok(Some(ArrayTasks {
+        job: JobId(integer(base)?),
+        spec: spec.to_owned(),
+        count: count_ids(ids)?,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::EndState;
+    use crate::model::{EndState, NodeName};
+
+    #[test]
+    fn history_asks_for_a_utc_window() {
+        let argv = history_argv(UnixTime(1_794_614_400), UnixTime(1_794_700_800)).unwrap();
+        assert_eq!(
+            argv[7],
+            "JobIDRaw,JobID,User,Partition,State,AllocCPUS,ReqCPUS,AllocTRES,ReqTRES,Timelimit,Submit,Start,End,NodeList"
+        );
+        assert_eq!(
+            argv[8..],
+            ["-S", "2026-11-14T00:00:00", "-E", "2026-11-15T00:00:00"]
+        );
+    }
+
+    #[test]
+    fn history_rows() {
+        let attempts = parse_history(
+            "\
+3441951|3441951_[0-3]|wren|long,12hours|PENDING|0|1||billing=1,cpu=1,mem=1G,node=1|5:00|1792077150|Unknown|Unknown|None assigned
+3849576|3849570_6|heron|4hours|TIMEOUT|2|2|billing=2,cpu=2,mem=16G,node=1|billing=2,cpu=2,mem=16G,node=1|2:00:00|1794259870|1794259871|1794691887|z1014
+3923677|3923677|lynx|gpuh200|CANCELLED by 1514701009|32|32|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|14-00:00:00|1794524389|1794524389|1794600000|z028
+",
+        )
+        .unwrap();
+
+        let range = &attempts[0];
+        assert_eq!(range.key.job, JobId(3_441_951));
+        let tasks = range.array.as_ref().unwrap();
+        assert_eq!(
+            (tasks.job, tasks.spec.as_str(), tasks.count),
+            (JobId(3_441_951), "0-3", 4)
+        );
+        assert_eq!(
+            (range.state, range.cpus, range.mem_mb),
+            (JobState::Pending, 1, Some(1024))
+        );
+        assert_eq!((range.start, range.end, range.nodes.len()), (None, None, 0));
+        assert_eq!(range.partitions.len(), 2);
+
+        let task = &attempts[1];
+        assert_eq!(task.array.as_ref().unwrap().spec, "6");
+        assert_eq!(task.state, JobState::Ended(EndState::Timeout));
+        assert_eq!(task.end, Some(UnixTime(1_794_691_887)));
+        assert_eq!(task.nodes, [NodeName("z1014".into())]);
+
+        let gpu = &attempts[2];
+        assert_eq!((gpu.array.as_ref(), gpu.cpus, gpu.gpus), (None, 32, 4));
+        assert_eq!(gpu.state, JobState::Ended(EndState::Cancelled));
+    }
 
     #[test]
     fn asks_for_raw_ids_in_one_call() {

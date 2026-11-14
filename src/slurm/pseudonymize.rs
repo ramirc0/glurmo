@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 
 use super::scontrol::{self, Record};
 use super::source::Exchange;
-use super::squeue;
+use super::{sacct, squeue};
 
 const ANIMALS: [&str; 24] = [
     "otter", "heron", "lynx", "wren", "ibis", "newt", "vole", "kite", "puma", "yak", "moth",
@@ -47,7 +47,8 @@ impl Pseudonyms {
         } else if exchange.argv.starts_with(&scontrol::jobs_argv()) {
             self.jobs(&exchange.stdout)
         } else if program == "sacct" {
-            self.sacct(&exchange.stdout)
+            let history = exchange.argv.contains(&"-S".to_owned());
+            self.sacct(&exchange.stdout, history)
         } else if program == "sdiag" {
             self.sdiag(&exchange.stdout)
         } else {
@@ -144,18 +145,24 @@ impl Pseudonyms {
         out
     }
 
-    /// Rewrites the UID in states such as `CANCELLED by 1514701009`.
-    fn sacct(&mut self, stdout: &str) -> String {
+    /// Rewrites the UID in states such as `CANCELLED by 1514701009`, and the login in history rows.
+    fn sacct(&mut self, stdout: &str, history: bool) -> String {
+        let login = sacct::HISTORY_FIELDS
+            .iter()
+            .position(|field| *field == "User")
+            .expect("sacct::HISTORY_FIELDS lists User");
         let mut out = String::new();
         for line in stdout.lines() {
-            match line.rsplit_once(" by ") {
-                Some((head, uid)) => {
-                    out.push_str(head);
-                    out.push_str(" by ");
-                    out.push_str(&self.id(uid));
-                }
-                None => out.push_str(line),
+            let mut columns: Vec<String> = line.split('|').map(str::to_owned).collect();
+            if history && let Some(column) = columns.get_mut(login) {
+                *column = self.login(column);
             }
+            for column in &mut columns {
+                if let Some((state, uid)) = column.split_once(" by ") {
+                    *column = format!("{state} by {}", self.id(uid));
+                }
+            }
+            out.push_str(&columns.join("|"));
             out.push('\n');
         }
         out
@@ -296,6 +303,18 @@ mod tests {
             "1|5|9|CANCELLED by 1514701009\n2|5|9|COMPLETED\n",
         );
         assert_eq!(out, "1|5|9|CANCELLED by 20001\n2|5|9|COMPLETED\n");
+    }
+
+    #[test]
+    fn sacct_history_rewrites_logins() {
+        let mut pseudonyms = Pseudonyms::default();
+        let argv = sacct::history_argv(UnixTime(0), UnixTime(60)).unwrap();
+        let out = rewrite(
+            &mut pseudonyms,
+            argv,
+            "1|1|realname|4hours|CANCELLED by 77|2\n",
+        );
+        assert_eq!(out, "1|1|otter|4hours|CANCELLED by 20001|2\n");
     }
 
     #[test]

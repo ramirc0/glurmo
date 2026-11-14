@@ -12,6 +12,7 @@ use crate::diff::{Known, placed};
 use crate::model::{Attempt, Delta, Event, UnixTime};
 use crate::slurm::source::Exhausted;
 use crate::slurm::{Intervals, Lookup, Slurm};
+use crate::store::Store;
 
 /// A call slower than this counts against its command, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
@@ -116,12 +117,13 @@ pub struct Sampler {
     /// Whether no jobs tick has succeeded yet, so one listing of every placement replaces the lookups.
     cold: bool,
     hub: Hub,
+    store: Option<Store>,
 }
 
 impl Sampler {
-    /// A sampler that runs each command at its interval.
+    /// A sampler that runs each command at its interval, and keeps history in `store` if there is one.
     /// The jobs interval stays at most `MinJobAge / 2` under backoff, so no ended job leaves squeue unseen.
-    pub fn new(slurm: Slurm, intervals: Intervals) -> Self {
+    pub fn new(slurm: Slurm, intervals: Intervals, store: Option<Store>) -> Self {
         let jobs_most_s = (slurm.site().min_job_age_s / 2).max(intervals.jobs_s);
         Self {
             slurm,
@@ -134,6 +136,7 @@ impl Sampler {
             budget: intervals.lookups,
             cold: true,
             hub: Hub::new(),
+            store,
         }
     }
 
@@ -198,6 +201,8 @@ impl Sampler {
             None
         };
 
+        let first = self.cold;
+        let listed = jobs.is_some();
         let mut events = Vec::new();
         events.extend(nodes.and_then(|nodes| self.known.diff_nodes(nodes)));
         events.extend(partitions.and_then(|partitions| self.known.diff_partitions(partitions)));
@@ -224,7 +229,44 @@ impl Sampler {
             events.extend(self.settle().await);
         }
         events.extend(stats.map(Event::Stats));
+        if let Err(error) = self.archive(now, &events, listed, first).await {
+            eprintln!("store at {}: {error:#}", now.0);
+        }
         Ok(events)
+    }
+
+    /// Writes a tick's events to the store. After a jobs tick it also closes attempts that vanished
+    /// while the sampler was down, rolls up closed bins, reads one window of accounting and runs the
+    /// daily upkeep. A failure here never drops the tick.
+    async fn archive(
+        &mut self,
+        now: UnixTime,
+        events: &[Event],
+        listed: bool,
+        first: bool,
+    ) -> Result<()> {
+        let Some(store) = &mut self.store else {
+            return Ok(());
+        };
+        store.record(now, events)?;
+        if !listed {
+            return Ok(());
+        }
+        let active = self.known.active();
+        if first {
+            let closed = store.recover(&active)?;
+            if closed > 0 {
+                eprintln!("{closed} attempts left the queue while the sampler was down");
+            }
+        }
+        store.sampled(now)?;
+        store.roll(now)?;
+        let overlap_s = i64::try_from(self.slurm.site().min_job_age_s)?;
+        if let Some(window) = store.next_backfill(now, overlap_s)? {
+            let attempts = self.slurm.history(window.from, window.to).await?;
+            store.backfill(window, &attempts, &active, now)?;
+        }
+        store.maintain(now)
     }
 
     /// Looks up queued placements, oldest first, up to the budget. A failed lookup waits for the next tick.
@@ -270,6 +312,7 @@ mod tests {
     use super::*;
     use crate::model::{AttemptKey, Cluster, Owner};
     use crate::slurm::source::{Replay, Source};
+    use crate::store::Settings;
 
     /// One line per delta: its time, how many events of each kind it holds, and how the cluster looks after it.
     fn summary(delta: &Delta, start: UnixTime, cluster: &Cluster) -> String {
@@ -307,18 +350,90 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn replay_of_a_busy_quarter_hour() {
+    /// Connects to a replay of a pseudonymized busy quarter hour on zlurm.
+    async fn busy_quarter_hour() -> Slurm {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/slurm-23.11/busy-15m.jsonl.zst");
         let mut compressed = std::fs::File::open(path).unwrap();
         let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut compressed).unwrap();
         let mut recording = tempfile::NamedTempFile::new().unwrap();
         std::io::copy(&mut decoder, &mut recording).unwrap();
-        let slurm = Slurm::connect(Source::Replay(Replay::open(recording.path()).unwrap()))
+        Slurm::connect(Source::Replay(Replay::open(recording.path()).unwrap()))
             .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn store_agrees_with_the_deltas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rtviz.sqlite");
+        let settings = Settings {
+            backfill_days: 0,
+            keep_days: None,
+            backup: dir.path().join("backup.sqlite"),
+        };
+        let store = Store::open(&path, settings).unwrap();
+        let mut sampler =
+            Sampler::new(busy_quarter_hour().await, Intervals::default(), Some(store));
+        let mut deltas = sampler.subscribe();
+        sampler.run(None).await;
+
+        let mut cluster = Cluster::default();
+        let mut ended = HashSet::new();
+        while let Ok(delta) = deltas.try_recv() {
+            for event in &delta.events {
+                if let Event::Ended { key, .. } = event {
+                    ended.insert((key.job.0, key.submit.0));
+                }
+            }
+            cluster.apply(&delta);
+        }
+        let running: HashSet<(u32, i64)> = cluster
+            .running
+            .keys()
+            .map(|key| (key.job.0, key.submit.0))
+            .collect();
+        let pending: u32 = cluster
+            .queue
+            .iter()
+            .map(|attempt| attempt.array.as_ref().map_or(1, |array| array.count))
+            .sum();
+
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let keys = |sql: &str| -> HashSet<(u32, i64)> {
+            db.prepare(sql)
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            keys("SELECT job, submit FROM attempts WHERE start IS NOT NULL AND end IS NULL"),
+            running
+        );
+        assert!(ended.is_subset(&keys(
+            "SELECT job, submit FROM attempts WHERE end IS NOT NULL"
+        )));
+        let waiting: u32 = db
+            .query_row(
+                "SELECT sum(tasks) FROM attempts WHERE start IS NULL AND end IS NULL",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        let mut sampler = Sampler::new(slurm, Intervals::default());
+        assert_eq!(waiting, pending);
+        let bins: u32 = db
+            .query_row("SELECT count(DISTINCT bin) FROM usage", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(bins >= 2, "{bins} bins rolled up");
+    }
+
+    #[tokio::test]
+    async fn replay_of_a_busy_quarter_hour() {
+        let mut sampler = Sampler::new(busy_quarter_hour().await, Intervals::default(), None);
         let mut deltas = sampler.subscribe();
         sampler.run(None).await;
 
