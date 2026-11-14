@@ -35,21 +35,20 @@ pub struct Pseudonyms {
 }
 
 impl Pseudonyms {
-    /// Rewrites the output of squeue, of scontrol's job listings and of sdiag. Other output holds no personal data.
+    /// Rewrites the output of squeue, of scontrol's job listings, of sacct and of sdiag. Other output holds no personal data.
     ///
     /// # Errors
     ///
     /// Fails on a squeue line with too few columns.
     pub fn rewrite(&mut self, exchange: &mut Exchange) -> Result<()> {
+        let program = exchange.argv.first().map_or("", String::as_str);
         let rewritten = if exchange.argv == squeue::argv() {
             self.squeue(&exchange.stdout)?
         } else if exchange.argv.starts_with(&scontrol::jobs_argv()) {
             self.jobs(&exchange.stdout)
-        } else if exchange
-            .argv
-            .first()
-            .is_some_and(|program| program == "sdiag")
-        {
+        } else if program == "sacct" {
+            self.sacct(&exchange.stdout)
+        } else if program == "sdiag" {
             self.sdiag(&exchange.stdout)
         } else {
             return Ok(());
@@ -140,6 +139,23 @@ impl Pseudonyms {
                 rewritten = replace_word(&rewritten, login, pseudonym);
             }
             out.push_str(&rewritten);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Rewrites the UID in states such as `CANCELLED by 1514701009`.
+    fn sacct(&mut self, stdout: &str) -> String {
+        let mut out = String::new();
+        for line in stdout.lines() {
+            match line.rsplit_once(" by ") {
+                Some((head, uid)) => {
+                    out.push_str(head);
+                    out.push_str(" by ");
+                    out.push_str(&self.id(uid));
+                }
+                None => out.push_str(line),
+            }
             out.push('\n');
         }
         out
@@ -269,6 +285,17 @@ mod tests {
             "\totter           (   20001) count:286522 ave_time:2794   total_time:800594690"
         );
         assert!(lines[5].starts_with("\theron           (   20002) count:152323"));
+    }
+
+    #[test]
+    fn sacct_rewrites_the_uid_that_cancelled_a_job() {
+        let mut pseudonyms = Pseudonyms::default();
+        let out = rewrite(
+            &mut pseudonyms,
+            crate::slurm::sacct::argv(&[]),
+            "1|5|9|CANCELLED by 1514701009\n2|5|9|COMPLETED\n",
+        );
+        assert_eq!(out, "1|5|9|CANCELLED by 20001\n2|5|9|COMPLETED\n");
     }
 
     #[test]

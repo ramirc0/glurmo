@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -66,7 +66,30 @@ impl Source {
             Self::Replay(replay) => replay.now,
         }
     }
+
+    /// Waits until `time`. A replay moves its clock there at once.
+    pub async fn sleep_until(&mut self, time: UnixTime) {
+        match self {
+            Self::Live | Self::Record(_) => {
+                let wait = u64::try_from(time.0 - UnixTime::now().0).unwrap_or(0);
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+            }
+            Self::Replay(replay) => replay.now = replay.now.max(time),
+        }
+    }
 }
+
+/// The error a replay gives once it has no answer left for a command.
+#[derive(Debug)]
+pub struct Exhausted(String);
+
+impl std::fmt::Display for Exhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "the recording has no answer left for {}", self.0)
+    }
+}
+
+impl std::error::Error for Exhausted {}
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -191,7 +214,7 @@ impl Replay {
                 stderr: format!("slurm_load_jobs error: {}\n", scontrol::GONE),
             });
         }
-        bail!("the recording has no answer left for {}", argv.join(" "))
+        Err(Exhausted(argv.join(" ")).into())
     }
 }
 
@@ -287,7 +310,10 @@ mod tests {
         assert_eq!(source.now(), UnixTime(110));
         assert_eq!(source.run(argv(&["sinfo"])).await.unwrap().stdout, "nodes");
         assert_eq!(source.now(), UnixTime(110));
-        assert!(source.run(argv(&["squeue"])).await.is_err());
+        let error = source.run(argv(&["squeue"])).await.unwrap_err();
+        assert!(error.is::<Exhausted>());
+        source.sleep_until(UnixTime(200)).await;
+        assert_eq!(source.now(), UnixTime(200));
     }
 
     #[tokio::test]

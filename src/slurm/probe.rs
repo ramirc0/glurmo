@@ -7,9 +7,8 @@ use std::time::Instant;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::sdiag::{RpcCount, Stats};
-use super::{Lookup, Site, Slurm, scontrol, sinfo, squeue};
-use crate::model::{Attempt, JobState};
+use super::{Intervals, Lookup, Site, Slurm, scontrol, sinfo, squeue};
+use crate::model::{Attempt, JobState, RpcCount, Stats};
 
 /// Runs per command. The minimum delta over them filters out other users' RPCs.
 const RUNS: usize = 3;
@@ -56,21 +55,6 @@ pub struct Cost {
     pub latency_ms: u64,
     /// RPCs by message type, per call. Empty when sdiag is unavailable.
     pub rpcs: Vec<RpcCount>,
-}
-
-/// Suggested sampling intervals and lookup budget.
-#[derive(Debug, Serialize)]
-pub struct Intervals {
-    /// squeue.
-    pub jobs_s: u64,
-    /// sinfo.
-    pub nodes_s: u64,
-    /// scontrol show partition.
-    pub partitions_s: u64,
-    /// sdiag.
-    pub stats_s: u64,
-    /// Placement lookups per jobs tick.
-    pub lookups: u64,
 }
 
 /// Probes the cluster behind `slurm`.

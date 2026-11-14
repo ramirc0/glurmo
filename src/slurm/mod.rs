@@ -4,6 +4,7 @@ pub mod fields;
 pub mod hostlist;
 pub mod probe;
 pub mod pseudonymize;
+pub mod sacct;
 pub mod scontrol;
 pub mod sdiag;
 pub mod sinfo;
@@ -20,9 +21,9 @@ use std::str::FromStr;
 use anyhow::{Context, Result, bail};
 use serde::{Serialize, Serializer};
 
-use crate::model::{Attempt, JobState, Node, NodeName, Partition, UnixTime};
+use crate::model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
+use sacct::Outcome;
 use scontrol::{CpuMap, Placed};
-use sdiag::Stats;
 use source::{Exchange, Source};
 
 /// A Slurm release, such as 23.11.4.
@@ -85,6 +86,40 @@ pub struct Site {
     pub rate_limit: Option<RateLimit>,
 }
 
+impl Site {
+    /// Whether squeue hides other users' jobs.
+    pub fn hides_jobs(&self) -> bool {
+        self.private_data.iter().any(|data| data == "jobs")
+    }
+}
+
+/// How often to run each command, and how many placement lookups to make per jobs tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Intervals {
+    /// squeue.
+    pub jobs_s: u64,
+    /// sinfo.
+    pub nodes_s: u64,
+    /// scontrol show partition.
+    pub partitions_s: u64,
+    /// sdiag.
+    pub stats_s: u64,
+    /// Placement lookups per jobs tick.
+    pub lookups: u64,
+}
+
+impl Default for Intervals {
+    fn default() -> Self {
+        Self {
+            jobs_s: 10,
+            nodes_s: 30,
+            partitions_s: 600,
+            stats_s: 60,
+            lookups: 25,
+        }
+    }
+}
+
 /// The answer to a placement lookup.
 #[derive(Debug, PartialEq)]
 pub enum Lookup {
@@ -120,6 +155,11 @@ impl Slurm {
     /// The current time, which a replay drives.
     pub fn now(&self) -> UnixTime {
         self.source.now()
+    }
+
+    /// Waits until `time`. A replay moves its clock there at once.
+    pub async fn sleep_until(&mut self, time: UnixTime) {
+        self.source.sleep_until(time).await;
     }
 
     /// Every job squeue lists, including ones that ended within `MinJobAge`.
@@ -180,6 +220,15 @@ impl Slurm {
             bail!("scontrol printed no job for {}", exchange.argv.join(" "));
         }
         Ok(Lookup::Found(jobs.swap_remove(0)))
+    }
+
+    /// What accounting holds for `jobs`, every requeued attempt included.
+    ///
+    /// # Errors
+    ///
+    /// Fails when sacct fails, writes to stderr, or prints output that does not parse.
+    pub async fn outcomes(&mut self, jobs: &[JobId]) -> Result<Vec<Outcome>> {
+        self.query(sacct::argv(jobs), sacct::parse).await
     }
 
     /// Scheduler and RPC counters.
@@ -323,7 +372,6 @@ impl Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::JobId;
     use source::Replay;
 
     async fn replay(fixture: &str) -> Slurm {

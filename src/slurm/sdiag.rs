@@ -1,51 +1,13 @@
 //! Scheduler and RPC counters from sdiag.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 
 use super::fields::integer;
+use crate::model::{RpcCount, Stats};
 
 /// The command.
 pub fn argv() -> Vec<String> {
     vec!["sdiag".to_owned()]
-}
-
-/// Counters since the controller's last daily reset. A counter this Slurm version does not print is `None`.
-#[derive(Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Stats {
-    /// Controller threads busy with RPCs.
-    pub server_threads: Option<u64>,
-    /// Outgoing messages waiting in the agent queue.
-    pub agent_queue: Option<u64>,
-    /// Accounting messages waiting for slurmdbd.
-    pub dbd_queue: Option<u64>,
-    /// Jobs submitted.
-    pub jobs_submitted: Option<u64>,
-    /// Jobs started.
-    pub jobs_started: Option<u64>,
-    /// Jobs completed.
-    pub jobs_completed: Option<u64>,
-    /// The main scheduler's mean cycle.
-    pub main_cycle_mean_us: Option<u64>,
-    /// Jobs the main scheduler looked at in its last cycle.
-    pub main_queue_last: Option<u64>,
-    /// The backfill scheduler's mean cycle.
-    pub backfill_cycle_mean_us: Option<u64>,
-    /// Jobs started by backfill since the controller started.
-    pub backfilled_jobs: Option<u64>,
-    /// RPCs by message type.
-    pub rpcs: Vec<RpcCount>,
-}
-
-/// How often the controller served one message type, and for how long in total.
-#[derive(Debug, PartialEq, Eq, Serialize)]
-pub struct RpcCount {
-    /// The message type, such as `REQUEST_JOB_INFO`.
-    pub kind: String,
-    /// Calls served.
-    pub count: u64,
-    /// Time spent serving them.
-    pub total_us: u64,
 }
 
 /// Parses the output of [`argv`].

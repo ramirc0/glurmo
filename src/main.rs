@@ -1,16 +1,20 @@
 //! `rtviz` shows who holds which cores and GPUs on a batch-scheduler cluster.
 
+mod diff;
 mod model;
+mod sampler;
 mod slurm;
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tokio::sync::broadcast::error::RecvError;
 
-use model::JobState;
+use model::{Cluster, JobState, Owner};
+use sampler::Sampler;
 use slurm::source::{Recorder, Replay, Source};
-use slurm::{Sample, Slurm};
+use slurm::{Intervals, Sample, Slurm};
 
 /// Live view of who holds which cores and GPUs on a cluster.
 #[derive(Parser)]
@@ -24,20 +28,23 @@ struct Cli {
 enum Command {
     /// Print site facts, capabilities, each command's cost, and suggested intervals.
     Probe,
-    /// Read the cluster and print it as JSON.
+    /// Sample the cluster and print each tick's changes as a line of JSON.
     Sample {
-        /// Read once and exit.
+        /// Read everything once, print it as JSON and exit.
         #[arg(long)]
         once: bool,
         /// Answer from a recording instead of the cluster.
         #[arg(long, value_name = "FILE")]
         replay: Option<PathBuf>,
     },
-    /// Read the cluster once and save every command's output as JSON lines.
+    /// Sample the cluster and save every command's output as JSON lines.
     Record {
         /// Rewrite logins, IDs, job names and paths, so the recording can become a test fixture.
         #[arg(long)]
         pseudonymize: bool,
+        /// How long to keep sampling after the first tick.
+        #[arg(long, default_value_t = 0)]
+        minutes: i64,
         /// Where to write the recording.
         out: PathBuf,
     },
@@ -51,25 +58,87 @@ async fn main() -> Result<()> {
             print!("{}", slurm::probe::probe(&mut slurm).await?);
         }
         Command::Sample { once, replay } => {
-            if !once {
-                bail!("only `sample --once` exists so far");
-            }
             let source = match replay {
                 Some(path) => Source::Replay(Replay::open(&path)?),
                 None => Source::Live,
             };
-            let sample = Slurm::connect(source).await?.sample().await?;
-            println!("{}", serde_json::to_string(&sample)?);
-            summarize(&sample);
+            let mut slurm = Slurm::connect(source).await?;
+            if once {
+                let sample = slurm.sample().await?;
+                println!("{}", serde_json::to_string(&sample)?);
+                summarize(&sample);
+            } else {
+                stream(slurm, None).await?;
+            }
         }
-        Command::Record { pseudonymize, out } => {
-            let source = Source::Record(Recorder::create(&out, pseudonymize)?);
-            let sample = Slurm::connect(source).await?.sample().await?;
-            summarize(&sample);
+        Command::Record {
+            pseudonymize,
+            minutes,
+            out,
+        } => {
+            let slurm =
+                Slurm::connect(Source::Record(Recorder::create(&out, pseudonymize)?)).await?;
+            let until = model::UnixTime(slurm.now().0 + minutes * 60);
+            stream(slurm, Some(until)).await?;
             eprintln!("recorded to {}", out.display());
         }
     }
     Ok(())
+}
+
+/// Samples until `until`, printing each delta on stdout and a summary of the cluster after it on stderr.
+async fn stream(slurm: Slurm, until: Option<model::UnixTime>) -> Result<()> {
+    let mut cluster = Cluster {
+        hides_jobs: slurm.site().hides_jobs(),
+        ..Cluster::default()
+    };
+    let mut sampler = Sampler::new(slurm, Intervals::default());
+    let mut deltas = sampler.subscribe();
+    let sampling = async move { sampler.run(until).await };
+    let printing = async {
+        loop {
+            match deltas.recv().await {
+                Ok(delta) => {
+                    cluster.apply(&delta);
+                    println!("{}", serde_json::to_string(&*delta)?);
+                    eprintln!(
+                        "{} at {}: {} events, {} running, {} pending, {} nodes differ from sinfo",
+                        delta.seq,
+                        delta.at.0,
+                        delta.events.len(),
+                        cluster.running.len(),
+                        cluster.queue.len(),
+                        differing_nodes(&cluster)
+                    );
+                }
+                Err(RecvError::Lagged(skipped)) => {
+                    eprintln!("printing fell {skipped} deltas behind");
+                }
+                Err(RecvError::Closed) => return Ok::<_, anyhow::Error>(()),
+            }
+        }
+    };
+    tokio::join!(sampling, printing).1
+}
+
+/// Counts nodes where the cores that visible jobs hold differ from sinfo's allocated cores.
+/// Jobs that start or end between squeue and sinfo show up here too.
+fn differing_nodes(cluster: &Cluster) -> usize {
+    let occupancy = cluster.occupancy();
+    cluster
+        .nodes
+        .iter()
+        .filter(|node| {
+            let held = occupancy.get(&node.name).map_or(0, |cells| {
+                cells
+                    .cores
+                    .iter()
+                    .filter(|owner| matches!(owner, Some(Owner::Attempt(_))))
+                    .count()
+            });
+            u32::try_from(held).ok() != Some(node.cpus_alloc / node.cpus_per_core())
+        })
+        .count()
 }
 
 /// Prints job counts and checks placed cores against sinfo on stderr.
