@@ -278,6 +278,7 @@ mod tests {
             let kind = match event {
                 Event::Started { .. } => "started".to_owned(),
                 Event::Ended { state, .. } => format!("ended:{state:?}"),
+                Event::Withdrawn { .. } => "withdrawn".to_owned(),
                 Event::Settled { state, .. } => format!("settled:{state:?}"),
                 Event::Placed { .. } => "placed".to_owned(),
                 Event::Queue(queue) => format!("queue:{}", queue.len()),

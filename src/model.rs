@@ -319,6 +319,11 @@ pub enum Event {
         /// How it ended, or `None` while the scheduler is still cleaning up after it.
         state: Option<EndState>,
     },
+    /// A pending attempt left the queue without taking cores, usually because it was cancelled.
+    Withdrawn {
+        /// The attempt as the queue last listed it, with its end and final state.
+        attempt: Attempt,
+    },
     /// How an attempt that ended with no known state finished.
     Settled {
         /// The attempt.
@@ -419,7 +424,7 @@ impl Cluster {
                 Event::Ended { key, .. } => {
                     self.running.remove(key);
                 }
-                Event::Settled { .. } => {}
+                Event::Withdrawn { .. } | Event::Settled { .. } => {}
                 Event::Placed { key, placement } => {
                     if let Some(running) = self.running.get_mut(key) {
                         running.placement = Some(placement.clone());

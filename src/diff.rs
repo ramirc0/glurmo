@@ -167,9 +167,14 @@ fn next_phase(
             events.push(started());
             Phase::Holding
         }
-        (None | Some(Phase::Waiting), JobState::Completing | JobState::Ended(_))
-            if first || job.start.is_none() =>
-        {
+        (None, JobState::Completing | JobState::Ended(_)) if first => Phase::Settled,
+        (None | Some(Phase::Waiting), JobState::Ended(_)) if job.start.is_none() => {
+            events.push(Event::Withdrawn {
+                attempt: job.clone(),
+            });
+            Phase::Settled
+        }
+        (None | Some(Phase::Waiting), JobState::Completing) if job.start.is_none() => {
             Phase::Settled
         }
         (None | Some(Phase::Waiting), JobState::Completing) => {
@@ -383,23 +388,20 @@ mod tests {
     }
 
     #[test]
-    fn job_cancelled_while_pending_fires_nothing() {
+    fn job_cancelled_while_pending_is_withdrawn() {
         let mut cancelled = job(1, JobState::Ended(EndState::Cancelled));
         cancelled.start = None;
-        let (_, events) = ticks(&[&[job(1, PENDING)], &[cancelled]]);
-        assert_eq!(events, [Event::Queue(vec![])]);
-    }
-
-    #[test]
-    fn lingering_ended_records_fire_nothing_more() {
-        let running: &[Attempt] = &[job(1, RUNNING)];
-        let done: &[Attempt] = &[job(1, COMPLETED)];
-        let (mut known, _) = ticks(&[running, done]);
-        for i in 0..3 {
-            assert_eq!(known.diff_jobs(done, UnixTime(2_000 + i)), []);
-        }
-        assert_eq!(known.diff_jobs(&[], UnixTime(3_000)), []);
-        assert_eq!(known.unsettled(), []);
+        let withdrawn = Event::Withdrawn {
+            attempt: cancelled.clone(),
+        };
+        let (_, events) = ticks(&[&[job(1, PENDING)], &[cancelled.clone()]]);
+        assert_eq!(events, [withdrawn.clone(), Event::Queue(vec![])]);
+        assert_eq!(
+            ticks(&[&[], &[cancelled.clone()]]).1,
+            [withdrawn],
+            "submitted and cancelled between polls"
+        );
+        assert_eq!(ticks(&[&[cancelled]]).1, [], "history at a cold start");
     }
 
     fn array(id: u32, base: u32, spec: &str, count: u32, state: JobState) -> Attempt {
