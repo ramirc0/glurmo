@@ -23,6 +23,26 @@ const MAX_SLOWDOWN: u64 = 8;
 /// Healthy calls in a row that halve a stretched interval again.
 const HEALTHY_TO_RECOVER: u32 = 3;
 
+/// The shortest and longest stretch of accounting read at once. sacct takes about 0.5 ms per row,
+/// and a busy day on zlurm holds 27,000 rows, which runs past the command timeout.
+const BACKFILL_SPAN_S: std::ops::RangeInclusive<i64> = 900..=86_400;
+
+/// A history read faster than this doubles the next window. One slower than [`SLOW_BACKFILL`] halves it.
+const FAST_BACKFILL: Duration = Duration::from_secs(2);
+const SLOW_BACKFILL: Duration = Duration::from_secs(5);
+
+/// The next backfill window's length, after a read of `span_s` that took `took` and worked or not.
+fn next_span(span_s: i64, worked: bool, took: Duration) -> i64 {
+    let span_s = if !worked || took > SLOW_BACKFILL {
+        span_s / 2
+    } else if took < FAST_BACKFILL {
+        span_s * 2
+    } else {
+        span_s
+    };
+    span_s.clamp(*BACKFILL_SPAN_S.start(), *BACKFILL_SPAN_S.end())
+}
+
 /// When one command runs next, and how far backoff has stretched its interval.
 struct Pace {
     every_s: u64,
@@ -118,6 +138,8 @@ pub struct Sampler {
     cold: bool,
     hub: Hub,
     store: Option<Store>,
+    /// How much accounting the next backfill reads.
+    backfill_span_s: i64,
 }
 
 impl Sampler {
@@ -137,6 +159,7 @@ impl Sampler {
             cold: true,
             hub: Hub::new(),
             store,
+            backfill_span_s: 21_600,
         }
     }
 
@@ -262,9 +285,12 @@ impl Sampler {
         store.sampled(now)?;
         store.roll(now)?;
         let overlap_s = i64::try_from(self.slurm.site().min_job_age_s)?;
-        if let Some(window) = store.next_backfill(now, overlap_s)? {
-            let attempts = self.slurm.history(window.from, window.to).await?;
-            store.backfill(window, &attempts, &active, now)?;
+        if let Some(window) = store.next_backfill(now, overlap_s, self.backfill_span_s)? {
+            let started = Instant::now();
+            let attempts = self.slurm.history(window.from, window.to).await;
+            self.backfill_span_s =
+                next_span(self.backfill_span_s, attempts.is_ok(), started.elapsed());
+            store.backfill(window, &attempts?, &active, now)?;
         }
         store.maintain(now)
     }
@@ -480,6 +506,18 @@ mod tests {
         })
         .collect();
         assert_eq!(intervals, [20, 40, 80, 80, 80, 80, 40, 40, 40, 20]);
+    }
+
+    #[test]
+    fn backfill_window_halves_when_slow_or_failed_and_doubles_when_fast() {
+        let day = 86_400;
+        let secs = Duration::from_secs;
+        assert_eq!(next_span(21_600, true, secs(1)), 43_200);
+        assert_eq!(next_span(day, true, secs(1)), day);
+        assert_eq!(next_span(21_600, true, secs(3)), 21_600);
+        assert_eq!(next_span(21_600, true, secs(9)), 10_800);
+        assert_eq!(next_span(21_600, false, secs(15)), 10_800);
+        assert_eq!(next_span(900, false, secs(15)), 900);
     }
 
     #[test]

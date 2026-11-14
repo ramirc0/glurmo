@@ -263,13 +263,18 @@ impl Store {
         Ok(closed)
     }
 
-    /// The next stretch of accounting to read, at most a day long. A gap since the last sample comes first,
-    /// starting `overlap_s` early. Then history goes back a day at a time to the backfill horizon.
+    /// The next stretch of accounting to read, at most `span_s` long. A gap since the last sample comes
+    /// first, starting `overlap_s` early. Then history goes back a stretch at a time to the backfill horizon.
     ///
     /// # Errors
     ///
     /// Fails when a read fails.
-    pub fn next_backfill(&self, now: UnixTime, overlap_s: i64) -> Result<Option<Window>> {
+    pub fn next_backfill(
+        &self,
+        now: UnixTime,
+        overlap_s: i64,
+        span_s: i64,
+    ) -> Result<Option<Window>> {
         let (Some(created), Some(from), Some(to)) = (
             self.meta("created")?,
             self.meta("history_from")?,
@@ -280,12 +285,12 @@ impl Store {
         if !self.caught_up {
             return Ok(Some(Window {
                 from: UnixTime(to.0 - overlap_s),
-                to: UnixTime((to.0 + DAY_S).min(now.0)),
+                to: UnixTime((to.0 + span_s).min(now.0)),
             }));
         }
         let horizon = created.0 - i64::from(self.settings.backfill_days) * DAY_S;
         Ok((from.0 > horizon).then(|| Window {
-            from: UnixTime((from.0 - DAY_S).max(horizon)),
+            from: UnixTime((from.0 - span_s).max(horizon)),
             to: from,
         }))
     }
@@ -841,14 +846,14 @@ mod tests {
     }
 
     #[test]
-    fn a_new_store_backfills_a_day_at_a_time_to_the_horizon() {
+    fn a_new_store_backfills_a_stretch_at_a_time_to_the_horizon() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open(&dir);
         let now = UnixTime(T0);
-        assert_eq!(store.next_backfill(now, 300).unwrap(), None);
+        assert_eq!(store.next_backfill(now, 300, DAY_S).unwrap(), None);
         store.sampled(now).unwrap();
         let mut windows = Vec::new();
-        while let Some(window) = store.next_backfill(now, 300).unwrap() {
+        while let Some(window) = store.next_backfill(now, 300, DAY_S).unwrap() {
             store.backfill(window, &[], &HashSet::new(), now).unwrap();
             windows.push((window.from.0 - T0, window.to.0 - T0));
         }
@@ -877,7 +882,7 @@ mod tests {
             )
             .unwrap();
         store.sampled(UnixTime(T0)).unwrap();
-        while let Some(window) = store.next_backfill(UnixTime(T0), 300).unwrap() {
+        while let Some(window) = store.next_backfill(UnixTime(T0), 300, DAY_S).unwrap() {
             store
                 .backfill(window, &[], &HashSet::new(), UnixTime(T0))
                 .unwrap();
@@ -903,7 +908,7 @@ mod tests {
         assert_eq!(row(&store, 2).2.as_deref(), Some("lost"));
         store.sampled(restart).unwrap();
 
-        let gap = store.next_backfill(restart, 300).unwrap().unwrap();
+        let gap = store.next_backfill(restart, 300, DAY_S).unwrap().unwrap();
         assert_eq!((gap.from.0, gap.to), (T0 - 300, restart));
         let timeout = attempt(
             2,
@@ -937,7 +942,7 @@ mod tests {
             .unwrap();
         assert_eq!(runaways, 0);
         assert_eq!(
-            store.next_backfill(restart, 300).unwrap(),
+            store.next_backfill(restart, 300, DAY_S).unwrap(),
             None,
             "caught up, and the history already reaches the horizon"
         );
