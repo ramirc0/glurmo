@@ -1,8 +1,8 @@
-//! Where command output comes from: the live cluster or a recording.
+//! Where command output comes from: the live cluster, the live cluster under recording, or a recording.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+use super::pseudonymize::Pseudonyms;
 use super::scontrol;
 use crate::model::UnixTime;
 
@@ -33,6 +34,8 @@ pub struct Exchange {
 pub enum Source {
     /// Run commands on this host.
     Live,
+    /// Run commands on this host and append each exchange to a recording.
+    Record(Recorder),
     /// Answer from a recording.
     Replay(Replay),
 }
@@ -42,11 +45,16 @@ impl Source {
     ///
     /// # Errors
     ///
-    /// Fails when the command cannot start or runs past the timeout,
+    /// Fails when the command cannot start, runs past the timeout, or cannot be recorded,
     /// or when the recording holds no answer for it.
     pub async fn run(&mut self, argv: Vec<String>) -> Result<Exchange> {
         match self {
             Self::Live => live(argv, TIMEOUT).await,
+            Self::Record(recorder) => {
+                let exchange = live(argv, TIMEOUT).await?;
+                recorder.write(&exchange)?;
+                Ok(exchange)
+            }
             Self::Replay(replay) => replay.answer(argv),
         }
     }
@@ -54,7 +62,7 @@ impl Source {
     /// The current time. A replay's clock reads the time of the last answer.
     pub fn now(&self) -> UnixTime {
         match self {
-            Self::Live => UnixTime::now(),
+            Self::Live | Self::Record(_) => UnixTime::now(),
             Self::Replay(replay) => replay.now,
         }
     }
@@ -97,6 +105,39 @@ fn is_scrubbed(key: &str) -> bool {
         .iter()
         .any(|prefix| key.starts_with(prefix))
         || key == "SLURM_CLUSTERS"
+}
+
+/// Appends exchanges to a recording, optionally with logins and job names rewritten.
+pub struct Recorder {
+    file: File,
+    pseudonyms: Option<Pseudonyms>,
+}
+
+impl Recorder {
+    /// Creates or truncates the recording at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be created.
+    pub fn create(path: &Path, pseudonymize: bool) -> Result<Self> {
+        Ok(Self {
+            file: File::create(path)
+                .with_context(|| format!("cannot create {}", path.display()))?,
+            pseudonyms: pseudonymize.then(Pseudonyms::default),
+        })
+    }
+
+    fn write(&mut self, exchange: &Exchange) -> Result<()> {
+        let mut exchange = exchange.clone();
+        if let Some(pseudonyms) = &mut self.pseudonyms {
+            pseudonyms.rewrite(&mut exchange)?;
+        }
+        let mut line = serde_json::to_string(&exchange)?;
+        line.push('\n');
+        self.file
+            .write_all(line.as_bytes())
+            .context("cannot write the recording")
+    }
 }
 
 /// Answers commands from a recording.
@@ -157,7 +198,6 @@ impl Replay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()

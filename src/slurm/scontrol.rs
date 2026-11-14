@@ -69,6 +69,11 @@ impl<'a> Record<'a> {
             .iter()
             .map(|(key, value)| (*key, &self.line[value.clone()]))
     }
+
+    /// Every key with the byte range of its value in the line.
+    pub fn spans(&self) -> &[(&'a str, Range<usize>)] {
+        &self.pairs
+    }
 }
 
 fn tokens(line: &str) -> Vec<(usize, &str)> {

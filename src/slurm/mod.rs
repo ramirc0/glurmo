@@ -3,6 +3,7 @@
 pub mod fields;
 pub mod hostlist;
 pub mod probe;
+pub mod pseudonymize;
 pub mod scontrol;
 pub mod sdiag;
 pub mod sinfo;
@@ -322,6 +323,49 @@ impl Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::JobId;
+    use source::Replay;
+
+    async fn replay(fixture: &str) -> Slurm {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(fixture);
+        Slurm::connect(Source::Replay(Replay::open(&path).unwrap()))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn replayed_samples_place_every_allocated_core() {
+        for (fixture, expected_running) in [
+            ("slurm-23.11/quiet.jsonl", 5),
+            ("slurm-23.11/busy.jsonl", 105),
+        ] {
+            let sample = replay(fixture).await.sample().await.unwrap();
+            assert_eq!(sample.site.version, Version(23, 11, 4));
+            assert_eq!(sample.nodes.len(), 51);
+            let running = sample
+                .jobs
+                .iter()
+                .filter(|job| job.state == JobState::Running)
+                .count();
+            assert_eq!(running, expected_running, "{fixture}");
+            assert_eq!(sample.mismatches(), [], "{fixture}");
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_of_a_purged_job_is_gone() {
+        let mut slurm = replay("slurm-23.11/quiet.jsonl").await;
+        let sample = slurm.sample().await.unwrap();
+        let mut purged = sample.jobs[0].clone();
+        purged.key.job = JobId(1);
+        purged.array = None;
+        assert_eq!(
+            slurm.lookup(&purged, &sample.nodes).await.unwrap(),
+            Lookup::Gone
+        );
+    }
 
     #[test]
     fn versions_order_and_print() {

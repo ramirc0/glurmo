@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
 use model::JobState;
-use slurm::source::{Replay, Source};
+use slurm::source::{Recorder, Replay, Source};
 use slurm::{Sample, Slurm};
 
 /// Live view of who holds which cores and GPUs on a cluster.
@@ -33,6 +33,14 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         replay: Option<PathBuf>,
     },
+    /// Read the cluster once and save every command's output as JSON lines.
+    Record {
+        /// Rewrite logins, IDs, job names and paths, so the recording can become a test fixture.
+        #[arg(long)]
+        pseudonymize: bool,
+        /// Where to write the recording.
+        out: PathBuf,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -53,6 +61,12 @@ async fn main() -> Result<()> {
             let sample = Slurm::connect(source).await?.sample().await?;
             println!("{}", serde_json::to_string(&sample)?);
             summarize(&sample);
+        }
+        Command::Record { pseudonymize, out } => {
+            let source = Source::Record(Recorder::create(&out, pseudonymize)?);
+            let sample = Slurm::connect(source).await?.sample().await?;
+            summarize(&sample);
+            eprintln!("recorded to {}", out.display());
         }
     }
     Ok(())
