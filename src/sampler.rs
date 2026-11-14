@@ -265,7 +265,91 @@ impl Sampler {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashSet};
+
     use super::*;
+    use crate::model::{AttemptKey, Cluster, Owner};
+    use crate::slurm::source::{Replay, Source};
+
+    /// One line per delta: its time, how many events of each kind it holds, and how the cluster looks after it.
+    fn summary(delta: &Delta, start: UnixTime, cluster: &Cluster) -> String {
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+        for event in &delta.events {
+            let kind = match event {
+                Event::Started { .. } => "started".to_owned(),
+                Event::Ended { state, .. } => format!("ended:{state:?}"),
+                Event::Settled { state, .. } => format!("settled:{state:?}"),
+                Event::Placed { .. } => "placed".to_owned(),
+                Event::Queue(queue) => format!("queue:{}", queue.len()),
+                Event::Nodes(_) => "nodes".to_owned(),
+                Event::Partitions(_) => "partitions".to_owned(),
+                Event::Stats(_) => "stats".to_owned(),
+            };
+            *kinds.entry(kind).or_default() += 1;
+        }
+        let held = cluster
+            .occupancy()
+            .values()
+            .flat_map(|cells| &cells.cores)
+            .filter(|owner| matches!(owner, Some(Owner::Attempt(_))))
+            .count();
+        let kinds: Vec<String> = kinds
+            .into_iter()
+            .map(|(kind, count)| format!("{count} {kind}"))
+            .collect();
+        format!(
+            "{} +{}s [{}] running {} holding {held} cores",
+            delta.seq,
+            delta.at.0 - start.0,
+            kinds.join(", "),
+            cluster.running.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn replay_of_a_busy_quarter_hour() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/slurm-23.11/busy-15m.jsonl.zst");
+        let mut compressed = std::fs::File::open(path).unwrap();
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut compressed).unwrap();
+        let mut recording = tempfile::NamedTempFile::new().unwrap();
+        std::io::copy(&mut decoder, &mut recording).unwrap();
+        let slurm = Slurm::connect(Source::Replay(Replay::open(recording.path()).unwrap()))
+            .await
+            .unwrap();
+        let mut sampler = Sampler::new(slurm, Intervals::default());
+        let mut deltas = sampler.subscribe();
+        sampler.run(None).await;
+
+        let mut cluster = Cluster::default();
+        let mut lines = Vec::new();
+        let mut unplaced: HashSet<AttemptKey> = HashSet::new();
+        let mut first_at = None;
+        while let Ok(delta) = deltas.try_recv() {
+            assert_eq!(delta.seq, u64::try_from(lines.len()).unwrap() + 1);
+            for event in &delta.events {
+                match event {
+                    Event::Started { attempt } => {
+                        unplaced.insert(attempt.key);
+                    }
+                    Event::Placed { key, .. } | Event::Ended { key, .. } => {
+                        unplaced.remove(key);
+                    }
+                    _ => {}
+                }
+            }
+            cluster.apply(&delta);
+            let start = *first_at.get_or_insert(delta.at);
+            lines.push(summary(&delta, start, &cluster));
+        }
+        assert!(lines.len() > 50, "only {} deltas", lines.len());
+        assert_eq!(
+            unplaced,
+            HashSet::new(),
+            "started and never placed or ended"
+        );
+        insta::assert_snapshot!(lines.join("\n"));
+    }
 
     #[test]
     fn backoff_doubles_to_eight_times_and_recovers_after_three_healthy_calls() {

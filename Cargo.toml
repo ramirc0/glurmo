@@ -25,4 +25,6 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 
 [dev-dependencies]
+insta = "1.49.0"
+ruzstd = "0.9.1"
 tempfile = "3.27.0"

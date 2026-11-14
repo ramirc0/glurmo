@@ -1,0 +1,94 @@
+---
+source: src/sampler.rs
+expression: "lines.join(\"\\n\")"
+---
+1 +0s [1 nodes, 1 partitions, 184 placed, 1 queue:627, 184 started, 1 stats] running 184 holding 891 cores
+2 +10s [1 queue:627] running 184 holding 891 cores
+3 +20s [1 queue:627] running 184 holding 891 cores
+4 +30s [1 nodes, 1 queue:627] running 184 holding 891 cores
+5 +40s [1 ended:Some(Completed), 1 placed, 1 queue:626, 1 started] running 184 holding 891 cores
+6 +50s [4 ended:Some(Completed), 4 placed, 1 queue:622, 4 started] running 184 holding 891 cores
+7 +60s [12 ended:Some(Completed), 12 placed, 1 queue:610, 12 started, 1 stats] running 184 holding 891 cores
+8 +70s [9 ended:Some(Completed), 9 placed, 1 queue:601, 9 started] running 184 holding 891 cores
+9 +80s [23 ended:Some(Completed), 23 placed, 1 queue:578, 23 started] running 184 holding 891 cores
+10 +90s [24 ended:Some(Completed), 1 nodes, 24 placed, 1 queue:554, 24 started] running 184 holding 891 cores
+11 +100s [10 ended:Some(Completed), 10 placed, 1 queue:544, 10 started] running 184 holding 891 cores
+12 +110s [7 ended:Some(Completed), 7 placed, 1 queue:537, 7 started] running 184 holding 891 cores
+13 +120s [4 ended:Some(Completed), 4 placed, 1 queue:533, 4 started, 1 stats] running 184 holding 891 cores
+14 +130s [7 ended:Some(Completed), 7 placed, 1 queue:526, 7 started] running 184 holding 891 cores
+15 +140s [6 ended:Some(Completed), 6 placed, 1 queue:520, 6 started] running 184 holding 891 cores
+16 +150s [9 ended:Some(Completed), 9 placed, 1 queue:511, 9 started] running 184 holding 891 cores
+17 +160s [6 ended:Some(Completed), 6 placed, 1 queue:505, 6 started] running 184 holding 891 cores
+18 +170s [10 ended:Some(Completed), 10 placed, 1 queue:495, 10 started] running 184 holding 891 cores
+19 +180s [2 ended:Some(Completed), 1 nodes, 2 placed, 1 queue:493, 2 started, 1 stats] running 184 holding 891 cores
+20 +190s [3 ended:Some(Completed), 3 placed, 1 queue:490, 3 started] running 184 holding 891 cores
+21 +200s [8 ended:Some(Completed), 8 placed, 1 queue:482, 8 started] running 184 holding 891 cores
+22 +210s [4 ended:Some(Completed), 4 placed, 1 queue:478, 4 started] running 184 holding 891 cores
+23 +220s [8 ended:Some(Completed), 8 placed, 1 queue:470, 8 started] running 184 holding 891 cores
+24 +230s [6 ended:Some(Completed), 6 placed, 1 queue:464, 6 started] running 184 holding 891 cores
+25 +240s [7 ended:Some(Completed), 7 placed, 1 queue:457, 7 started, 1 stats] running 184 holding 891 cores
+26 +250s [3 ended:Some(Completed), 3 placed, 1 queue:454, 3 started] running 184 holding 891 cores
+27 +260s [9 ended:Some(Completed), 9 placed, 1 queue:445, 9 started] running 184 holding 891 cores
+28 +270s [5 ended:Some(Completed), 1 nodes, 5 placed, 1 queue:440, 5 started] running 184 holding 891 cores
+29 +280s [3 ended:Some(Completed), 3 placed, 1 queue:437, 3 started] running 184 holding 891 cores
+30 +290s [5 ended:Some(Completed), 5 placed, 1 queue:432, 5 started] running 184 holding 891 cores
+31 +300s [5 ended:Some(Completed), 5 placed, 1 queue:427, 5 started, 1 stats] running 184 holding 891 cores
+32 +310s [4 ended:Some(Completed), 4 placed, 1 queue:423, 4 started] running 184 holding 891 cores
+33 +320s [1 ended:Some(Completed), 1 placed, 1 queue:422, 1 started] running 184 holding 891 cores
+34 +340s [19 ended:Some(Completed), 19 placed, 1 queue:403, 19 started] running 184 holding 891 cores
+35 +350s [2 ended:Some(Completed), 2 placed, 1 queue:401, 2 started] running 184 holding 891 cores
+36 +360s [5 ended:Some(Completed), 5 placed, 1 queue:396, 5 started, 1 stats] running 184 holding 891 cores
+37 +370s [3 ended:Some(Completed), 3 placed, 1 queue:393, 3 started] running 184 holding 891 cores
+38 +380s [11 ended:Some(Completed), 11 placed, 1 queue:382, 11 started] running 184 holding 891 cores
+39 +390s [7 ended:Some(Completed), 1 nodes, 7 placed, 1 queue:375, 7 started] running 184 holding 891 cores
+40 +400s [12 ended:Some(Completed), 12 placed, 1 queue:363, 12 started] running 184 holding 891 cores
+41 +410s [2 ended:Some(Completed), 2 placed, 1 queue:361, 2 started] running 184 holding 891 cores
+42 +420s [12 ended:Some(Completed), 12 placed, 1 queue:349, 12 started, 1 stats] running 184 holding 891 cores
+43 +430s [4 ended:Some(Completed), 4 placed, 1 queue:345, 4 started] running 184 holding 891 cores
+44 +440s [8 ended:Some(Completed), 8 placed, 1 queue:337, 8 started] running 184 holding 891 cores
+45 +450s [1 ended:None, 8 ended:Some(Completed), 1 nodes, 8 placed, 1 queue:329, 8 started] running 183 holding 887 cores
+46 +460s [1 ended:Some(Completed), 2 placed, 1 queue:327, 1 settled:Completed, 2 started] running 184 holding 891 cores
+47 +470s [18 ended:Some(Completed), 18 placed, 1 queue:309, 18 started] running 184 holding 891 cores
+48 +480s [16 ended:Some(Completed), 1 nodes, 16 placed, 1 queue:293, 16 started, 1 stats] running 184 holding 891 cores
+49 +490s [11 ended:Some(Completed), 11 placed, 1 queue:282, 11 started] running 184 holding 891 cores
+50 +500s [3 ended:Some(Completed), 3 placed, 1 queue:279, 3 started] running 184 holding 891 cores
+51 +510s [5 ended:Some(Completed), 1 nodes, 5 placed, 1 queue:274, 5 started] running 184 holding 891 cores
+52 +520s [4 ended:Some(Completed), 4 placed, 1 queue:270, 4 started] running 184 holding 891 cores
+53 +530s [4 ended:Some(Completed), 4 placed, 1 queue:266, 4 started] running 184 holding 891 cores
+54 +540s [2 ended:Some(Completed), 2 placed, 1 queue:264, 2 started, 1 stats] running 184 holding 891 cores
+55 +550s [3 ended:Some(Completed), 3 placed, 1 queue:261, 3 started] running 184 holding 891 cores
+56 +560s [5 ended:Some(Completed), 5 placed, 1 queue:256, 5 started] running 184 holding 891 cores
+57 +570s [16 ended:Some(Completed), 1 nodes, 16 placed, 1 queue:240, 16 started] running 184 holding 891 cores
+58 +580s [3 ended:Some(Completed), 3 placed, 1 queue:237, 3 started] running 184 holding 891 cores
+59 +590s [13 ended:Some(Completed), 13 placed, 1 queue:224, 13 started] running 184 holding 891 cores
+60 +600s [6 ended:Some(Completed), 6 placed, 1 queue:218, 6 started, 1 stats] running 184 holding 891 cores
+61 +610s [14 ended:Some(Completed), 14 placed, 1 queue:204, 14 started] running 184 holding 891 cores
+62 +620s [5 ended:Some(Completed), 5 placed, 1 queue:199, 5 started] running 184 holding 891 cores
+63 +630s [2 ended:Some(Completed), 2 placed, 1 queue:197, 2 started] running 184 holding 891 cores
+64 +640s [4 ended:Some(Completed), 4 placed, 1 queue:193, 4 started] running 184 holding 891 cores
+65 +650s [4 ended:Some(Completed), 4 placed, 1 queue:189, 4 started] running 184 holding 891 cores
+66 +660s [9 ended:Some(Completed), 9 placed, 1 queue:180, 9 started, 1 stats] running 184 holding 891 cores
+67 +670s [5 ended:Some(Completed), 5 placed, 1 queue:175, 5 started] running 184 holding 891 cores
+68 +680s [8 ended:Some(Completed), 8 placed, 1 queue:167, 8 started] running 184 holding 891 cores
+69 +690s [4 ended:Some(Completed), 1 nodes, 4 placed, 1 queue:163, 4 started] running 184 holding 891 cores
+70 +700s [12 ended:Some(Completed), 12 placed, 1 queue:151, 12 started] running 184 holding 891 cores
+71 +710s [6 ended:Some(Completed), 6 placed, 1 queue:145, 6 started] running 184 holding 891 cores
+72 +720s [8 ended:Some(Completed), 8 placed, 1 queue:137, 8 started, 1 stats] running 184 holding 891 cores
+73 +730s [11 ended:Some(Completed), 11 placed, 1 queue:126, 11 started] running 184 holding 891 cores
+74 +740s [8 ended:Some(Completed), 8 placed, 1 queue:118, 8 started] running 184 holding 891 cores
+75 +750s [11 ended:Some(Completed), 1 nodes, 11 placed, 1 queue:107, 11 started] running 184 holding 891 cores
+76 +760s [14 ended:Some(Completed), 14 placed, 1 queue:93, 14 started] running 184 holding 891 cores
+77 +770s [7 ended:Some(Completed), 7 placed, 1 queue:86, 7 started] running 184 holding 891 cores
+78 +780s [1 nodes, 1 stats] running 184 holding 891 cores
+79 +790s [2 ended:Some(Completed), 2 placed, 1 queue:84, 2 started] running 184 holding 891 cores
+80 +800s [6 ended:Some(Completed), 6 placed, 1 queue:78, 6 started] running 184 holding 891 cores
+81 +810s [10 ended:Some(Completed), 10 placed, 1 queue:68, 10 started] running 184 holding 891 cores
+82 +820s [8 ended:Some(Completed), 8 placed, 1 queue:60, 8 started] running 184 holding 891 cores
+83 +830s [18 ended:Some(Completed), 18 placed, 1 queue:42, 18 started] running 184 holding 891 cores
+84 +840s [6 ended:Some(Completed), 6 placed, 1 queue:36, 6 started, 1 stats] running 184 holding 891 cores
+85 +850s [1 ended:None, 9 ended:Some(Completed), 9 placed, 1 queue:27, 9 started] running 183 holding 887 cores
+86 +860s [12 ended:Some(Completed), 13 placed, 1 queue:14, 1 settled:Completed, 13 started] running 184 holding 891 cores
+87 +870s [4 ended:Some(Completed), 1 nodes, 4 placed, 1 queue:10, 4 started] running 184 holding 891 cores
+88 +880s [2 ended:Some(Completed), 2 placed, 1 queue:8, 2 started] running 184 holding 891 cores
+89 +890s [6 ended:Some(Completed), 6 placed, 1 queue:2, 6 started] running 184 holding 891 cores
+90 +900s [2 ended:Some(Completed), 1 nodes, 1 stats] running 182 holding 883 cores
