@@ -29,19 +29,13 @@ const HEALTHY_TO_RECOVER: u32 = 3;
 /// rows, which sacct takes 15 s to print.
 const BACKFILL_SPAN_S: std::ops::RangeInclusive<i64> = 900..=86_400;
 
-/// A history read faster than this doubles the next window. One slower than [`SLOW_BACKFILL`] halves it.
-const FAST_BACKFILL: Duration = Duration::from_secs(2);
-const SLOW_BACKFILL: Duration = Duration::from_secs(5);
+/// How long to wait after a failed history read. A dead slurmdbd can hold each read for 60 s.
+const BACKFILL_RETRY_S: i64 = 60;
 
-/// The next backfill window's length, after a read of `span_s` that took `took` and worked or not.
-fn next_span(span_s: i64, worked: bool, took: Duration) -> i64 {
-    let span_s = if !worked || took > SLOW_BACKFILL {
-        span_s / 2
-    } else if took < FAST_BACKFILL {
-        span_s * 2
-    } else {
-        span_s
-    };
+/// The next backfill window's length, after a read of `span_s` that worked or not. On zlurm a read
+/// takes about as long for a day as for 15 minutes, so only a failure shrinks the window.
+fn next_span(span_s: i64, worked: bool) -> i64 {
+    let span_s = if worked { span_s * 2 } else { span_s / 2 };
     span_s.clamp(*BACKFILL_SPAN_S.start(), *BACKFILL_SPAN_S.end())
 }
 
@@ -180,6 +174,14 @@ impl Pace {
     }
 }
 
+/// What one tick saw.
+#[derive(Default)]
+struct Tick {
+    events: Vec<Event>,
+    /// Whether the tick listed jobs.
+    listed: bool,
+}
+
 /// Samples the cluster on a schedule and publishes what changed.
 pub struct Sampler {
     slurm: Slurm,
@@ -207,6 +209,8 @@ pub struct Sampler {
     gpu_models: BTreeMap<String, String>,
     /// How much accounting the next backfill reads.
     backfill_span_s: i64,
+    /// When the next history read may start, after one failed.
+    backfill_after: UnixTime,
 }
 
 impl Sampler {
@@ -236,6 +240,7 @@ impl Sampler {
             names: config.names,
             gpu_models: config.gpu_models.clone(),
             backfill_span_s: 21_600,
+            backfill_after: UnixTime(0),
         }
     }
 
@@ -244,12 +249,12 @@ impl Sampler {
     pub async fn run(&mut self, until: Option<UnixTime>) {
         loop {
             let at = self.slurm.now();
-            let mut events = match self.tick(at).await {
-                Ok(events) => events,
+            let Tick { mut events, listed } = match self.tick(at).await {
+                Ok(tick) => tick,
                 Err(error) if error.is::<Exhausted>() => return,
                 Err(error) => {
                     eprintln!("tick at {} skipped: {error:#}", at.0);
-                    Vec::new()
+                    Tick::default()
                 }
             };
             let failing = self.failing();
@@ -260,6 +265,9 @@ impl Sampler {
                 ));
             }
             self.hub.publish(at, events);
+            if listed && let Err(error) = self.backfill(at).await {
+                eprintln!("store at {}: {error:#}", at.0);
+            }
             self.hub.report(self.health());
             // A replay never waits on its own, and subscribers in the same task need a turn.
             tokio::task::yield_now().await;
@@ -308,7 +316,7 @@ impl Sampler {
 
     /// Makes the due calls, then diffs their answers. If any fails, the tick is dropped,
     /// so a job counts as gone only after a job listing that worked.
-    async fn tick(&mut self, now: UnixTime) -> Result<Vec<Event>> {
+    async fn tick(&mut self, now: UnixTime) -> Result<Tick> {
         let nodes = if self.nodes.is_due(now) {
             let mut nodes = self.nodes.time(now, self.slurm.nodes()).await?;
             name_gpus(&mut nodes, &self.gpu_models);
@@ -366,55 +374,59 @@ impl Sampler {
             events.extend(self.settle().await);
         }
         events.extend(stats.map(Event::Stats));
-        match self.archive(now, &events, listed).await {
+        match self.archive(now, &events, listed) {
             Ok(users) if !users.is_empty() => events.push(Event::Users(self.name(users).await)),
             Ok(_) => {}
             Err(error) => eprintln!("store at {}: {error:#}", now.0),
         }
-        Ok(events)
+        Ok(Tick { events, listed })
     }
 
     /// Writes a tick's events to the store. After a jobs tick it also closes attempts that vanished
-    /// while no listing came in, because the sampler or the controller was down. Then it rolls up
-    /// closed bins, reads one window of accounting and runs the daily upkeep. A failure here never
-    /// drops the tick. Returns the users seen for the first time.
-    async fn archive(
-        &mut self,
-        now: UnixTime,
-        events: &[Event],
-        listed: bool,
-    ) -> Result<Vec<User>> {
+    /// while no listing came in, because the sampler or the controller was down, and rolls up closed
+    /// bins. A failure here never drops the tick. Returns the users seen for the first time.
+    fn archive(&mut self, now: UnixTime, events: &[Event], listed: bool) -> Result<Vec<User>> {
         let Some(store) = &mut self.store else {
             return Ok(Vec::new());
         };
         store.record(now, events)?;
-        if !listed {
-            return Ok(Vec::new());
-        }
-        let active = self.known.active();
-        let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
-        if store.sampled(now, min_job_age_s)? {
-            let closed = store.recover(&active)?;
-            if closed > 0 {
-                eprintln!("{closed} attempts left the queue while no listing came in");
+        if listed {
+            let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
+            if store.sampled(now, min_job_age_s)? {
+                let closed = store.recover(&self.known.active())?;
+                if closed > 0 {
+                    eprintln!("{closed} attempts left the queue while no listing came in");
+                }
             }
+            store.roll(now)?;
         }
-        store.roll(now)?;
-        if let Some(window) = store.next_backfill(now, min_job_age_s, self.backfill_span_s)? {
-            let started = Instant::now();
+        store.new_users()
+    }
+
+    /// Reads one window of accounting into the store, then runs the daily upkeep. It runs after the
+    /// tick's changes are out, because a read can take seconds.
+    async fn backfill(&mut self, now: UnixTime) -> Result<()> {
+        let Some(store) = &mut self.store else {
+            return Ok(());
+        };
+        let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
+        if now >= self.backfill_after
+            && let Some(window) = store.next_backfill(now, min_job_age_s, self.backfill_span_s)?
+        {
             let (attempts, _) = self
                 .backfilling
                 .time(self.slurm.history(window.from, window.to))
                 .await;
-            self.backfill_span_s =
-                next_span(self.backfill_span_s, attempts.is_ok(), started.elapsed());
+            self.backfill_span_s = next_span(self.backfill_span_s, attempts.is_ok());
             match attempts {
-                Ok(attempts) => store.backfill(window, &attempts, &active, now)?,
-                Err(error) => eprintln!("history at {}: {error:#}", now.0),
+                Ok(attempts) => store.backfill(window, &attempts, &self.known.active(), now)?,
+                Err(error) => {
+                    eprintln!("history at {}: {error:#}", now.0);
+                    self.backfill_after = UnixTime(now.0 + BACKFILL_RETRY_S);
+                }
             }
         }
-        store.maintain(now)?;
-        store.new_users()
+        store.maintain(now)
     }
 
     /// Gives new users their full names when the config asks for them, from the store or the system.
@@ -802,15 +814,11 @@ mod tests {
     }
 
     #[test]
-    fn backfill_window_halves_when_slow_or_failed_and_doubles_when_fast() {
-        let day = 86_400;
-        let secs = Duration::from_secs;
-        assert_eq!(next_span(21_600, true, secs(1)), 43_200);
-        assert_eq!(next_span(day, true, secs(1)), day);
-        assert_eq!(next_span(21_600, true, secs(3)), 21_600);
-        assert_eq!(next_span(21_600, true, secs(9)), 10_800);
-        assert_eq!(next_span(21_600, false, secs(15)), 10_800);
-        assert_eq!(next_span(900, false, secs(15)), 900);
+    fn backfill_window_doubles_after_a_read_that_worked_and_halves_after_one_that_failed() {
+        assert_eq!(next_span(21_600, true), 43_200);
+        assert_eq!(next_span(86_400, true), 86_400);
+        assert_eq!(next_span(21_600, false), 10_800);
+        assert_eq!(next_span(900, false), 900);
     }
 
     #[tokio::test]

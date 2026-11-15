@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Changed
+
+- Each tick publishes its changes before it reads accounting, so a slow history read no longer delays live updates. The backfill grows its window after each read that works, up to a day, and waits a minute after one that fails. On zlurm it read 15 minutes at a time before.
+
 ### Fixed
 
 - A failed accounting read no longer hides users' colors and names. Before, a store opened while slurmdbd was down drew every core in the muted color until a read worked.
