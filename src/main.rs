@@ -60,7 +60,7 @@ enum Command {
     },
     /// Show the cluster in the terminal, following a server or sampling in-process.
     Tui {
-        /// The server to follow, such as `http://js029:8765`. It overrides the config's.
+        /// The server to follow, such as `http://head:8765`. It overrides the config's.
         #[arg(long, value_name = "URL", conflicts_with = "embedded")]
         server: Option<String>,
         /// Sample the cluster in-process, even when the config names a server.

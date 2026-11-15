@@ -441,8 +441,8 @@ mod tests {
 
     #[test]
     fn controllers_come_from_slurmctld_host_lines() {
-        let conf = "# comment\nSlurmctldHost=slurmd-211(10.7.17.211)\nslurmctldhost=backup\nSlurmctldPort=6820-6821\n";
-        assert_eq!(controllers_in(conf), ["10.7.17.211:6820", "backup:6820"]);
+        let conf = "# comment\nSlurmctldHost=ctl-1(192.0.2.11)\nslurmctldhost=backup\nSlurmctldPort=6820-6821\n";
+        assert_eq!(controllers_in(conf), ["192.0.2.11:6820", "backup:6820"]);
         assert_eq!(controllers_in("ControlMachine=ctl\n"), ["ctl:6817"]);
         assert_eq!(controllers_in("ClusterName=x\n"), Vec::<String>::new());
     }

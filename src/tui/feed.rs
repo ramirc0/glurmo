@@ -75,7 +75,7 @@ pub enum Feed {
 }
 
 impl Feed {
-    /// Follows the server at `base`, such as `http://js029:8765`.
+    /// Follows the server at `base`, such as `http://head:8765`.
     ///
     /// # Errors
     ///

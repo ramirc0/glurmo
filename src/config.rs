@@ -95,7 +95,7 @@ impl Default for Server {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tui {
-    /// The server to follow, such as `http://js029:8765`. `None` samples the cluster in-process.
+    /// The server to follow, such as `http://head:8765`. `None` samples the cluster in-process.
     pub server: Option<String>,
     /// The layout to start with.
     pub layout: String,
@@ -209,7 +209,7 @@ mod tests {
                 store: (path: "/scratch/otter/glurmo/zlurm.sqlite", keep: Days(365), backfill: Days(7)),
                 server: (listen: "0.0.0.0:8765"),
                 names: FullName,
-                tui: (server: "http://js029:8765", layout: "wide", theme: "rose-pine-dawn"),
+                tui: (server: "http://head:8765", layout: "wide", theme: "rose-pine-dawn"),
                 gpu_models: {"gpu": "V100", "gpuh200": "H200"},
             )"#,
         )
@@ -234,7 +234,7 @@ mod tests {
         );
         assert_eq!(config.server.listen.to_string(), "0.0.0.0:8765");
         assert_eq!(config.names, Names::FullName);
-        assert_eq!(config.tui.server.as_deref(), Some("http://js029:8765"));
+        assert_eq!(config.tui.server.as_deref(), Some("http://head:8765"));
         assert_eq!(config.tui.layout, "wide");
         assert_eq!(config.gpu_models["gpuh200"], "H200");
     }

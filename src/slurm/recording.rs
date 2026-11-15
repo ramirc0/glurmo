@@ -377,9 +377,9 @@ mod tests {
             at: UnixTime(1),
             call: Call::Jobs,
             answer: Ok(Answer::Jobs(vec![
-                attempt("ramirezc", "secret"),
+                attempt("alice", "secret"),
                 attempt("someone", "secret"),
-                attempt("ramirezc", "other"),
+                attempt("alice", "other"),
             ])),
         };
         Pseudonyms::default().rewrite(&mut exchange);

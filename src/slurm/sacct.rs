@@ -219,7 +219,7 @@ mod tests {
             "\
 3441951|3441951_[0-3]|wren|long,12hours|PENDING|0|1||billing=1,cpu=1,mem=1G,node=1|5:00|1792077150|Unknown|Unknown|None assigned
 3849576|3849570_6|heron|4hours|TIMEOUT|2|2|billing=2,cpu=2,mem=16G,node=1|billing=2,cpu=2,mem=16G,node=1|2:00:00|1794259870|1794259871|1794691887|z1014
-3923677|3923677|lynx|gpuh200|CANCELLED by 1514701009|32|32|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|14-00:00:00|1794524389|1794524389|1794600000|z028
+3923677|3923677|lynx|gpuh200|CANCELLED by 20001|32|32|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|14-00:00:00|1794524389|1794524389|1794600000|z028
 ",
         )
         .unwrap();
@@ -263,7 +263,7 @@ mod tests {
 3848267|1794244136|1794258065|TIMEOUT
 3962731|1794695573|1794695573|FAILED
 3963300|1794695660|Unknown|RUNNING
-3963301|1794695660|1794695900|CANCELLED by 1514701009
+3963301|1794695660|1794695900|CANCELLED by 20001
 ",
         )
         .unwrap();
