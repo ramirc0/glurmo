@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- The command backend saves unparsed output to `unparsed.jsonl` once per kind of call in a run. Before, a listing that failed every tick appended its whole output each time, about 11 GB a day on zlurm.
 - The command backend reads scontrol's `Job ... not found` as a job gone, and a lookup that fails moves to the back of the queue. Before, one array task the controller had dropped blocked every later lookup. With `lookups: 0`, starts no longer pile up in the queue.
 - The command backend reads squeue's `NONE` end and `INVALID` time limit, scontrol's `No jobs in the system`, and a `NumCPUs` range such as `4-8`. Before, each failed its whole listing.
 - GRES held without a device bitmap, such as `gpu:v100(CNT:2)`, and GRES counts in T or P no longer fail a whole job or node listing.

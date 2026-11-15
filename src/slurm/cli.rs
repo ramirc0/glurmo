@@ -4,7 +4,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::mem::Discriminant;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -42,11 +43,14 @@ pub struct Cli {
     nodes: Vec<Node>,
     /// sacct lines already reported as unreadable, so a job asked about every tick is saved once.
     reported: HashSet<String>,
+    /// Kinds of call whose unparsed output this run has saved, so a listing that fails every tick is
+    /// saved once.
+    saved: HashSet<Discriminant<Call>>,
 }
 
 impl Cli {
     /// Runs the command for `call` and parses its output. Output that fails to parse is kept for a
-    /// test fixture.
+    /// test fixture, once per kind of call in a run.
     ///
     /// # Errors
     ///
@@ -60,11 +64,25 @@ impl Cli {
             if exchange.status != 0 {
                 return error;
             }
-            match keep_unparsed(&exchange) {
-                Ok(path) => error.context(format!("output saved to {}", path.display())),
+            match unparsed_dir().and_then(|dir| self.keep_first_unparsed(call, &exchange, &dir)) {
+                Ok(Some(path)) => error.context(format!("output saved to {}", path.display())),
+                Ok(None) => error,
                 Err(save) => error.context(format!("output not saved: {save:#}")),
             }
         })
+    }
+
+    /// Saves the output of a call that did not parse, if no call of its kind has been saved this run.
+    fn keep_first_unparsed(
+        &mut self,
+        call: &Call,
+        exchange: &Exchange,
+        dir: &Path,
+    ) -> Result<Option<PathBuf>> {
+        if !self.saved.insert(std::mem::discriminant(call)) {
+            return Ok(None);
+        }
+        keep_unparsed(exchange, dir).map(Some)
     }
 
     fn parse(&mut self, call: &Call, exchange: &Exchange) -> Result<Answer> {
@@ -128,10 +146,12 @@ impl Cli {
             .filter(|unreadable| self.reported.insert(unreadable.line.clone()))
             .collect();
         if !new.is_empty() {
-            let kept = keep_unparsed(exchange).map_or_else(
-                |error| format!("not saved: {error:#}"),
-                |path| format!("saved to {}", path.display()),
-            );
+            let kept = unparsed_dir()
+                .and_then(|dir| keep_unparsed(exchange, &dir))
+                .map_or_else(
+                    |error| format!("not saved: {error:#}"),
+                    |path| format!("saved to {}", path.display()),
+                );
             for unreadable in &new {
                 eprintln!(
                     "skipped a sacct line ({kept}): {}: {:?}",
@@ -200,11 +220,15 @@ fn is_scrubbed(key: &str) -> bool {
         || key == "SLURM_CLUSTERS"
 }
 
-/// Appends an exchange to `$XDG_STATE_HOME/glurmo/unparsed.jsonl`.
-fn keep_unparsed(exchange: &Exchange) -> Result<PathBuf> {
-    let state = crate::xdg::state_home()?.join("glurmo");
-    fs::create_dir_all(&state)?;
-    let path = state.join("unparsed.jsonl");
+/// Where output that did not parse goes: `$XDG_STATE_HOME/glurmo`.
+fn unparsed_dir() -> Result<PathBuf> {
+    Ok(crate::xdg::state_home()?.join("glurmo"))
+}
+
+/// Appends an exchange to `unparsed.jsonl` in `dir`.
+fn keep_unparsed(exchange: &Exchange, dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join("unparsed.jsonl");
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     writeln!(file, "{}", serde_json::to_string(exchange)?)?;
     Ok(path)
@@ -363,6 +387,33 @@ mod tests {
             Cli::default().parse(&call, &exchange).unwrap(),
             Answer::Lookup(Lookup::Gone)
         );
+    }
+
+    #[test]
+    fn unparsed_output_is_saved_once_per_kind_of_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let exchange = Exchange {
+            at: UnixTime(1_794_000_000),
+            argv: argv(&["squeue"]),
+            status: 0,
+            stdout: "garbage\n".into(),
+            stderr: String::new(),
+        };
+        let mut cli = Cli::default();
+        let lines = || {
+            fs::read_to_string(dir.path().join("unparsed.jsonl"))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        for _ in 0..2 {
+            cli.keep_first_unparsed(&Call::Jobs, &exchange, dir.path())
+                .unwrap();
+        }
+        assert_eq!(lines(), 1);
+        cli.keep_first_unparsed(&Call::Nodes, &exchange, dir.path())
+            .unwrap();
+        assert_eq!(lines(), 2);
     }
 
     #[test]
