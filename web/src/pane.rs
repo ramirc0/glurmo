@@ -64,17 +64,18 @@ fn panel(pane: &Pane) -> AnyView {
     }
 }
 
-/// A slot's flex rule. A length counts lines of text down a column, or characters across a row.
+/// A slot's flex rule. A length counts lines of text down a column, inside a panel's padding, or
+/// characters across a row.
 fn flex(size: Size, direction: Direction) -> String {
-    let unit = match direction {
-        Direction::Vertical => "var(--line)",
-        Direction::Horizontal => "1ch",
+    let span = |length: u16| match direction {
+        Direction::Vertical => format!("calc({length} * var(--line) + 2 * var(--pad))"),
+        Direction::Horizontal => format!("calc({length} * 1ch)"),
     };
     match size {
-        Size::Length(length) => format!("flex: 0 0 calc({length} * {unit})"),
+        Size::Length(length) => format!("flex: 0 0 {}", span(length)),
         Size::Percentage(share) => format!("flex: 0 0 {share}%"),
         Size::Fill(weight) => format!("flex: {weight} 1 0"),
-        Size::Min(length) => format!("flex: 1 1 calc({length} * {unit})"),
+        Size::Min(length) => format!("flex: 1 1 {}", span(length)),
     }
 }
 
@@ -86,7 +87,7 @@ mod tests {
     fn sizes_map_onto_flex_rules() {
         assert_eq!(
             flex(Size::Length(2), Direction::Vertical),
-            "flex: 0 0 calc(2 * var(--line))"
+            "flex: 0 0 calc(2 * var(--line) + 2 * var(--pad))"
         );
         assert_eq!(
             flex(Size::Length(30), Direction::Horizontal),

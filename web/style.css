@@ -56,6 +56,7 @@
 
 :root {
   --line: 20px;
+  --pad: 6px;
   --gap: 8px;
 }
 
@@ -126,7 +127,7 @@ main.tv {
   flex-direction: column;
   background: var(--surface);
   border-radius: 8px;
-  padding: 6px 12px;
+  padding: var(--pad) 12px;
   overflow: auto;
 }
 
@@ -287,11 +288,11 @@ td.share {
   flex-direction: row;
   align-items: center;
   gap: 36px;
-  padding: 0 16px;
+  padding: var(--pad) 16px;
   overflow: hidden;
 }
 
-/* The header fills a two-line slot, so each of its columns is two rows of --line. */
+/* The header has a two-line slot, so each of its columns is two rows of --line. */
 .header .brand {
   display: grid;
   grid-template-rows: var(--line) var(--line);
