@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use super::app::App;
 use super::palette::Palette;
 use super::{die, header, history, jobs, mine, nodes, partitions, queue, ticker, users};
+use glurmo_model::jobs::Words;
 use glurmo_model::layout::{Direction, Pane, Size};
 use glurmo_model::summary::{self, Tally};
 use glurmo_model::{Attempt, Cluster, Login, Occupancies, Owner, UnixTime};
@@ -24,6 +25,8 @@ pub struct Scene<'a> {
     pub occupancy: Occupancies,
     /// The time of the last delta, which ages count from.
     pub now: UnixTime,
+    /// The filter's words.
+    pub filter: Words,
 }
 
 /// Whether a panel takes scroll keys, and how far it is scrolled.
@@ -43,6 +46,7 @@ impl<'a> Scene<'a> {
             palette: Palette::of(app.theme()),
             occupancy: app.cluster.occupancy(),
             now: app.cluster.at.unwrap_or_default(),
+            filter: Words::of(app.filter().unwrap_or_default()),
         }
     }
 
@@ -78,26 +82,14 @@ impl<'a> Scene<'a> {
             .unwrap_or(&login.0)
     }
 
-    /// Whether any of `texts` contains the filter, or no filter is set.
+    /// Whether every word of the filter appears in one of `texts`.
     pub fn shows(&self, texts: &[&str]) -> bool {
-        let Some(filter) = self.app.filter() else {
-            return true;
-        };
-        let filter = filter.to_lowercase();
-        texts
-            .iter()
-            .any(|text| text.to_lowercase().contains(&filter))
+        self.filter.found_in(texts)
     }
 
-    /// Whether the filter lets an attempt through: by login, name, partition or job name.
+    /// Whether the filter lets an attempt through, as it does in the job list.
     pub fn shows_attempt(&self, attempt: &Attempt) -> bool {
-        let mut texts = vec![
-            attempt.login.0.as_str(),
-            self.name(&attempt.login),
-            attempt.name.as_str(),
-        ];
-        texts.extend(attempt.partitions.iter().map(|p| p.0.as_str()));
-        self.shows(&texts)
+        self.filter.found_in_attempt(self.cluster(), attempt)
     }
 
     /// The color of a core or GPU: its holder's, faded when the filter hides the holder, or `empty`.
@@ -345,14 +337,17 @@ mod tests {
 
     use crossterm::event::{KeyCode, KeyEvent};
 
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::config::{Tui, from_ron};
     use crate::hub::Message;
     use crate::library::Library;
     use crate::tui::feed::{Link, Update};
-    use glurmo_model::UnixTime;
+    use glurmo_model::jobs::{Order, Search, job_groups};
     use glurmo_model::usage::Step;
     use glurmo_model::usage::Usage;
+    use glurmo_model::{AttemptKey, UnixTime};
 
     /// The busy quarter hour as a view sees it after following every delta, seen by the user with
     /// the most running jobs, over a made-up day of usage by the four busiest users.
@@ -510,5 +505,45 @@ mod tests {
         app.key(KeyEvent::from(KeyCode::Char('f')));
         app.filter.text = "4hours".into();
         insta::assert_snapshot!("jobs_filled", render(&mut app, 200, 30).backend());
+    }
+
+    #[tokio::test]
+    async fn every_panel_reads_the_filter_as_the_job_list_does() {
+        let mut app = busy_app().await;
+        let running = &app.cluster.running.values().next().unwrap().attempt;
+        let pending = app.cluster.queue.values().next().unwrap();
+        let filters = [
+            format!("{} {}", running.login.0, running.partitions[0].0),
+            running.printed_id(),
+            running.nodes[0].0.to_uppercase(),
+            format!("{} {}", pending.login.0, pending.reason.clone().unwrap()),
+        ];
+        for filter in filters {
+            app.filter.text.clone_from(&filter);
+            let scene = Scene::new(&app);
+            let search = Search {
+                text: &filter,
+                ..Search::default()
+            };
+            let listed: BTreeSet<AttemptKey> = job_groups(&app.cluster, &search, Order::Cpus)
+                .iter()
+                .flat_map(|group| group.attempts.iter().map(|attempt| attempt.key))
+                .collect();
+            assert!(!listed.is_empty(), "{filter:?} lists nothing");
+            let running = app.cluster.running.values().map(|running| &running.attempt);
+            for attempt in running.chain(app.cluster.queue.values()) {
+                assert_eq!(
+                    scene.shows_attempt(attempt),
+                    listed.contains(&attempt.key),
+                    "{filter:?} on {}",
+                    attempt.printed_id()
+                );
+            }
+        }
+        app.filter.text = "Z10 drain".into();
+        assert!(
+            Scene::new(&app).shows(&["z1014", "draining"]),
+            "words may match apart"
+        );
     }
 }

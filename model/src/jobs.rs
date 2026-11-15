@@ -399,11 +399,7 @@ impl<'a> JobGroup<'a> {
 /// assert_eq!(job_groups(&cluster, &pending, Order::default())[0].tasks(), 4);
 /// ```
 pub fn job_groups<'a>(cluster: &'a Cluster, search: &Search, order: Order) -> Vec<JobGroup<'a>> {
-    let words: Vec<String> = search
-        .text
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect();
+    let words = Words::of(search.text);
     let running = cluster
         .running
         .values()
@@ -417,7 +413,7 @@ pub fn job_groups<'a>(cluster: &'a Cluster, search: &Search, order: Order) -> Ve
         let shown = search.phase.is_none_or(|only| only == phase)
             && search.login.is_none_or(|login| *login == attempt.login)
             && (!search.gpus || attempt.gpus > 0)
-            && matches(cluster, attempt, &words);
+            && words.found_in_attempt(cluster, attempt);
         if shown {
             groups
                 .entry(GroupKey::of(attempt, phase))
@@ -449,30 +445,71 @@ pub fn job_groups<'a>(cluster: &'a Cluster, search: &Search, order: Order) -> Ve
     groups
 }
 
-/// Whether every word appears in what the attempt shows.
-fn matches(cluster: &Cluster, attempt: &Attempt, words: &[String]) -> bool {
-    if words.is_empty() {
-        return true;
+/// A search's words, without regard to case. A text matches when it holds every word.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::jobs::Words;
+///
+/// let words = Words::of("Otter 5days");
+/// assert!(words.found_in(&["otter", "Otter Ott", "5days,long"]));
+/// assert!(!words.found_in(&["otter", "4hours"]), "every word must appear");
+/// assert!(Words::of("  ").found_in(&[]), "no words match everything");
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Words(Vec<String>);
+
+impl Words {
+    /// The words of `text`, split on whitespace.
+    pub fn of(text: &str) -> Self {
+        Self(text.split_whitespace().map(str::to_lowercase).collect())
     }
-    let name = cluster
-        .users
-        .get(&attempt.login)
-        .and_then(|user| user.name.as_deref());
-    let nodes = attempt.nodes.iter().map(|node| node.0.as_str());
-    let text = [
-        attempt.login.0.as_str(),
-        name.unwrap_or(""),
-        &attempt.printed_id(),
-        &attempt.name,
-        &partitions(attempt),
-        attempt.reason.as_deref().unwrap_or(""),
-    ]
-    .into_iter()
-    .chain(nodes)
-    .collect::<Vec<_>>()
-    .join(" ")
-    .to_lowercase();
-    words.iter().all(|word| text.contains(word.as_str()))
+
+    /// Whether every word appears in one of `texts`.
+    pub fn found_in(&self, texts: &[&str]) -> bool {
+        self.0.is_empty() || {
+            let texts: Vec<String> = texts.iter().map(|text| text.to_lowercase()).collect();
+            self.0
+                .iter()
+                .all(|word| texts.iter().any(|text| text.contains(word.as_str())))
+        }
+    }
+
+    /// Whether every word appears in what the job list shows of `attempt`: its login, full name, ID,
+    /// name, partitions, nodes or reason.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::Words;
+    ///
+    /// let pending = cluster.queue.values().next().unwrap();
+    /// assert!(Words::of("4242 priority").found_in_attempt(&cluster, pending));
+    /// assert!(!Words::of("z1").found_in_attempt(&cluster, pending), "it runs nowhere yet");
+    /// ```
+    pub fn found_in_attempt(&self, cluster: &Cluster, attempt: &Attempt) -> bool {
+        if self.0.is_empty() {
+            return true;
+        }
+        let name = cluster
+            .users
+            .get(&attempt.login)
+            .and_then(|user| user.name.as_deref());
+        let id = attempt.printed_id();
+        let partitions = partitions(attempt);
+        let mut texts = vec![
+            attempt.login.0.as_str(),
+            name.unwrap_or(""),
+            &id,
+            &attempt.name,
+            &partitions,
+            attempt.reason.as_deref().unwrap_or(""),
+        ];
+        texts.extend(attempt.nodes.iter().map(|node| node.0.as_str()));
+        self.found_in(&texts)
+    }
 }
 
 fn partitions(attempt: &Attempt) -> String {

@@ -7,6 +7,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 ### Changed
 
 - `record --pseudonymize` and `pseudonymize` also rewrite free-text reasons of jobs and nodes as `reason1`, `reason2` and so on, and every error's text as a fixed string. Reasons that are one word, as Slurm's own are, stay. Before, a job's reason could quote `user=` from an association message, a node's reason kept what an operator typed, and an error could quote raw squeue or scontrol output.
+- Every TUI panel reads the filter as the jobs panel does. Each word must appear in a login, full name, partition, node, job ID, job name or reason. Before, the other panels looked for the whole text in one field, so `otter long` or a job ID showed nothing there.
 
 ### Fixed
 

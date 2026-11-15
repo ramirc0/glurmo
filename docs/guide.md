@@ -110,7 +110,7 @@ Press `e` to edit the layout and theme on the live page:
 | `q` | Quit |
 | `tab` | Focus the next panel |
 | `↑` `↓` `j` `k` | Scroll the focused panel |
-| `/` | Filter by user, partition or job name |
+| `/` | Filter by words that must all appear in a user, partition, node, job ID, job name or reason |
 | `m` | Show only your jobs, or everyone again |
 | `f` | Fill the screen with the focused panel, or show the layout again |
 | `esc` | Clear the filter, then the fill |
