@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.100"
 description = "Live view of who holds which cores and GPUs on a batch-scheduler cluster"
 publish = false
+license = "GPL-2.0-or-later"
+repository = "https://github.com/ramirc0/glurmo"
+readme = "README.md"
+authors = ["Christian Ramirez <christian.ramirez1@umassmed.edu>"]
 
 [dependencies]
 glurmo-model = { path = "model" }

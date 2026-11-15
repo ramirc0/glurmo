@@ -5,6 +5,8 @@ edition = "2024"
 rust-version = "1.100"
 description = "The cluster model glurmo's sampler, terminal view and web view share"
 publish = false
+license = "GPL-2.0-or-later"
+repository = "https://github.com/ramirc0/glurmo"
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }

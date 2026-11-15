@@ -5,6 +5,8 @@ edition = "2024"
 rust-version = "1.100"
 description = "glurmo's web view, compiled to wasm and served by `glurmo serve`"
 publish = false
+license = "GPL-2.0-or-later"
+repository = "https://github.com/ramirc0/glurmo"
 
 [dependencies]
 gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
