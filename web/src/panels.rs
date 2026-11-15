@@ -89,10 +89,25 @@ pub fn Header() -> impl IntoView {
     view! {
         <header class="panel header">
             <div class="brand">
-                <span class="site">{move || state.cluster_name.get()}</span>
+                <span class="site">
+                    {move || state.cluster_name.get()}
+                    {move || {
+                        state
+                            .replay
+                            .get()
+                            .map(|playhead| {
+                                let speed = playhead
+                                    .speed
+                                    .map_or_else(|| "paused".to_owned(), |speed| format!("{speed}×"));
+                                view! { <span class="badge">{format!("replay · {speed}")}</span> }
+                            })
+                    }}
+                </span>
                 <span class="when">
                     {move || {
-                        if state.cluster.with(|cluster| cluster.at.is_some()) {
+                        if let Some(playhead) = state.replay.get() {
+                            clock(playhead.time(), true)
+                        } else if state.cluster.with(|cluster| cluster.at.is_some()) {
                             clock(state.now.get(), true)
                         } else {
                             "waiting for the first sample".to_owned()

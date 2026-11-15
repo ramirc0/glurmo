@@ -595,3 +595,58 @@ aside.editor .note {
 aside.editor a {
   color: var(--text);
 }
+
+.history .timeline {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.controls {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 14px;
+  vertical-align: 1px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.controls input,
+.controls select,
+.controls button {
+  height: 16px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--overlay);
+  color: var(--text);
+  font: 500 11px var(--mono);
+}
+
+.controls input {
+  width: 6ch;
+}
+
+.controls button {
+  cursor: pointer;
+}
+
+.controls button.on {
+  background: var(--text);
+  color: var(--base);
+}
+
+.header .badge {
+  margin-left: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--drain);
+  color: var(--base);
+  font: 700 10px/1.4 var(--sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  vertical-align: 3px;
+}

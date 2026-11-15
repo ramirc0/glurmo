@@ -8,13 +8,14 @@ use leptos::task::spawn_local;
 use rtviz_model::layout::Layout;
 use rtviz_model::theme::Theme;
 use rtviz_model::usage::{Step, Usage, step_for};
-use rtviz_model::{Cluster, Delta};
+use rtviz_model::{Cluster, Delta, UnixTime};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::Closure;
 use web_sys::{EventSource, MessageEvent};
 
+use crate::replay::update_live;
 use crate::shelf::Shelf;
 use crate::state::{Link, State};
 
@@ -23,6 +24,9 @@ const REOPEN: Duration = Duration::from_secs(5);
 
 /// How often usage history is read again.
 const USAGE_EVERY: Duration = Duration::from_secs(60);
+
+/// How long the timeline must rest before usage is read for it.
+const SETTLE: Duration = Duration::from_millis(150);
 
 /// The first event of a stream: the site and the whole cluster.
 #[derive(Deserialize)]
@@ -48,16 +52,16 @@ pub fn follow(state: State) {
     listen(&source, "snapshot", move |data| {
         let snapshot: Snapshot = serde_json::from_str(data)?;
         state.cluster_name.set(snapshot.site.cluster);
-        state.cluster.set(snapshot.cluster);
+        update_live(state, |cluster, _| *cluster = snapshot.cluster);
         count("snapshots");
         Ok(())
     });
     listen(&source, "delta", move |data| {
         let delta: Delta = serde_json::from_str(data)?;
-        state
-            .cluster
-            .with_untracked(|cluster| state.ticker.update(|ticker| ticker.record(cluster, &delta)));
-        state.cluster.update(|cluster| cluster.apply(&delta));
+        update_live(state, |cluster, ticker| {
+            ticker.record(cluster, &delta);
+            cluster.apply(&delta);
+        });
         count("deltas");
         Ok(())
     });
@@ -161,35 +165,55 @@ pub fn load_library(state: State) {
     });
 }
 
-/// Reads usage history into `state` now, every minute, and whenever the layout's history span changes.
+/// Reads usage history into `state` now, every minute, and whenever the timeline moves. It reads a span
+/// either side of the one shown, so a pan draws at once. A burst of moves reads once, after it settles.
 pub fn watch_usage(state: State) {
     let ticks = RwSignal::new(0_u64);
     set_interval(move || ticks.update(|count| *count += 1), USAGE_EVERY);
     let span_s = Memo::new(move |_| state.history_span_s());
+    let end = Memo::new(move |_| state.timeline.with(|timeline| timeline.end));
+    let asked = StoredValue::new(0_u64);
     Effect::new(move |_| {
         ticks.track();
-        let span_s = span_s.get();
-        spawn_local(async move { state.usage.set(usage(span_s).await) });
+        let (span_s, end) = (span_s.get(), end.get());
+        asked.update_value(|asked| *asked += 1);
+        let ask = asked.get_value();
+        set_timeout(
+            move || {
+                if asked.try_get_value() != Some(ask) {
+                    return;
+                }
+                spawn_local(async move {
+                    let usage = usage(span_s, end).await;
+                    if asked.try_get_value() == Some(ask) {
+                        state.usage.try_set(usage);
+                    }
+                });
+            },
+            SETTLE,
+        );
     });
 }
 
-/// Usage by login over the last `span_s` seconds.
-async fn usage(span_s: i64) -> Result<Usage, String> {
-    let to = crate::paint::now().0;
-    let from = to - span_s;
+/// Usage by login for a span of `span_s` ending at `end`, or now, with a span either side as far as now.
+async fn usage(span_s: i64, end: Option<UnixTime>) -> Result<Usage, String> {
+    let now = crate::paint::now().0;
+    let end = end.map_or(now, |end| end.0.min(now));
+    let from = end - 2 * span_s;
+    let to = (end + span_s).min(now);
     let step_s = step_for(span_s);
     let url = format!("/api/usage?from={from}&to={to}&step={step_s}&by=login");
     let rows: Vec<Step> = fetch(&url).await?;
     Ok(Usage {
-        from: rtviz_model::UnixTime(from),
-        to: rtviz_model::UnixTime(to),
+        from: UnixTime(from),
+        to: UnixTime(to),
         step_s,
         steps: rows,
     })
 }
 
 /// Reads JSON from `url` on the server.
-async fn fetch<T: DeserializeOwned>(url: &str) -> Result<T, String> {
+pub async fn fetch<T: DeserializeOwned>(url: &str) -> Result<T, String> {
     let response = gloo_net::http::Request::get(url)
         .send()
         .await

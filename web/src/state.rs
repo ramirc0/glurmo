@@ -4,6 +4,8 @@
 use std::collections::BTreeMap;
 
 use leptos::prelude::*;
+
+use crate::replay::{Engine, Playhead};
 use rtviz_model::layout::{Layout, Pane};
 use rtviz_model::summary::Ticker;
 use rtviz_model::theme::Theme;
@@ -84,11 +86,26 @@ pub struct State {
     pub zoom: RwSignal<f64>,
     /// The browser's clock, ticking each second.
     pub now: RwSignal<UnixTime>,
+    /// What stretch of time the History panels show.
+    pub timeline: RwSignal<Timeline>,
+    /// Where a replay is, or `None` while the view is live.
+    pub replay: RwSignal<Option<Playhead>>,
+    /// What a replay keeps between frames, including the live view it set aside.
+    pub engine: StoredValue<Engine>,
     /// Whether this is a wall display: no cursor, and the highlight cycles through users.
     pub tv: bool,
 }
 
-/// What the address asks for, as in `?layout=tv&theme=rose-pine-dawn&me=otter&tv`.
+/// What stretch of time the History panels show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timeline {
+    /// How long, in seconds, or `None` for the layout's span.
+    pub span_s: Option<i64>,
+    /// Where it ends, or `None` to follow now.
+    pub end: Option<UnixTime>,
+}
+
+/// What the address asks for, as in `?layout=tv&theme=rose-pine-dawn&me=otter&tv&at=1794700000&speed=60`.
 pub struct Address {
     /// The layout.
     pub layout: String,
@@ -98,6 +115,10 @@ pub struct Address {
     pub me: Option<String>,
     /// Whether to run as a wall display. A layout named `tv` implies it.
     pub tv: bool,
+    /// A moment to replay from, in seconds since the epoch, given as such or as a date the browser reads.
+    pub at: Option<f64>,
+    /// How fast to replay it, or paused.
+    pub speed: Option<u32>,
 }
 
 impl Address {
@@ -108,11 +129,18 @@ impl Address {
         let get = |name: &str| params.as_ref().and_then(|params| params.get(name));
         let layout = get("layout").unwrap_or_else(|| "web".to_owned());
         let tv = params.as_ref().is_some_and(|params| params.has("tv")) || layout == "tv";
+        let at = get("at").and_then(|at| {
+            at.parse()
+                .ok()
+                .or_else(|| Some(js_sys::Date::parse(&at) / 1_000.0).filter(|at| at.is_finite()))
+        });
         Self {
             theme: get("theme").unwrap_or_else(|| "rose-pine".to_owned()),
             me: get("me"),
             layout,
             tv,
+            at,
+            speed: get("speed").and_then(|speed| speed.parse().ok()),
         }
     }
 }
@@ -155,6 +183,9 @@ impl State {
             fonts: RwSignal::new(0),
             zoom: RwSignal::new(crate::paint::zoom()),
             now: RwSignal::new(crate::paint::now()),
+            timeline: RwSignal::new(Timeline::default()),
+            replay: RwSignal::new(None),
+            engine: StoredValue::new(Engine::default()),
             tv: address.tv,
         }
     }
@@ -164,14 +195,19 @@ impl State {
         self.draft_layout.with(Option::is_some)
     }
 
-    /// How far back the layout's history panels look, in seconds: the longest of them, or a day.
+    /// How far back the History panels look, in seconds: the span picked on the timeline, else the
+    /// longest the layout gives, else a day.
     pub fn history_span_s(&self) -> i64 {
-        self.layout.with(|layout| {
-            layout
-                .as_ref()
-                .and_then(|layout| longest_history(&layout.root))
-                .unwrap_or(86_400)
-        })
+        self.timeline
+            .with(|timeline| timeline.span_s)
+            .unwrap_or_else(|| {
+                self.layout.with(|layout| {
+                    layout
+                        .as_ref()
+                        .and_then(|layout| longest_history(&layout.root))
+                        .unwrap_or(86_400)
+                })
+            })
     }
 }
 

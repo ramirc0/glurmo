@@ -1,12 +1,9 @@
 //! rtviz's web view: the cluster live from `rtviz serve`, laid out by the server's layouts and drawn
 //! with its themes.
 
-#![cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        clippy::large_types_passed_by_value,
-        reason = "State is a Copy bag of signal handles, half as large on wasm32, the only target that runs it"
-    )
+#![allow(
+    clippy::large_types_passed_by_value,
+    reason = "State is a Copy bag of signal handles, which Leptos passes around by value"
 )]
 
 mod base16;
@@ -18,6 +15,7 @@ mod history;
 mod paint;
 mod pane;
 mod panels;
+mod replay;
 mod shelf;
 mod state;
 mod theme_editor;
@@ -53,7 +51,9 @@ fn main() {
 /// The page: the picked layout, filled from the server's stream.
 #[component]
 fn App() -> impl IntoView {
-    let state = State::new(Address::read());
+    let address = Address::read();
+    let (at, speed) = (address.at, address.speed);
+    let state = State::new(address);
     let editor = Editor::default();
     provide_context(state);
     provide_context(editor);
@@ -63,6 +63,10 @@ fn App() -> impl IntoView {
     feed::watch_fonts(state);
     paint::watch_zoom(state);
     set_interval(move || state.now.set(paint::now()), TICK);
+    if let Some(at) = at {
+        replay::seek(state, at);
+        replay::play(state, speed);
+    }
     Effect::new(move |_| {
         let css = state
             .theme
@@ -76,8 +80,18 @@ fn App() -> impl IntoView {
             return;
         }
         let editing = state.draft_layout.with_untracked(Option::is_some);
+        let replaying = state.replay.with_untracked(Option::is_some);
         match event.key().as_str() {
             "e" | "Escape" if editing => Editor::close(state),
+            "Escape" if replaying => replay::live(state),
+            "0" if replaying => replay::play(state, None),
+            key @ ("1" | "2" | "3" | "4") if replaying => {
+                let speed = key
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| replay::SPEEDS.get(n - 1));
+                replay::play(state, speed.copied());
+            }
             "e" if !state.tv => editor.open(state),
             "t" if !editing => state
                 .themes
