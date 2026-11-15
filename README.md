@@ -1,4 +1,4 @@
-# glurmo
+<h1 align="center"><img src="docs/media/logo.svg" alt="" height="56" align="absmiddle"> glurmo</h1>
 
 A live view of who holds which cores and GPUs on a Slurm cluster.
 
