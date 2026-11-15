@@ -101,7 +101,7 @@ impl Issuer {
 pub struct Session {
     /// Where credentials come from.
     pub issuer: Issuer,
-    /// The UID that may decode our credentials: `SlurmUser`, once known.
+    /// The UID that may decode our credentials to slurmctld: `SlurmUser`, once known.
     pub decoder: Option<u32>,
     /// The protocol version.
     pub protocol: Protocol,
@@ -149,13 +149,13 @@ impl Controller {
 }
 
 /// Frames a request: its length, a header, a credential and the body. A slurmdbd connection puts the
-/// message type before the header too.
+/// message type before the header too, and its credential is for any UID, as libslurm signs it,
+/// because slurmdbd can run as another user than slurmctld's `SlurmUser`.
 async fn frame(session: &Session, kind: u16, flags: u16, body: &[u8]) -> Result<Vec<u8>> {
     let mut hash = vec![HASH_NONE];
     hash.extend(kind.to_be_bytes());
-    let credential = session
-        .issuer
-        .credential(session.decoder, &hash, session.protocol);
+    let decoder = session.decoder.filter(|_| flags & SLURMDBD_CONNECTION == 0);
+    let credential = session.issuer.credential(decoder, &hash, session.protocol);
     let (plugin, credential) = tokio::time::timeout(TIMEOUT, credential)
         .await
         .with_context(|| format!("no credential from {:?} within {TIMEOUT:?}", session.issuer))??;
@@ -623,6 +623,42 @@ mod tests {
             let outcome = tokio::time::timeout(Duration::from_secs(3_600), call).await;
             assert!(outcome.is_ok_and(|reply| reply.is_err()));
         }
+    }
+
+    /// A sack socket that signs one request and reports the UID it was asked to sign for.
+    async fn sack_once(socket: &std::path::Path) -> tokio::task::JoinHandle<u32> {
+        let listener = tokio::net::UnixListener::bind(socket).unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _protocol = stream.read_u16().await.unwrap();
+            let len = stream.read_u32().await.unwrap() as usize;
+            let mut rest = vec![0; len - 4];
+            stream.read_exact(&mut rest).await.unwrap();
+            let decoder = Unpack::new(&rest[4..]).u32().unwrap();
+            stream.write_u32(4).await.unwrap();
+            stream.write_all(b"a.b\0").await.unwrap();
+            decoder
+        })
+    }
+
+    #[tokio::test]
+    async fn slurmdbd_credentials_are_for_any_uid_as_libslurm_signs_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("sack.socket");
+        let session = Session {
+            issuer: Issuer::Sack(socket.clone()),
+            decoder: Some(500),
+            protocol: Protocol::V23_11,
+        };
+        let signed = sack_once(&socket).await;
+        frame(&session, 2007, 0, &[]).await.unwrap();
+        assert_eq!(signed.await.unwrap(), 500);
+        std::fs::remove_file(&socket).unwrap();
+        let signed = sack_once(&socket).await;
+        frame(&session, 6500, GLOBAL_AUTH_KEY | SLURMDBD_CONNECTION, &[])
+            .await
+            .unwrap();
+        assert_eq!(signed.await.unwrap(), u32::MAX);
     }
 
     #[test]
