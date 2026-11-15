@@ -32,8 +32,13 @@ const GROUP_GAP: f64 = 26.0;
 /// A full tile's padding, name line, and gauge lines or bare bottom edge.
 const PAD: f64 = 8.0;
 const HEAD: f64 = 20.0;
-const FOOT: f64 = 32.0;
-const BARE_FOOT: f64 = 8.0;
+const BARE_FOOT: f64 = PAD;
+/// Gauge lines: how far their text rises above its baseline, how far a tick hangs below it, and the
+/// distance between the two baselines. The lines keep `PAD` from the cores above and the edge below.
+const GAUGE_RISE: f64 = 7.5;
+const GAUGE_DROP: f64 = 2.5;
+const GAUGE_ROW: f64 = 13.0;
+const FOOT: f64 = PAD + GAUGE_RISE + GAUGE_ROW + GAUGE_DROP + PAD;
 const MIN_TILE_W: f64 = 116.0;
 /// The shortest gauge track worth drawing.
 const MIN_TRACK: f64 = 16.0;
@@ -838,8 +843,8 @@ impl Ink<'_> {
     fn gauges(&self, node: &Node, frame: Rect) {
         let ui = &self.theme.ui;
         let font = self.font(500, 10.0, true);
-        let first = frame.y + frame.h - FOOT + 11.0;
-        let second = first + 13.0;
+        let first = frame.y + frame.h - FOOT + PAD + GAUGE_RISE;
+        let second = first + GAUGE_ROW;
         let load_label = format!("load {}", node.load.map_or_else(|| "-".to_owned(), load));
         let mem_label = format!(
             "mem {}/{}",
