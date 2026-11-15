@@ -476,7 +476,11 @@ mod tests {
     #[test]
     fn a_never_started_job_has_no_start() {
         assert_eq!(epoch(0), None);
-        assert_eq!(epoch(i64::from(NO_VAL)), None, "a job cancelled while pending");
+        assert_eq!(
+            epoch(i64::from(NO_VAL)),
+            None,
+            "a job cancelled while pending"
+        );
         assert_eq!(epoch(1_794_731_534), Some(UnixTime(1_794_731_534)));
     }
 }
