@@ -10,6 +10,8 @@ pub mod sdiag;
 pub mod sinfo;
 pub mod source;
 pub mod squeue;
+#[allow(dead_code)]
+pub mod wire;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -77,6 +79,28 @@ pub struct RateLimit {
     pub refill_rate: u32,
     /// The refill period.
     pub refill_period_s: u32,
+}
+
+/// Reads the `rl_*` settings, which matter only once `rl_enable` is set. Missing ones take Slurm's defaults.
+pub(crate) fn rate_limit(parameters: &str) -> Result<Option<RateLimit>> {
+    let parameters: Vec<&str> = parameters.split(',').collect();
+    if !parameters.contains(&"rl_enable") {
+        return Ok(None);
+    }
+    let mut limit = RateLimit {
+        bucket_size: 30,
+        refill_rate: 2,
+        refill_period_s: 1,
+    };
+    for parameter in parameters {
+        match parameter.split_once('=') {
+            Some(("rl_bucket_size", value)) => limit.bucket_size = fields::integer(value)?,
+            Some(("rl_refill_rate", value)) => limit.refill_rate = fields::integer(value)?,
+            Some(("rl_refill_period", value)) => limit.refill_period_s = fields::integer(value)?,
+            _ => {}
+        }
+    }
+    Ok(Some(limit))
 }
 
 /// Facts about the site, read from the controller's configuration.

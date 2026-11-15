@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 
 use super::hostlist::expand_ids;
-use glurmo_model::{EndState, JobState, UnixTime};
+use glurmo_model::{EndState, JobState, NodeFlag, NodeState, UnixTime};
 
 /// Builds an `-O` spec such as `JobID:0|,Name:0`.
 ///
@@ -302,6 +302,38 @@ pub fn job_state(raw: &str) -> Result<JobState> {
     })
 }
 
+/// Maps a `StateComplete` value such as `mixed+drain+not_responding`.
+/// Unknown base states map to [`NodeState::Unknown`], and unknown flags stay only in the raw string.
+pub fn node_state(raw: &str) -> (NodeState, Vec<NodeFlag>) {
+    let mut parts = raw.split('+');
+    let base = parts.next().unwrap_or_default();
+    let flags: Vec<&str> = parts.collect();
+    let draining = flags.iter().any(|flag| matches!(*flag, "drain" | "fail"));
+    let state = match base {
+        "down" => NodeState::Down,
+        "idle" if draining => NodeState::Drained,
+        "mixed" | "allocated" if draining => NodeState::Draining,
+        "idle" => NodeState::Idle,
+        "mixed" => NodeState::Mixed,
+        "allocated" => NodeState::Allocated,
+        _ => NodeState::Unknown,
+    };
+    let mut neutral: Vec<NodeFlag> = flags
+        .iter()
+        .filter_map(|flag| match *flag {
+            "not_responding" => Some(NodeFlag::NotResponding),
+            "power_down" | "powered_down" | "powering_down" | "powering_up" => {
+                Some(NodeFlag::PowerSaving)
+            }
+            "reserved" => Some(NodeFlag::Reserved),
+            "maint" => Some(NodeFlag::Maintenance),
+            _ => None,
+        })
+        .collect();
+    neutral.dedup();
+    (state, neutral)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +437,22 @@ mod tests {
             JobState::Ended(EndState::OutOfMemory)
         );
         assert!(job_state("DANCING").is_err());
+    }
+
+    #[test]
+    fn neutral_states_cover_draining_and_power_saving() {
+        assert_eq!(node_state("mixed+drain"), (NodeState::Draining, Vec::new()));
+        assert_eq!(
+            node_state("idle+powered_down+reserved+maint"),
+            (
+                NodeState::Idle,
+                vec![
+                    NodeFlag::PowerSaving,
+                    NodeFlag::Reserved,
+                    NodeFlag::Maintenance
+                ]
+            )
+        );
+        assert_eq!(node_state("future"), (NodeState::Unknown, Vec::new()));
     }
 }

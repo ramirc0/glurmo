@@ -10,7 +10,7 @@ use super::fields::{
     gpu_indices, gres, integer, is_placeholder, job_state, megabytes, seconds, time,
 };
 use super::hostlist::{expand_hosts, expand_ids};
-use super::{RateLimit, Site, Version};
+use super::{Site, Version, rate_limit};
 use glurmo_model::{
     Attempt, JobId, JobState, Node, NodeCells, NodeName, Partition, PartitionName, Placement,
     UnixTime,
@@ -334,31 +334,10 @@ pub fn parse_config(stdout: &str) -> Result<Site> {
     })
 }
 
-/// Reads the `rl_*` settings, which matter only once `rl_enable` is set. Missing ones take Slurm's defaults.
-fn rate_limit(parameters: &str) -> Result<Option<RateLimit>> {
-    let parameters: Vec<&str> = parameters.split(',').collect();
-    if !parameters.contains(&"rl_enable") {
-        return Ok(None);
-    }
-    let mut limit = RateLimit {
-        bucket_size: 30,
-        refill_rate: 2,
-        refill_period_s: 1,
-    };
-    for parameter in parameters {
-        match parameter.split_once('=') {
-            Some(("rl_bucket_size", value)) => limit.bucket_size = integer(value)?,
-            Some(("rl_refill_rate", value)) => limit.refill_rate = integer(value)?,
-            Some(("rl_refill_period", value)) => limit.refill_period_s = integer(value)?,
-            _ => {}
-        }
-    }
-    Ok(Some(limit))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slurm::RateLimit;
     use glurmo_model::EndState;
 
     const RUNNING: &str = "JobId=3249466 JobName=bash UserId=otter(20001) GroupId=otter(20001) MCS_label=N/A Priority=1 Nice=0 Account=(null) QOS=normal JobState=RUNNING Reason=None Dependency=(null) Requeue=1 Restarts=0 BatchFlag=0 Reboot=0 ExitCode=0:0 DerivedExitCode=0:0 RunTime=46-09:38:24 TimeLimit=60-00:00:00 TimeMin=N/A SubmitTime=1790684947 EligibleTime=1790684947 AccrueTime=Unknown StartTime=1790684947 EndTime=1795868947 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=1790684947 Scheduler=Main Partition=long AllocNode:Sid=z012:657564 ReqNodeList=(null) ExcNodeList=z1059 NodeList=z1054 BatchHost=z1054 NumNodes=1 NumCPUs=72 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* ReqTRES=cpu=72,mem=1000000M,node=1,billing=72 AllocTRES=cpu=72,mem=1000000M,node=1,billing=72 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* JOB_GRES=(null)   Nodes=z1054 CPU_IDs=0-71 Mem=1000000 GRES= MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=NO Contiguous=0 Licenses=(null) Network=(null) Command=bash WorkDir=/home/otter Power= ";

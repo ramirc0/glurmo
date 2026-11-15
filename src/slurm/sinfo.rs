@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 
 use super::fields::{
     columns, format_spec, gpu_count, gpu_model, gres, integer, is_placeholder, megabytes,
+    node_state,
 };
-use glurmo_model::{Node, NodeFlag, NodeName, NodeState, PartitionName};
+use glurmo_model::{Node, NodeName, PartitionName};
 
 /// The `-O` fields, in the order [`parse`] reads them. Free text goes last.
 pub const FIELDS: [&str; 14] = [
@@ -112,41 +113,10 @@ fn node(line: &str) -> Result<Node> {
     })
 }
 
-/// Maps a `StateComplete` value such as `mixed+drain+not_responding`.
-/// Unknown base states map to [`NodeState::Unknown`], and unknown flags stay only in the raw string.
-fn node_state(raw: &str) -> (NodeState, Vec<NodeFlag>) {
-    let mut parts = raw.split('+');
-    let base = parts.next().unwrap_or_default();
-    let flags: Vec<&str> = parts.collect();
-    let draining = flags.iter().any(|flag| matches!(*flag, "drain" | "fail"));
-    let state = match base {
-        "down" => NodeState::Down,
-        "idle" if draining => NodeState::Drained,
-        "mixed" | "allocated" if draining => NodeState::Draining,
-        "idle" => NodeState::Idle,
-        "mixed" => NodeState::Mixed,
-        "allocated" => NodeState::Allocated,
-        _ => NodeState::Unknown,
-    };
-    let mut neutral: Vec<NodeFlag> = flags
-        .iter()
-        .filter_map(|flag| match *flag {
-            "not_responding" => Some(NodeFlag::NotResponding),
-            "power_down" | "powered_down" | "powering_down" | "powering_up" => {
-                Some(NodeFlag::PowerSaving)
-            }
-            "reserved" => Some(NodeFlag::Reserved),
-            "maint" => Some(NodeFlag::Maintenance),
-            _ => None,
-        })
-        .collect();
-    neutral.dedup();
-    (state, neutral)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glurmo_model::{NodeFlag, NodeState};
 
     const LIVE: &str = "\
 js029|gpujs029|idle+drain+invalid_reg|0/0/256/256|24.71|1031561|0|206460|gpu:8|gpu:0|(null)|2|64|Low RealMemory (reported:1031556 < 100.00% of configured:1031561)
@@ -222,23 +192,6 @@ z1080|4hours|idle+completing|0/104/0/104|377.20|1000000|0|552084|(null)|gpu:0|ca
         let nodes = parse(LIVE).unwrap();
         assert_eq!(node(&nodes, "z1079").mem_free_mb, None);
         assert_eq!(node(&nodes, "z1080").load, Some(377.2));
-    }
-
-    #[test]
-    fn neutral_states_cover_draining_and_power_saving() {
-        assert_eq!(node_state("mixed+drain"), (NodeState::Draining, Vec::new()));
-        assert_eq!(
-            node_state("idle+powered_down+reserved+maint"),
-            (
-                NodeState::Idle,
-                vec![
-                    NodeFlag::PowerSaving,
-                    NodeFlag::Reserved,
-                    NodeFlag::Maintenance
-                ]
-            )
-        );
-        assert_eq!(node_state("future"), (NodeState::Unknown, Vec::new()));
     }
 
     #[test]
