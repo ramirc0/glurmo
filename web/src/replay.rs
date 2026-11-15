@@ -265,7 +265,7 @@ fn advance(state: State) {
     });
     if let Some(speed) = playhead.speed.filter(|_| !held) {
         let next = (playhead.at + elapsed_s * f64::from(speed)).min(fetched_to);
-        if next >= now_ms / 1_000.0 - CAUGHT_UP_S {
+        if caught_up(next, fetched_to, now_ms / 1_000.0) {
             live(state);
             return;
         }
@@ -407,6 +407,13 @@ fn fetch_ahead(state: State, at: f64, speed: u32, now: f64) {
     });
 }
 
+/// Whether a playhead moving to `next` has caught up with `now`, and the live view should take over.
+/// Windows stop [`CAUGHT_UP_S`] short of now when fetched, so a playhead held at the end of the changes
+/// fetched has caught up once that end lies within twice that of now.
+fn caught_up(next: f64, fetched_to: f64, now: f64) -> bool {
+    next >= now - CAUGHT_UP_S || (next >= fetched_to && fetched_to >= now - 2.0 * CAUGHT_UP_S)
+}
+
 /// The next window of changes to fetch after `fetched_to`, once the playhead at `at` comes within half
 /// a `window` of it. It stops short of `now` by [`CAUGHT_UP_S`], because the server answers only up to
 /// its own clock, and the live view takes over there anyway.
@@ -418,6 +425,19 @@ fn next_window(fetched_to: f64, at: f64, window: f64, now: f64) -> Option<(f64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_playhead_at_the_end_of_the_changes_fetched_near_now_has_caught_up() {
+        let now = 10_000.0;
+        let (_, to) = next_window(9_800.0, 9_700.0, 600.0, now - 1.0).unwrap_or_default();
+        assert!(caught_up(to, to, now), "held at the last window's end");
+        assert!(
+            !caught_up(5_000.0, 5_000.0, now),
+            "waiting for the next window"
+        );
+        assert!(!caught_up(9_900.0, 9_984.0, now), "still replaying");
+        assert!(caught_up(9_990.0, 9_995.0, now));
+    }
 
     #[test]
     fn windows_come_when_the_playhead_nears_their_end_and_stop_short_of_now() {
