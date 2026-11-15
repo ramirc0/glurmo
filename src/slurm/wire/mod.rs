@@ -262,6 +262,18 @@ impl std::fmt::Display for ReturnCode {
 
 impl std::error::Error for ReturnCode {}
 
+/// The accounting records that convert. One that does not is logged and skipped, so it cannot block
+/// the rest.
+fn readable<T>(converted: impl Iterator<Item = Result<T>>) -> Vec<T> {
+    converted
+        .filter_map(|record| {
+            record
+                .inspect_err(|error| eprintln!("skipped an accounting record: {error:#}"))
+                .ok()
+        })
+        .collect()
+}
+
 /// The paths libslurm tries for slurm.conf, after `$SLURM_CONF`. The last is slurmd's cache on a
 /// configless cluster.
 const SLURM_CONF: [&str; 2] = ["/etc/slurm/slurm.conf", "/run/slurm/conf/slurm.conf"];
@@ -450,24 +462,18 @@ impl Wire {
             }
             Call::Outcomes(ids) => {
                 let (records, _) = self.accounting(&accounting::Query::Jobs(ids)).await?;
-                Answer::Outcomes(
-                    records
-                        .iter()
-                        .map(accounting::Record::outcome)
-                        .collect::<Result<_>>()?,
-                )
+                Answer::Outcomes(readable(records.iter().map(accounting::Record::outcome)))
             }
             Call::History { from, to } => {
                 let window = accounting::Query::Window(*from, *to);
                 let (records, tres) = self.accounting(&window).await?;
                 self.learn_logins(records.iter().map(accounting::Record::user_id))
                     .await;
-                Answer::History(
+                Answer::History(readable(
                     records
                         .iter()
-                        .map(|record| record.attempt(tres, &self.logins))
-                        .collect::<Result<_>>()?,
-                )
+                        .map(|record| record.attempt(tres, &self.logins)),
+                ))
             }
             Call::Stats => {
                 let reply = self
@@ -552,6 +558,12 @@ mod tests {
     use super::*;
     use crate::slurm::cli::Cli;
     use glurmo_model::{Attempt, JobId};
+
+    #[test]
+    fn an_unconvertible_record_is_skipped() {
+        let converted = vec![Ok(1), Err(anyhow::anyhow!("bad TRES")), Ok(3)];
+        assert_eq!(readable(converted.into_iter()), [1, 3]);
+    }
 
     #[test]
     fn controllers_come_from_slurmctld_host_lines() {

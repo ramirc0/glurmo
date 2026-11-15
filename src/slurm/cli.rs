@@ -1,7 +1,7 @@
 //! The fallback backend: Slurm's commands, run on this host and parsed. Also turns recordings of their
 //! output, which glurmo made before it spoke the protocol, into typed recordings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -40,6 +40,8 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 pub struct Cli {
     version: Option<Version>,
     nodes: Vec<Node>,
+    /// sacct lines already reported as unreadable, so a job asked about every tick is saved once.
+    reported: HashSet<String>,
 }
 
 impl Cli {
@@ -105,11 +107,38 @@ impl Cli {
                 }
                 Answer::Lookup(Lookup::Found(jobs.swap_remove(0)))
             }
-            Call::Outcomes(_) => Answer::Outcomes(sacct::parse(stdout)?),
-            Call::History { .. } => Answer::History(sacct::parse_history(stdout)?),
+            Call::Outcomes(_) => Answer::Outcomes(self.readable(exchange, sacct::parse(stdout))),
+            Call::History { .. } => {
+                Answer::History(self.readable(exchange, sacct::parse_history(stdout)))
+            }
             Call::Stats => Answer::Stats(sdiag::parse(stdout)?),
         };
         Ok(answer)
+    }
+}
+
+impl Cli {
+    /// The records of a sacct read. Lines that did not parse are logged and kept for a fixture, once
+    /// each, so one cannot block the rest.
+    fn readable<T>(&mut self, exchange: &Exchange, read: sacct::Read<T>) -> Vec<T> {
+        let new: Vec<_> = read
+            .unreadable
+            .into_iter()
+            .filter(|unreadable| self.reported.insert(unreadable.line.clone()))
+            .collect();
+        if !new.is_empty() {
+            let kept = keep_unparsed(exchange).map_or_else(
+                |error| format!("not saved: {error:#}"),
+                |path| format!("saved to {}", path.display()),
+            );
+            for unreadable in &new {
+                eprintln!(
+                    "skipped a sacct line ({kept}): {}: {:?}",
+                    unreadable.error, unreadable.line
+                );
+            }
+        }
+        read.records
     }
 }
 

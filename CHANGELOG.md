@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Changed
 
+- One accounting line or record that cannot be read is logged, saved once to `unparsed.jsonl`, and skipped. Before, it failed its whole read, and a backfill could stall on it.
 - A drag on the history timeline highlights a stretch and zooms to it, instead of panning. The wheel still pans.
 
 ### Fixed

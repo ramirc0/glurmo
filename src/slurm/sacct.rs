@@ -43,16 +43,45 @@ pub fn argv(jobs: &[JobId]) -> Vec<String> {
     .collect()
 }
 
-/// Parses the output of [`argv`].
-///
-/// # Errors
-///
-/// Fails on a line with too few columns or a value that does not parse.
-pub fn parse(stdout: &str) -> Result<Vec<Outcome>> {
-    stdout
-        .lines()
-        .map(|line| outcome(line).with_context(|| format!("sacct line {line:?}")))
-        .collect()
+/// What a read of sacct's output gave: the records that parsed, and the lines that did not.
+#[derive(Debug)]
+pub struct Read<T> {
+    /// Records from the lines that parsed.
+    pub records: Vec<T>,
+    /// Lines that did not parse, set aside so one cannot block the rest.
+    pub unreadable: Vec<Unreadable>,
+}
+
+/// A line of sacct's output that did not parse, and why.
+#[derive(Debug)]
+pub struct Unreadable {
+    /// The line.
+    pub line: String,
+    /// Why it did not parse.
+    pub error: String,
+}
+
+fn read<T>(stdout: &str, record: impl Fn(&str) -> Result<T>) -> Read<T> {
+    let mut read = Read {
+        records: Vec::new(),
+        unreadable: Vec::new(),
+    };
+    for line in stdout.lines() {
+        match record(line) {
+            Ok(parsed) => read.records.push(parsed),
+            Err(error) => read.unreadable.push(Unreadable {
+                line: line.to_owned(),
+                error: format!("{error:#}"),
+            }),
+        }
+    }
+    read
+}
+
+/// Parses the output of [`argv`], setting aside lines with too few columns or a value that does
+/// not parse.
+pub fn parse(stdout: &str) -> Read<Outcome> {
+    read(stdout, outcome)
 }
 
 fn outcome(line: &str) -> Result<Outcome> {
@@ -113,16 +142,10 @@ pub fn history_argv(from: UnixTime, to: UnixTime) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Parses the output of [`history_argv`] into attempts. Accounting keeps no reasons or names, so those stay empty.
-///
-/// # Errors
-///
-/// Fails on a line with too few columns or a value that does not parse.
-pub fn parse_history(stdout: &str) -> Result<Vec<Attempt>> {
-    stdout
-        .lines()
-        .map(|line| accounted(line).with_context(|| format!("sacct line {line:?}")))
-        .collect()
+/// Parses the output of [`history_argv`] into attempts, setting aside lines that do not parse.
+/// Accounting keeps no reasons or names, so those stay empty.
+pub fn parse_history(stdout: &str) -> Read<Attempt> {
+    read(stdout, accounted)
 }
 
 /// Reads one allocation. A pending job has no allocation yet, so its CPUs, memory and GPUs come from the request.
@@ -203,7 +226,7 @@ mod tests {
     #[test]
     fn a_stepped_array_range_counts_its_tasks() {
         let line = "1754696|1754696_[3-15:2]|kite|b200-batch|CANCELLED by 20001|0|3||billing=3,cpu=3,gres/gpu:b200=1,gres/gpu=1,mem=32G,node=1|00:30:00|1794442167|None|1794453518|None assigned";
-        let attempt = parse_history(line).unwrap().remove(0);
+        let attempt = parse_history(line).records.remove(0);
         let array = attempt.array.unwrap();
         assert_eq!((array.spec.as_str(), array.count), ("3-15:2", 7));
     }
@@ -230,7 +253,7 @@ mod tests {
 3923677|3923677|lynx|gpuh200|CANCELLED by 20001|32|32|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|billing=32,cpu=32,gres/gpu=4,mem=256G,node=1|14-00:00:00|1794524389|1794524389|1794600000|z028
 ",
         )
-        .unwrap();
+        .records;
 
         let range = &attempts[0];
         assert_eq!(range.key.job, JobId(3_441_951));
@@ -274,7 +297,7 @@ mod tests {
 3963301|1794695660|1794695900|CANCELLED by 20001
 ",
         )
-        .unwrap();
+        .records;
         assert_eq!(
             outcomes[0],
             Outcome {
@@ -294,7 +317,16 @@ mod tests {
     }
 
     #[test]
-    fn short_lines_fail() {
-        assert!(parse("3848267|1794244136").is_err());
+    fn an_unreadable_line_is_set_aside_and_the_rest_read() {
+        let read = parse("3848267|1794244136\n3848268|1794244136|1794244200|COMPLETED\n");
+        assert_eq!(read.records.len(), 1);
+        assert_eq!(read.records[0].key.job, JobId(3_848_268));
+        assert_eq!(read.unreadable.len(), 1);
+        assert_eq!(read.unreadable[0].line, "3848267|1794244136");
+        assert!(
+            read.unreadable[0].error.contains("columns"),
+            "{}",
+            read.unreadable[0].error
+        );
     }
 }
