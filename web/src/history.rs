@@ -5,7 +5,7 @@
 use glurmo_model::layout::Span;
 use glurmo_model::units::thousands;
 use glurmo_model::usage::Column;
-use glurmo_model::{Login, UnixTime, summary};
+use glurmo_model::{Login, UnixTime};
 use leptos::prelude::*;
 use web_sys::CanvasRenderingContext2d;
 
@@ -80,14 +80,13 @@ pub fn History(span: Span) -> impl IntoView {
         )]
         let count = (graph_w / COLUMN).floor() as u16;
         let columns = usage.columns(from, span_s, count);
-        let capacity = state.cluster.with(|cluster| {
-            state
-                .occupancy
-                .with(|occupancy| summary::cores(cluster, occupancy).total)
-        });
+        // Every node's cores, up or not, so the scale holds still as nodes fail and between live and replay.
+        let installed: u64 = state
+            .cluster
+            .with(|cluster| cluster.nodes.iter().map(|node| u64::from(node.cores)).sum());
         let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
         let peak = columns.iter().map(total).max().unwrap_or(0);
-        let scale = capacity.max(peak).max(1);
+        let scale = installed.max(peak).max(1);
         state.cluster.with(|cluster| {
             for (i, column) in columns.iter().enumerate() {
                 #[expect(clippy::cast_precision_loss, reason = "a small count")]
