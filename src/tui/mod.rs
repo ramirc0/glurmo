@@ -40,26 +40,26 @@ use glurmo_model::Login;
 const LIBRARY_EVERY: Duration = Duration::from_secs(2);
 
 /// Runs the view until the user quits or a signal asks it to stop. It follows the server at `server`, or samples the cluster
-/// in-process when that is `None`. Stderr goes to `$XDG_STATE_HOME/glurmo/tui.log` meanwhile.
+/// in-process when that is `None`. It shows `me`'s jobs as the viewer's, or `$USER`'s when that is
+/// `None`. Stderr goes to `$XDG_STATE_HOME/glurmo/tui.log` meanwhile.
 ///
 /// # Errors
 ///
 /// Fails when the sampler cannot start, the terminal cannot be set up, or the log cannot be opened.
-pub async fn run(config: &Config, server: Option<&str>) -> Result<()> {
+pub async fn run(config: &Config, server: Option<&str>, me: Option<Login>) -> Result<()> {
     let feed = match server {
         Some(server) => Feed::remote(server)?,
         None => Feed::embedded(config).await?,
     };
     let dir = crate::xdg::config_home()?.join("glurmo");
-    let me = std::env::var("USER")
-        .or_else(|_| std::env::var("LOGNAME"))
-        .unwrap_or_default();
-    let mut app = App::new(
-        Library::load(&dir),
-        &config.tui,
-        Login(me),
-        TimeZone::system(),
-    );
+    let me = me.unwrap_or_else(|| {
+        Login(
+            std::env::var("USER")
+                .or_else(|_| std::env::var("LOGNAME"))
+                .unwrap_or_default(),
+        )
+    });
+    let mut app = App::new(Library::load(&dir), &config.tui, me, TimeZone::system());
     let (sender, mut updates) = mpsc::channel(64);
     feed.follow(sender.clone());
     let (span, spans) = watch::channel(app.history_span_s());

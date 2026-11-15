@@ -23,7 +23,7 @@ Config(
     sample: (jobs: "10s", nodes: "30s", partitions: "10m", stats: "60s", lookups: 25),
     store: (path: "/scratch/you/glurmo/cluster.sqlite", keep: Forever, backfill: Days(30)),
     server: (listen: "127.0.0.1:8765"),
-    tui: (server: "http://head:8765", layout: "tui", theme: "rose-pine"),
+    tui: (server: "http://head:8765", layout: "tui", theme: "rose-pine", me: "otter"),
     names: FullName,
     gpu_models: {"gpu": "V100", "gpuh200": "H200"},
 )
@@ -32,6 +32,7 @@ Config(
 * `slurm` picks the backend. `Wire` speaks Slurm's protocol. `Cli` runs `squeue`, `sinfo`, `scontrol`, `sdiag` and `sacct` instead, for a cluster newer than the protocol glurmo knows. `controller` overrides the addresses in slurm.conf.
 * `sample` sets how often each kind of data is read. `lookups` caps placement lookups per tick, and only the `Cli` backend makes them.
 * `store` must sit on a local disk, such as `/scratch`. SQLite locks are unreliable on NFS, Ceph or Lustre. `backfill` reads that much history from accounting into a new store.
+* `tui` picks the server the terminal view follows and its first layout and theme. `me` names whose jobs `m` and the `Mine` panel show, in place of `$USER`.
 * `names` shows full names from the account database, or logins with `Login`.
 * `gpu_models` names the GPUs in each partition, for clusters whose GRES lists no GPU type.
 
@@ -49,12 +50,13 @@ Run the server. `systemd/glurmo.service` runs it as a user unit, and its header 
 glurmo serve
 ```
 
-Follow a server in the terminal, or the server that the config names. Without a server, `--embedded` samples the cluster in-process and backfills the last day.
+Follow a server in the terminal, or the server that the config names. Without a server, `--embedded` samples the cluster in-process and backfills the last day. `--me` shows another login's jobs as yours, as `?me=` does on the web.
 
 ```
 glurmo tui --server http://head:8765
 glurmo tui
 glurmo tui --embedded
+glurmo tui --me otter
 ```
 
 ## Web view

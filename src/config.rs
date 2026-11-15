@@ -9,6 +9,7 @@ use ron::extensions::Extensions;
 use serde::{Deserialize, Serialize};
 
 use crate::slurm::{Backend, Intervals};
+use glurmo_model::Login;
 
 /// Everything `config.ron` can set. Every field has a default.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -101,6 +102,8 @@ pub struct Tui {
     pub layout: String,
     /// The theme to start with.
     pub theme: String,
+    /// Whose jobs `m` and the `Mine` panel show. `None` takes `$USER`.
+    pub me: Option<Login>,
 }
 
 impl Default for Tui {
@@ -109,6 +112,7 @@ impl Default for Tui {
             server: None,
             layout: "tui".to_owned(),
             theme: "rose-pine".to_owned(),
+            me: None,
         }
     }
 }
@@ -211,7 +215,7 @@ mod tests {
                 store: (path: "/scratch/otter/glurmo/zlurm.sqlite", keep: Days(365), backfill: Days(7)),
                 server: (listen: "0.0.0.0:8765"),
                 names: FullName,
-                tui: (server: "http://head:8765", layout: "wide", theme: "rose-pine-dawn"),
+                tui: (server: "http://head:8765", layout: "wide", theme: "rose-pine-dawn", me: "otter"),
                 gpu_models: {"gpu": "V100", "gpuh200": "H200"},
             )"#,
         )
@@ -238,6 +242,7 @@ mod tests {
         assert_eq!(config.names, Names::FullName);
         assert_eq!(config.tui.server.as_deref(), Some("http://head:8765"));
         assert_eq!(config.tui.layout, "wide");
+        assert_eq!(config.tui.me, Some(Login("otter".into())));
         assert_eq!(config.gpu_models["gpuh200"], "H200");
     }
 

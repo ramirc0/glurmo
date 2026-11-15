@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- `glurmo tui --me LOGIN`, and `me` in the config's `tui` section, name whose jobs `m` and the `Mine` panel show, as `?me=` does on the web. Before, the TUI always took `$USER`, which is wrong when following another site's server.
+
 ### Changed
 
 - `record --pseudonymize` and `pseudonymize` also rewrite free-text reasons of jobs and nodes as `reason1`, `reason2` and so on, and every error's text as a fixed string. Reasons that are one word, as Slurm's own are, stay. Before, a job's reason could quote `user=` from an association message, a node's reason kept what an operator typed, and an error could quote raw squeue or scontrol output.

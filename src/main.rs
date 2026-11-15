@@ -28,7 +28,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 
 use config::{Config, Keep, Storage};
-use glurmo_model::{Cluster, JobState, Owner};
+use glurmo_model::{Cluster, JobState, Login, Owner};
 use hub::Hub;
 use library::Library;
 use sampler::Sampler;
@@ -68,6 +68,9 @@ enum Command {
         /// Sample the cluster in-process, even when the config names a server.
         #[arg(long)]
         embedded: bool,
+        /// Whose jobs `m` and the `Mine` panel show, in place of `$USER`. It overrides the config's.
+        #[arg(long, value_name = "LOGIN")]
+        me: Option<String>,
     },
     /// Print site facts, capabilities, each command's cost, and suggested intervals.
     Probe,
@@ -117,13 +120,18 @@ async fn main() -> Result<()> {
     let config = Config::load(cli.config.as_deref())?;
     match cli.command {
         Command::Serve { replay, speed } => serve(&config, replay.as_deref(), speed).await?,
-        Command::Tui { server, embedded } => {
+        Command::Tui {
+            server,
+            embedded,
+            me,
+        } => {
             let server = if embedded {
                 None
             } else {
                 server.or_else(|| config.tui.server.clone())
             };
-            tui::run(&config, server.as_deref()).await?;
+            let me = me.map(Login).or_else(|| config.tui.me.clone());
+            tui::run(&config, server.as_deref(), me).await?;
         }
         Command::Probe => {
             let mut slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
@@ -373,6 +381,15 @@ fn summarize(sample: &Sample) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tui_takes_a_viewer() {
+        let cli = Cli::try_parse_from(["glurmo", "tui", "--me", "otter"]).unwrap();
+        let Command::Tui { me, .. } = cli.command else {
+            panic!("not tui");
+        };
+        assert_eq!(me.as_deref(), Some("otter"));
+    }
 
     #[tokio::test]
     async fn a_stream_with_an_end_returns_once_sampling_stops() {
