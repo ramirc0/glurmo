@@ -188,12 +188,14 @@ pub mod seconds {
     ///
     /// # Errors
     ///
-    /// Fails on text that is not a duration, or on a negative one.
+    /// Fails on text that is not a duration, or on one shorter than a second.
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
         let text = String::deserialize(deserializer)?;
         let duration: jiff::SignedDuration = text.parse().map_err(D::Error::custom)?;
         u64::try_from(duration.as_secs())
-            .map_err(|_| D::Error::custom(format!("{text:?} is negative")))
+            .ok()
+            .filter(|&seconds| seconds >= 1)
+            .ok_or_else(|| D::Error::custom(format!("{text:?} is shorter than a second")))
     }
 }
 
@@ -253,5 +255,7 @@ mod tests {
         assert!(from_ron::<Config>("(nmaes: Login)").is_err());
         assert!(from_ron::<Config>(r#"(sample: (jobs: "soon"))"#).is_err());
         assert!(from_ron::<Config>(r#"(sample: (jobs: "-5s"))"#).is_err());
+        assert!(from_ron::<Config>(r#"(sample: (jobs: "0s"))"#).is_err());
+        assert!(from_ron::<Config>(r#"(sample: (nodes: "500ms"))"#).is_err());
     }
 }

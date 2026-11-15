@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- A sample interval under a second is a config error. Before, `"0s"` or `"500ms"` made glurmo call slurmctld without pause.
 - `/api/usage` and `/api/past/events` answer 400 to ranges whose length overflows. Before, a debug build panicked and a release build skipped the size limit.
 - An empty or relative `XDG_*_HOME` falls back to its default under `$HOME`, as the XDG spec says. Before, an empty `XDG_STATE_HOME` put the store under the current directory.
 - glurmo refuses to open a store whose schema is newer than it knows. Before, it opened it without a word.
