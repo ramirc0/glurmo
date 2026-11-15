@@ -4,6 +4,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
 ### Changed
 
 - The history chart redraws only when its usage, span, colors or size change, and at most once a frame while the wheel zooms or pans it. A replay moves a line over the chart instead of redrawing it. On zlurm, four seconds of replay at 60× redrew it 240 times before, and ten wheel steps redrew it ten times. Now they redraw it zero and two times.
@@ -77,6 +79,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - `glurmo record`, `pseudonymize`, `convert` and `serve --replay --speed`, for recordings, demos and test fixtures.
 - Account lookups through `/etc/passwd` and SSSD's socket, so the static binary sees directory users.
 
-[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ramirc0/glurmo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ramirc0/glurmo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ramirc0/glurmo/releases/tag/v0.1.0

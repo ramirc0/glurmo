@@ -1,6 +1,6 @@
 [package]
 name = "glurmo-web"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.100"
 description = "glurmo's web view, compiled to wasm and served by `glurmo serve`"
