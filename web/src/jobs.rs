@@ -88,7 +88,7 @@ pub fn Jobs() -> impl IntoView {
             )
         })
     };
-    let rows = move || state.cluster.with(|cluster| rows(state, cluster, picks));
+    let lines = move || state.cluster.with(|cluster| lines(state, cluster, picks));
     view! {
         <section class="panel jobs">
             <h2>"jobs" <small>{counts}</small> <Controls picks=picks/></h2>
@@ -97,7 +97,9 @@ pub fn Jobs() -> impl IntoView {
                     <thead>
                         <Headings order=picks.order/>
                     </thead>
-                    <tbody>{rows}</tbody>
+                    <tbody>
+                        <For each=lines key=Line::clone children=move |line| line.view(picks.open)/>
+                    </tbody>
                 </table>
             </div>
         </section>
@@ -185,25 +187,67 @@ fn Headings(order: RwSignal<Order>) -> impl IntoView {
     }
 }
 
-/// A row per group, and under each open group a row per job.
-fn rows(state: State, cluster: &Cluster, picks: Picks) -> Vec<AnyView> {
+/// A row of the list as it shows. The list keys its rows on their lines, so a change rebuilds only the
+/// rows whose text, color, members or openness changed.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Line {
+    /// A group, a lone job, or one job of an open group.
+    Row(Box<Row>),
+    /// How many jobs of an open group go unlisted.
+    More { group: GroupKey, unlisted: usize },
+}
+
+/// A row's place in the list.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Kind {
+    /// A group of one job.
+    Lone,
+    /// A group of more than one, which opens and closes on a click.
+    Group { open: bool, tasks: u64 },
+    /// One job of an open group.
+    Child,
+}
+
+/// The text of a row of jobs, worked out from the cluster, and the jobs it stands for.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Row {
+    kind: Kind,
+    group: GroupKey,
+    members: Members,
+    color: String,
+    name: String,
+    label: String,
+    title: String,
+    cpus: u64,
+    gpus: u64,
+    mem: String,
+    since: String,
+    left: String,
+    submitted: String,
+    place: String,
+}
+
+/// A line per group, and under each open group a line per job.
+fn lines(state: State, cluster: &Cluster, picks: Picks) -> Vec<Line> {
     let opened = picks.open.get();
-    let highlight = state.row_highlight();
-    let mut lines: Vec<AnyView> = Vec::new();
+    let mut lines = Vec::new();
     for group in picks.groups(state, cluster) {
         if group.attempts.len() == 1 {
-            lines.push(row(state, cluster, &group, highlight, None));
+            lines.push(Line::Row(Box::new(Row::of(
+                state,
+                cluster,
+                &group,
+                Kind::Lone,
+            ))));
             continue;
         }
-        let is_open = opened.contains(&group.key);
-        lines.push(row(
-            state,
-            cluster,
-            &group,
-            highlight,
-            Some((picks.open, is_open)),
-        ));
-        if !is_open {
+        let open = opened.contains(&group.key);
+        let kind = Kind::Group {
+            open,
+            tasks: group.tasks(),
+        };
+        lines.push(Line::Row(Box::new(Row::of(state, cluster, &group, kind))));
+        if !open {
             continue;
         }
         for attempt in group.attempts.iter().take(OPEN_ROWS) {
@@ -211,78 +255,121 @@ fn rows(state: State, cluster: &Cluster, picks: Picks) -> Vec<AnyView> {
                 key: group.key.clone(),
                 attempts: vec![*attempt],
             };
-            lines.push(child(state, cluster, &one, highlight));
+            lines.push(Line::Row(Box::new(Row::of(
+                state,
+                cluster,
+                &one,
+                Kind::Child,
+            ))));
         }
         if group.attempts.len() > OPEN_ROWS {
-            let more = format!(
-                "{} more · narrow the search to see them",
-                group.attempts.len() - OPEN_ROWS
-            );
-            lines.push(
-                view! {
-                    <tr class="child more">
-                        <td colspan="11">{more}</td>
-                    </tr>
-                }
-                .into_any(),
-            );
+            lines.push(Line::More {
+                group: group.key.clone(),
+                unlisted: group.attempts.len() - OPEN_ROWS,
+            });
         }
     }
     lines
 }
 
-/// A group's row, which opens and closes on a click when `toggle` is given, or a lone job's row.
-/// It lights up by `highlight`.
-fn row(
-    state: State,
-    cluster: &Cluster,
-    group: &JobGroup,
-    highlight: ReadSignal<Option<Highlight>>,
-    toggle: Option<(RwSignal<BTreeSet<GroupKey>>, bool)>,
-) -> AnyView {
-    let key = group.key.clone();
-    let click = toggle.map(|(open, _)| {
-        Callback::new(move |()| {
-            open.update(|open| {
-                if !open.remove(&key) {
-                    open.insert(key.clone());
+impl Line {
+    /// The table row. A group's row opens and closes it in `open` on a click.
+    fn view(self, open: RwSignal<BTreeSet<GroupKey>>) -> AnyView {
+        match self {
+            Self::Row(row) => row.view(open),
+            Self::More { unlisted, .. } => {
+                let more = format!("{unlisted} more · narrow the search to see them");
+                view! {
+                    <tr class="child more">
+                        <td colspan="11">{more}</td>
+                    </tr>
                 }
-            });
-        })
-    });
-    let class = match toggle {
-        Some((_, true)) => "group open",
-        Some((_, false)) => "group",
-        None => "",
-    };
-    let count =
-        toggle.map(|_| view! { <span class="count">{thousands(group.tasks())}</span> }.into_any());
-    let body = cells(state, cluster, group, count);
-    view! {
-        <Lit members=Members::of(group) highlight=highlight class=class click=click>
-            {body}
-        </Lit>
+                .into_any()
+            }
+        }
     }
-    .into_any()
 }
 
-/// One job in an open group. It lights up by `highlight`.
-fn child(
-    state: State,
-    cluster: &Cluster,
-    group: &JobGroup,
-    highlight: ReadSignal<Option<Highlight>>,
-) -> AnyView {
-    let body = cells(state, cluster, group, None);
-    view! {
-        <Lit members=Members::of(group) highlight=highlight class="child" click=None>
-            {body}
-        </Lit>
+impl Row {
+    fn of(state: State, cluster: &Cluster, group: &JobGroup, kind: Kind) -> Self {
+        let first: &Attempt = group.first();
+        let at = cluster.at.unwrap_or_default();
+        Self {
+            kind,
+            group: group.key.clone(),
+            members: Members::of(group),
+            color: color_of(state, &group.key.login),
+            name: display_name(cluster, &group.key.login),
+            label: group.label(),
+            title: if first.name.is_empty() {
+                "–".to_owned()
+            } else {
+                first.name.clone()
+            },
+            cpus: group.cpus(),
+            gpus: group.gpus(),
+            mem: group.mem_mb().map_or_else(|| "–".to_owned(), gigabytes),
+            since: group
+                .since()
+                .map_or_else(|| "–".to_owned(), |then| since(then, at)),
+            left: group.left_s(at).map_or_else(|| "–".to_owned(), span),
+            submitted: group
+                .submitted()
+                .map_or_else(String::new, |submit| clock(submit, true)),
+            place: group.place(),
+        }
     }
-    .into_any()
+
+    fn view(self, open: RwSignal<BTreeSet<GroupKey>>) -> AnyView {
+        let running = self.group.phase == Phase::Running;
+        let (class, tasks) = match self.kind {
+            Kind::Lone => ("", None),
+            Kind::Child => ("child", None),
+            Kind::Group { open: true, tasks } => ("group open", Some(tasks)),
+            Kind::Group { open: false, tasks } => ("group", Some(tasks)),
+        };
+        let click = tasks.map(|_| {
+            let key = self.group.clone();
+            Callback::new(move |()| {
+                open.update(|open| {
+                    if !open.remove(&key) {
+                        open.insert(key.clone());
+                    }
+                });
+            })
+        });
+        let tasks = tasks.map(|tasks| view! { <span class="count">{thousands(tasks)}</span> });
+        let color = self.color;
+        view! {
+            <Lit members=self.members class=class click=click>
+                <td class="name">
+                    <span
+                        class="state"
+                        class:pending=!running
+                        style:color=color.clone()
+                        style:background=running.then_some(color)
+                    ></span>
+                    <span class="login">{self.group.login.0.clone()}</span>
+                    <span class="full">{self.name}</span>
+                </td>
+                <td class="name job">{self.label} {tasks}</td>
+                <td class="name title">{self.title}</td>
+                <td class="name">{self.group.partitions.clone()}</td>
+                <td>{thousands(self.cpus)}</td>
+                <td class:dim=self.gpus == 0>{count(self.gpus)}</td>
+                <td>{self.mem}</td>
+                <td>{self.since}</td>
+                <td class="wide">{self.left}</td>
+                <td class="wide">{self.submitted}</td>
+                <td class="name where">{self.place}</td>
+            </Lit>
+        }
+        .into_any()
+    }
 }
 
 /// The jobs a row stands for, and the nodes they run on.
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Members {
     keys: BTreeSet<AttemptKey>,
     nodes: BTreeSet<NodeName>,
@@ -312,17 +399,18 @@ impl Members {
     }
 }
 
-/// A row that lights its jobs' cores on the Die while hovered, and lights itself while `highlight`, a
-/// copy of the page's, is on one of its jobs or nodes. A click runs `click`.
+/// A row that lights its jobs' cores on the Die while hovered, and lights itself while the page's
+/// highlight is on one of its jobs or nodes. It reads a copy of the highlight that dies with it. A click
+/// runs `click`.
 #[component]
 fn Lit(
     members: Members,
-    highlight: ReadSignal<Option<Highlight>>,
     class: &'static str,
     click: Option<Callback<()>>,
     children: Children,
 ) -> impl IntoView {
     let state = expect_context::<State>();
+    let highlight = state.row_highlight();
     let members = StoredValue::new(members);
     let lit = move || {
         members.with_value(|members| highlight.with(|highlight| members.lit_by(highlight.as_ref())))
@@ -351,47 +439,6 @@ fn Lit(
             {children()}
         </tr>
     }
-}
-
-/// The cells of a row. `tasks` follows the label of a group of more than one.
-fn cells(state: State, cluster: &Cluster, group: &JobGroup, tasks: Option<AnyView>) -> AnyView {
-    let first: &Attempt = group.first();
-    let at = cluster.at.unwrap_or_default();
-    let running = group.key.phase == Phase::Running;
-    let login = first.login.clone();
-    let name = display_name(cluster, &login);
-    let left = group.left_s(at).map_or_else(|| "–".to_owned(), span);
-    let submitted = group
-        .submitted()
-        .map_or_else(String::new, |submit| clock(submit, true));
-    let job_name = if first.name.is_empty() {
-        "–".to_owned()
-    } else {
-        first.name.clone()
-    };
-    view! {
-        <td class="name">
-            <span
-                class="state"
-                class:pending=!running
-                style:color=color_of(state, &login)
-                style:background=running.then(|| color_of(state, &login))
-            ></span>
-            <span class="login">{login.0.clone()}</span>
-            <span class="full">{name}</span>
-        </td>
-        <td class="name job">{group.label()} {tasks}</td>
-        <td class="name title">{job_name}</td>
-        <td class="name">{group.key.partitions.clone()}</td>
-        <td>{thousands(group.cpus())}</td>
-        <td class:dim=group.gpus() == 0>{count(group.gpus())}</td>
-        <td>{group.mem_mb().map_or_else(|| "–".to_owned(), gigabytes)}</td>
-        <td>{group.since().map_or_else(|| "–".to_owned(), |then| since(then, at))}</td>
-        <td class="wide">{left}</td>
-        <td class="wide">{submitted}</td>
-        <td class="name where">{group.place()}</td>
-    }
-    .into_any()
 }
 
 /// Scrolls the list just enough to show its first lit row.

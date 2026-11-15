@@ -15,6 +15,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - A node listing that names the same nodes sends only the nodes that changed. The full list goes out only when nodes join, leave or move. Before, any change sent every node. On zlurm's 15-minute fixture, node events shrink from 227 KB to 67 KB, and the whole stream from 994 KB to 834 KB.
 - The protocol backend places jobs from the tick's job listing, so each tick sends slurmctld one job-info request instead of two.
 - The protocol backend reads every field of each reply and fails one with bytes left over, so a layout it misreads shows as an error. It also checks the return code of slurmdbd's TRES list. Before, the configuration, scheduler statistics and TRES walks stopped early, and nothing checked what remained.
+- The jobs list keeps the rows whose text has not changed, so a delta or a filter change builds only the rows that appear or change. On a replay with 1,170 rows, ten deltas rebuilt 12,446 rows before and 2,833 now. A search that every row matched rebuilt all 1,170 before and none now.
 
 ### Removed
 
