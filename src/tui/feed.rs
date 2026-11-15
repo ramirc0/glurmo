@@ -17,7 +17,8 @@ use crate::store::{By, History, Settings, Store, UsageQuery};
 use glurmo_model::UnixTime;
 use glurmo_model::usage::{Usage, step_for};
 
-/// How long to wait before reconnecting to a server, as the server's `retry` field also says.
+/// How long to wait before reconnecting to a server, as the server's `retry` field also says, or
+/// before reading usage again after a failed read.
 const RETRY: Duration = Duration::from_secs(5);
 
 /// A stream that sends nothing for this long is dead. The server sends a keepalive every 15 s.
@@ -144,14 +145,14 @@ impl Feed {
     }
 
     /// Sends the usage over the last `span` seconds to `updates` every minute, and again whenever
-    /// `span` changes, until either closes.
+    /// `span` changes, until either closes. A read that fails is tried again after 5 s.
     pub fn watch_usage(&self, mut span: watch::Receiver<i64>, updates: mpsc::Sender<Update>) {
         let feed = self.clone();
         tokio::spawn(async move {
-            let mut ticks = tokio::time::interval(USAGE_EVERY);
+            let mut wait = Duration::ZERO;
             loop {
                 tokio::select! {
-                    _ = ticks.tick() => {}
+                    () = tokio::time::sleep(wait) => {}
                     changed = span.changed() => if changed.is_err() { return },
                 }
                 let span_s = *span.borrow_and_update();
@@ -159,6 +160,7 @@ impl Feed {
                     .usage(span_s)
                     .await
                     .map_err(|error| format!("{error:#}"));
+                wait = if usage.is_ok() { USAGE_EVERY } else { RETRY };
                 if updates.send(Update::Usage(usage)).await.is_err() {
                     return;
                 }
@@ -375,5 +377,19 @@ mod tests {
 
         let usage = feed.usage(86_400).await.unwrap();
         assert_eq!((usage.step_s, usage.steps), (300, Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn a_failed_usage_read_is_tried_again_within_seconds() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let feed = Feed::remote(&format!("http://127.0.0.1:{port}")).unwrap();
+        let (sender, mut updates) = mpsc::channel(4);
+        let (_span, spans) = watch::channel(3_600);
+        feed.watch_usage(spans, sender);
+        for _ in 0..2 {
+            assert!(matches!(next(&mut updates).await, Update::Usage(Err(_))));
+        }
     }
 }

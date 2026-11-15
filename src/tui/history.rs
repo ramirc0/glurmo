@@ -30,18 +30,21 @@ pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
         Span::Hours(hours) => format!("{hours} h"),
         Span::Days(days) => format!("{days} d"),
     };
-    let block = scene.block(
-        "cores in use",
-        &format!("{label}, stacked by user · queue in tasks"),
-        Focus::default(),
-    );
+    let (usage, error) = (&scene.app.usage, scene.app.usage_error.as_deref());
+    let mut about = format!("{label}, stacked by user · queue in tasks");
+    if let Some(error) = error.filter(|_| !usage.steps.is_empty()) {
+        about = format!("{about} · not updated: {error}");
+    }
+    let block = scene.block("cores in use", &about, Focus::default());
     let inner = block.inner(area);
     block.render(area, buf);
-    let usage = match &scene.app.usage {
-        Ok(usage) if !usage.steps.is_empty() => usage,
-        Ok(_) => return note(scene, "no history yet", inner, buf),
-        Err(error) => return note(scene, &format!("no history: {error}"), inner, buf),
-    };
+    if usage.steps.is_empty() {
+        let text = error.map_or_else(
+            || "no history yet".to_owned(),
+            |error| format!("no history: {error}"),
+        );
+        return note(scene, &text, inner, buf);
+    }
     if inner.height < 3 || inner.width <= LABELS || span_s <= 0 {
         return;
     }
@@ -172,4 +175,57 @@ fn axis(scene: &Scene, from: i64, span_s: i64, area: Rect, buf: &mut Buffer) {
 
 fn note(scene: &Scene, text: &str, area: Rect, buf: &mut Buffer) {
     Paragraph::new(Line::styled(text.to_owned(), scene.palette.muted)).render(area, buf);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use jiff::tz::TimeZone;
+
+    use super::*;
+    use crate::config::Tui;
+    use crate::library::Library;
+    use crate::tui::app::App;
+    use crate::tui::feed::Update;
+    use glurmo_model::UnixTime;
+    use glurmo_model::usage::{Step, Usage};
+
+    fn text(buf: &Buffer) -> String {
+        buf.content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_read_keeps_the_last_graph_and_says_why() {
+        let mut app = App::new(
+            Library::load(Path::new("/nonexistent")),
+            &Tui::default(),
+            Login("otter".into()),
+            TimeZone::UTC,
+        );
+        let steps = (0..12)
+            .map(|i| Step {
+                at: UnixTime(i * 300),
+                key: "otter".into(),
+                core_s: 300 * 64,
+                wait_s: 0,
+            })
+            .collect();
+        app.update(Update::Usage(Ok(Usage {
+            from: UnixTime(0),
+            to: UnixTime(3_600),
+            step_s: 300,
+            steps,
+        })));
+        app.update(Update::Usage(Err("connection refused".into())));
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        draw(&Scene::new(&app), Span::Hours(1), area, &mut buf);
+        let text = text(&buf);
+        assert!(text.contains('█'), "the graph stays:\n{text}");
+        assert!(text.contains("connection refused"), "{text}");
+    }
 }

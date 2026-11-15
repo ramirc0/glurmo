@@ -54,8 +54,10 @@ pub struct App {
     pub limits: Vec<u16>,
     /// The connection to the server.
     pub link: Link,
-    /// Usage history, or why it could not be read.
-    pub usage: Result<Usage, String>,
+    /// Usage history, as last read.
+    pub usage: Usage,
+    /// Why the latest read of usage history failed, if it did.
+    pub usage_error: Option<String>,
     /// Recent starts and ends, latest first.
     pub ticker: Ticker,
     /// The time zone for clocks.
@@ -81,7 +83,8 @@ impl App {
             scrolls: Vec::new(),
             limits: Vec::new(),
             link: Link::Connecting,
-            usage: Ok(Usage::default()),
+            usage: Usage::default(),
+            usage_error: None,
             ticker: Ticker::default(),
             tz,
             quit: false,
@@ -134,7 +137,11 @@ impl App {
             }
             Update::Message(Message::Delta(delta)) => self.apply(&delta),
             Update::Link(link) => self.link = link,
-            Update::Usage(usage) => self.usage = usage,
+            Update::Usage(Ok(usage)) => {
+                self.usage = usage;
+                self.usage_error = None;
+            }
+            Update::Usage(Err(error)) => self.usage_error = Some(error),
         }
     }
 

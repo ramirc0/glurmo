@@ -39,6 +39,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - Opening a store clears the start of ended attempts that never ran, which older versions stored, and rolls up their bins again. Before, they counted as starts, and those that seemed to start in 2106 stayed in the queue of a replay after they were cancelled. On zlurm's store this repairs 4,012 attempts, 1,009 of them in 2106, and takes 16 s once.
 - Past views show a node that stopped answering the controller as no reply. History writes its health with a trailing `*`, as sinfo prints it. Before, history kept no flags, so such a node looked fine in the past. An older glurmo reads these records as unknown.
 - The history charts' last column averages over the part of its step that has passed. Before, a step still under way was divided by its whole length, so the chart dipped at its right edge. The server also counts a running job in that step only up to the end asked for.
+- The TUI keeps its usage graph when a read of it fails, notes the error below it, and tries again after 5 s. Before, the error replaced the graph until the next read a minute later.
 
 ## [0.3.0] - 2026-11-15
 
