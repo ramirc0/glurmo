@@ -154,7 +154,7 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
     let hover = RwSignal::new(None::<Hover>);
     let selection = RwSignal::new(None::<(f64, f64)>);
     let pressed = move |event: web_sys::PointerEvent| {
-        if state.editing() || event.button() != 0 {
+        if state.editing.get_untracked() || event.button() != 0 {
             return;
         }
         let Some(spot) = Spot::of(&event, span_s.get_untracked()) else {
@@ -224,7 +224,7 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
     // Wheel input gathers here and moves the timeline once per frame, since each move redraws the chart.
     let wheeling = StoredValue::new(None::<Timeline>);
     let wheeled = move |event: web_sys::WheelEvent| {
-        if state.editing() {
+        if state.editing.get_untracked() {
             return;
         }
         let pending = wheeling.get_value();

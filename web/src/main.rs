@@ -116,23 +116,29 @@ fn App() -> impl IntoView {
     if state.tv {
         set_interval(move || cycle_highlight(state), HIGHLIGHT_EVERY);
     }
+    // The stage rebuilds when the panes change, not when the draft's name does.
+    let root = Memo::new(move |_| {
+        state
+            .layout
+            .with(|layout| layout.as_ref().map(|layout| layout.root.clone()))
+    });
     view! {
-        <main class:tv=state.tv class:editing=move || state.editing()>
+        <main class:tv=state.tv class:editing=move || state.editing.get()>
             <div class="stage">
                 {move || {
-                    let editing = state.editing();
-                    let layout = state.layout.get()?;
+                    let editing = state.editing.get();
+                    let root = root.get()?;
                     let filled = state
                         .filled
                         .get()
-                        .and_then(|path| Some((tree::at(&layout.root, &path)?.clone(), path)));
+                        .and_then(|path| Some((tree::at(&root, &path)?.clone(), path)));
                     Some(match filled {
                         Some((pane, path)) => pane::pane(pane, path, false),
-                        None => pane::pane(layout.root, Path::root(), editing),
+                        None => pane::pane(root, Path::root(), editing),
                     })
                 }}
             </div>
-            {move || state.editing().then(|| view! { <Sidebar/> })}
+            {move || state.editing.get().then(|| view! { <Sidebar/> })}
         </main>
     }
 }

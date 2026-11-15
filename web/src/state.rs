@@ -83,6 +83,9 @@ pub struct State {
     pub theme: Memo<Option<Theme>>,
     /// The layout shown: the draft, else the one asked for once layouts have loaded.
     pub layout: Memo<Option<Layout>>,
+    /// Whether the editor is open. A memo, so views that only care whether it is open are not rebuilt
+    /// on every edit of the draft.
+    pub editing: Memo<bool>,
     /// What stands out on the Die while the rest fades.
     pub highlight: RwSignal<Option<Highlight>>,
     /// Copies of the highlight for table rows.
@@ -224,6 +227,7 @@ impl State {
                     layouts.with(|layouts| pick(layouts, &layout_name.get(), "web").cloned())
                 })
             }),
+            editing: Memo::new(move |_| draft_layout.with(Option::is_some)),
             highlight,
             row_highlights,
             me: RwSignal::new(address.me.map(Login)),
@@ -242,11 +246,6 @@ impl State {
     /// A copy of the highlight for rows built under the current owner, which dies with them.
     pub fn row_highlight(&self) -> ReadSignal<Option<Highlight>> {
         self.row_highlights.copy(self.highlight.get_untracked())
-    }
-
-    /// Whether the editor is open.
-    pub fn editing(&self) -> bool {
-        self.draft_layout.with(Option::is_some)
     }
 
     /// How far back the History panels look, in seconds: the span picked on the timeline, else the
