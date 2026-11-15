@@ -38,6 +38,9 @@ use tree::Path;
 /// How long a wall display highlights each user.
 const HIGHLIGHT_EVERY: Duration = Duration::from_secs(8);
 
+/// How often the header clock ticks.
+const TICK: Duration = Duration::from_secs(1);
+
 fn main() {
     std::panic::set_hook(Box::new(|info| {
         let error = js_sys::Error::new(&format!("panic: {info}"));
@@ -59,6 +62,7 @@ fn App() -> impl IntoView {
     feed::watch_usage(state);
     feed::watch_fonts(state);
     paint::watch_zoom(state);
+    set_interval(move || state.now.set(paint::now()), TICK);
     Effect::new(move |_| {
         let css = state
             .theme

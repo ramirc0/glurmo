@@ -8,7 +8,7 @@ use rtviz_model::layout::{Layout, Pane};
 use rtviz_model::summary::Ticker;
 use rtviz_model::theme::Theme;
 use rtviz_model::usage::Usage;
-use rtviz_model::{Cluster, Login, Node, NodeName, Occupancies, PartitionName};
+use rtviz_model::{Cluster, Login, Node, NodeName, Occupancies, PartitionName, UnixTime};
 
 /// The state of the stream from the server.
 #[derive(Clone, Debug, PartialEq)]
@@ -82,6 +82,8 @@ pub struct State {
     pub fonts: RwSignal<u32>,
     /// Device pixels per CSS pixel on screen, so canvases stay sharp under a pinch or browser zoom.
     pub zoom: RwSignal<f64>,
+    /// The browser's clock, ticking each second.
+    pub now: RwSignal<UnixTime>,
     /// Whether this is a wall display: no cursor, and the highlight cycles through users.
     pub tv: bool,
 }
@@ -152,6 +154,7 @@ impl State {
             me: RwSignal::new(address.me.map(Login)),
             fonts: RwSignal::new(0),
             zoom: RwSignal::new(crate::paint::zoom()),
+            now: RwSignal::new(crate::paint::now()),
             tv: address.tv,
         }
     }

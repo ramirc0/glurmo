@@ -92,16 +92,11 @@ pub fn Header() -> impl IntoView {
                 <span class="site">{move || state.cluster_name.get()}</span>
                 <span class="when">
                     {move || {
-                        state
-                            .cluster
-                            .with(|cluster| {
-                                cluster
-                                    .at
-                                    .map_or_else(
-                                        || "waiting for the first sample".to_owned(),
-                                        |at| clock(at, true),
-                                    )
-                            })
+                        if state.cluster.with(|cluster| cluster.at.is_some()) {
+                            clock(state.now.get(), true)
+                        } else {
+                            "waiting for the first sample".to_owned()
+                        }
                     }}
                 </span>
             </div>
