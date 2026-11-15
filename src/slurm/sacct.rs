@@ -201,6 +201,14 @@ mod tests {
     use glurmo_model::{EndState, NodeName};
 
     #[test]
+    fn a_stepped_array_range_counts_its_tasks() {
+        let line = "1754696|1754696_[3-15:2]|kite|b200-batch|CANCELLED by 20001|0|3||billing=3,cpu=3,gres/gpu:b200=1,gres/gpu=1,mem=32G,node=1|00:30:00|1794442167|None|1794453518|None assigned";
+        let attempt = parse_history(line).unwrap().remove(0);
+        let array = attempt.array.unwrap();
+        assert_eq!((array.spec.as_str(), array.count), ("3-15:2", 7));
+    }
+
+    #[test]
     fn history_asks_for_a_utc_window() {
         let argv = history_argv(UnixTime(1_794_614_400), UnixTime(1_794_700_800)).unwrap();
         assert_eq!(

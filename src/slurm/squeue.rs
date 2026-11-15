@@ -179,6 +179,13 @@ mod tests {
     }
 
     #[test]
+    fn a_stepped_pending_range_counts_its_tasks() {
+        let line = "9|9|3-15:2%4|kite|4hours|PENDING|2|cpu=2,mem=16G,node=1,billing=2|2:00:00|1794244136|N/A|N/A||Priority|job5";
+        let range = parse(line).unwrap().remove(0).array.unwrap();
+        assert_eq!((range.spec.as_str(), range.count), ("3-15:2%4", 7));
+    }
+
+    #[test]
     fn name_keeps_its_pipes_and_partitions_split() {
         let line = "7|7|N/A|puma|4hours,12hours|PENDING|4|cpu=4,mem=4G,node=1,billing=4|1:00:00|1794244136|N/A|N/A||Priority|a | b|c";
         let job = parse(line).unwrap().remove(0);

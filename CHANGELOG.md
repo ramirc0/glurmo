@@ -10,6 +10,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- The command backend counts the tasks of a stepped array range such as `3-15:2`. Before, one such job in `sacct` or `squeue` failed the whole read, and the history backfill retried that window forever.
 - Release builds embed the web view when `web/dist` appears or changes after an earlier build. Before, they could serve an empty page.
 - The command backend reads jobs whose `SubmitLine` spans several lines, as an `sbatch --wrap` script with newlines does. Before, one such job failed every placement read.
 

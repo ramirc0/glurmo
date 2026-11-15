@@ -59,16 +59,23 @@ pub fn expand_ids(ranges: &str) -> Result<Vec<u32>> {
     Ok(ids)
 }
 
-/// Counts the integers that ranges such as `0-3,8` cover, without expanding them.
+/// Counts the integers that ranges such as `0-3,8` cover, without expanding them. A range may step, as
+/// in `3-15:2`, which Slurm prints for an array such as `--array=3-15:2`.
 ///
 /// # Errors
 ///
-/// Fails on anything but integers and ranges between commas, or on a range that runs backward.
+/// Fails on anything but integers and ranges between commas, on a range that runs backward, or on a
+/// step of zero.
 pub fn count_ids(ranges: &str) -> Result<u32> {
     let mut count = 0;
     for item in ranges.split(',').filter(|item| !item.is_empty()) {
-        let (low, high) = range(item)?;
-        count += high - low + 1;
+        let (span, step) = item.split_once(':').unwrap_or((item, "1"));
+        let step = parse_u32(step)?;
+        if step == 0 {
+            bail!("zero step in {item:?}");
+        }
+        let (low, high) = range(span)?;
+        count += (high - low) / step + 1;
     }
     Ok(count)
 }
@@ -117,6 +124,15 @@ mod tests {
     #[test]
     fn several_bracket_groups() {
         assert_eq!(names("a[1-2],b[09-10]"), ["a1", "a2", "b09", "b10"]);
+    }
+
+    #[test]
+    fn array_counts_follow_steps() {
+        assert_eq!(count_ids("3-15:2").unwrap(), 7);
+        assert_eq!(count_ids("1-21:4,30").unwrap(), 7);
+        assert_eq!(count_ids("0-3").unwrap(), 4);
+        assert!(count_ids("3-15:0").is_err(), "a zero step");
+        assert!(count_ids("15-3:2").is_err(), "a backward range");
     }
 
     #[test]
