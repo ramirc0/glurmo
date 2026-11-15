@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed accounting read no longer hides users' colors and names. Before, a store opened while slurmdbd was down drew every core in the muted color until a read worked.
+
 ## [0.2.0] - 2026-11-15
 
 ### Added

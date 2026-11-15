@@ -408,7 +408,10 @@ impl Sampler {
                 .await;
             self.backfill_span_s =
                 next_span(self.backfill_span_s, attempts.is_ok(), started.elapsed());
-            store.backfill(window, &attempts?, &active, now)?;
+            match attempts {
+                Ok(attempts) => store.backfill(window, &attempts, &active, now)?,
+                Err(error) => eprintln!("history at {}: {error:#}", now.0),
+            }
         }
         store.maintain(now)?;
         store.new_users()
@@ -658,6 +661,33 @@ mod tests {
         assert_eq!(usize::try_from(users).unwrap(), cluster.users.len());
         drop(db);
         (dir, deltas)
+    }
+
+    #[tokio::test]
+    async fn a_second_run_on_a_store_names_every_user_without_accounting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glurmo.sqlite");
+        let mut hub = None;
+        for _ in 0..2 {
+            let settings = Settings {
+                backfill_days: 0,
+                keep_days: None,
+                backup: dir.path().join("backup.sqlite"),
+            };
+            let store = Store::open(&path, settings).unwrap();
+            let slurm = busy_quarter_hour().await;
+            let run = Hub::new(slurm.site().clone());
+            Sampler::new(slurm, &zlurm_config(), Some(store), run.clone())
+                .run(None)
+                .await;
+            hub = Some(run);
+        }
+        let stored: usize = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT count(*) FROM users", [], |row| row.get(0))
+            .unwrap();
+        assert!(stored > 0);
+        assert_eq!(hub.unwrap().read(|cluster| cluster.users.len()), stored);
     }
 
     #[tokio::test]
