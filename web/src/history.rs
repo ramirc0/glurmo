@@ -1,6 +1,6 @@
 //! Cores in use over time, stacked by user, with the queue's depth and a time axis below. It doubles as
-//! a timeline: the wheel or a drag pans it, ctrl and the wheel or a pinch zooms it, and a click replays
-//! the cluster from that moment. A line marks the moment under the pointer.
+//! a timeline: the wheel or a drag pans it, shift or ctrl with the wheel, or a pinch, zooms it, and a
+//! click replays the cluster from that moment. A line marks the moment under the pointer.
 
 use glurmo_model::layout::Span;
 use glurmo_model::units::thousands;
@@ -135,8 +135,8 @@ pub fn History(span: Span) -> impl IntoView {
     }
 }
 
-/// The timeline's input around `children`: the wheel or a drag pans it, ctrl and the wheel or a pinch
-/// zooms it around the pointer, and a click replays from the moment under the pointer, or goes back to
+/// The timeline's input around `children`: the wheel or a drag pans it, shift or ctrl with the wheel, or
+/// a pinch, zooms it around the pointer, and a click replays from the moment under the pointer, or goes back to
 /// live near now.
 #[component]
 fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
@@ -216,15 +216,21 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
         };
         event.prevent_default();
         let end = view_end(state);
-        if event.ctrl_key() {
+        if event.ctrl_key() || event.shift_key() {
+            // Browsers turn a shifted wheel into a horizontal one.
+            let wheel = if event.delta_y() == 0.0 {
+                event.delta_x()
+            } else {
+                event.delta_y()
+            };
             let span = span_s.get_untracked();
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_precision_loss,
                 reason = "seconds fit in an f64 and back"
             )]
-            let zoomed = ((span as f64 * (event.delta_y() * ZOOM_PER_PX).exp()) as i64)
-                .clamp(SPANS_S.0, SPANS_S.1);
+            let zoomed =
+                ((span as f64 * (wheel * ZOOM_PER_PX).exp()) as i64).clamp(SPANS_S.0, SPANS_S.1);
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_precision_loss,
