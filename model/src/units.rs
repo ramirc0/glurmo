@@ -2,13 +2,15 @@
 
 use crate::UnixTime;
 
-/// Megabytes as whole gigabytes with a `G`, or terabytes with one decimal and a `T`.
+/// Megabytes as whole gigabytes with a `G`, terabytes with one decimal and a `T`, or, under a
+/// gigabyte, megabytes with an `M`.
 ///
 /// # Examples
 ///
 /// ```
 /// use glurmo_model::units::gigabytes;
 ///
+/// assert_eq!(gigabytes(512), "512M");
 /// assert_eq!(gigabytes(64_000), "62G");
 /// assert_eq!(gigabytes(2_000_000), "1.9T");
 /// ```
@@ -17,6 +19,8 @@ pub fn gigabytes(mb: u64) -> String {
         #[expect(clippy::cast_precision_loss, reason = "megabytes fit in an f64")]
         let tb = mb as f64 / 1_048_576.0;
         format!("{tb:.1}T")
+    } else if mb < 1_024 {
+        format!("{mb}M")
     } else {
         format!("{}G", mb / 1_024)
     }
@@ -145,5 +149,13 @@ mod tests {
         assert_eq!(load(377.6), "378");
         assert_eq!(percent(1, 3), 33);
         assert_eq!(percent(1, 0), 0);
+    }
+
+    #[test]
+    fn memory_under_a_gigabyte_reads_in_megabytes() {
+        assert_eq!(gigabytes(0), "0M");
+        assert_eq!(gigabytes(512), "512M");
+        assert_eq!(gigabytes(1_023), "1023M");
+        assert_eq!(gigabytes(1_024), "1G");
     }
 }

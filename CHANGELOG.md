@@ -22,6 +22,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 ### Fixed
 
 - A partition's free cores and GPUs leave out draining nodes, which take no new jobs. sinfo counts their idle CPUs as other. Before, they counted as free.
+- Memory under a gigabyte reads in megabytes, as `512M`. Before, it read `0G`.
 
 ## [0.3.0] - 2026-11-15
 
