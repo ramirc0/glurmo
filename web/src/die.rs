@@ -717,24 +717,55 @@ impl Ink<'_> {
         for (rect, owner) in tile.cores.iter().zip(cores) {
             self.fill(*rect, radius, self.cell(*owner, empty));
         }
+        let stacks = memory_stacks(node);
         for (rect, owner) in tile.gpus.iter().zip(gpus) {
-            self.fill(*rect, 3.0, self.cell(*owner, empty));
-            let inset = (rect.w / 4.0).max(2.0);
-            self.context.set_stroke_style_str(
-                &Self::rgb(&ui.base)
-                    .fade(self.cell(*owner, empty), 0.35)
-                    .css(),
-            );
-            self.context.stroke_rect(
-                rect.x + inset,
-                rect.y + inset,
-                rect.w - 2.0 * inset,
-                rect.h - 2.0 * inset,
-            );
+            self.gpu(*rect, self.cell(*owner, empty), stacks);
         }
         if gauges {
             self.gauges(node, frame);
         }
+    }
+
+    /// A GPU package outlined in `color`: its die filled with the color in the middle, and `stacks`
+    /// memory stacks down each side in a darker shade, left out when too small to see.
+    fn gpu(&self, rect: Rect, color: Rgb, stacks: u32) {
+        let ui = &self.theme.ui;
+        let surface = Self::rgb(&ui.surface);
+        self.fill(rect, 3.0, Self::rgb(&ui.base).fade(surface, 0.5));
+        self.context.set_stroke_style_str(&color.css());
+        self.context.begin_path();
+        let _ = self.context.round_rect_with_f64(
+            rect.x + 0.5,
+            rect.y + 0.5,
+            rect.w - 1.0,
+            rect.h - 1.0,
+            3.0,
+        );
+        self.context.stroke();
+        let (die_w, die_h) = ((rect.w * 0.44).round(), (rect.h * 0.5).round());
+        let die = Rect {
+            x: rect.x + (rect.w - die_w) / 2.0,
+            y: rect.y + (rect.h - die_h) / 2.0,
+            w: die_w,
+            h: die_h,
+        };
+        let count = f64::from(stacks);
+        let stack_h = (die.h - (count - 1.0) * 2.0) / count;
+        let stack_w = (rect.w - die.w) / 2.0 - 5.0;
+        if stack_h >= 2.0 && stack_w >= 2.0 {
+            for i in 0..stacks {
+                for x in [die.x - stack_w - 2.0, die.x + die.w + 2.0] {
+                    let stack = Rect {
+                        x,
+                        y: die.y + f64::from(i) * (stack_h + 2.0),
+                        w: stack_w,
+                        h: stack_h,
+                    };
+                    self.fill(stack, 0.5, color.fade(surface, 0.65));
+                }
+            }
+        }
+        self.fill(die, 1.0, color);
     }
 
     /// Load against CPUs, and memory allocated with what the OS has in use as a tick. The tracks start
@@ -870,6 +901,14 @@ impl Ink<'_> {
             .map_or((&[][..], &[][..]), |cells| {
                 (cells.cores.as_slice(), cells.gpus.as_slice())
             })
+    }
+}
+
+/// HBM stacks on each side of a GPU's die: a V100 has four in all, and newer parts such as the H200 six.
+fn memory_stacks(node: &Node) -> u32 {
+    match node.gpu_model.as_deref() {
+        Some("V100") => 2,
+        _ => 3,
     }
 }
 
