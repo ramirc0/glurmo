@@ -171,6 +171,18 @@ pub fn to_ron<T: Serialize>(value: &T) -> Result<String> {
     Ok(ron::ser::to_string_pretty(value, pretty)?)
 }
 
+/// A key glurmo no longer reads. Any value parses, so an older config still loads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Retired;
+
+impl<'de> Deserialize<'de> for Retired {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_| Self)
+    }
+}
+
 /// Reads and writes whole seconds as a duration such as `"10s"` or `"10m"`.
 pub mod seconds {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
@@ -227,6 +239,7 @@ mod tests {
                 nodes_s: 60,
                 partitions_s: 600,
                 lookups: 10,
+                ..Intervals::default()
             }
         );
         assert_eq!(
@@ -261,5 +274,17 @@ mod tests {
         assert!(from_ron::<Config>(r#"(sample: (jobs: "-5s"))"#).is_err());
         assert!(from_ron::<Config>(r#"(sample: (jobs: "0s"))"#).is_err());
         assert!(from_ron::<Config>(r#"(sample: (nodes: "500ms"))"#).is_err());
+    }
+
+    #[test]
+    fn a_stats_interval_from_an_older_config_is_ignored() {
+        let config = from_ron::<Config>(r#"(sample: (jobs: "20s", stats: "60s"))"#).unwrap();
+        assert_eq!(config.sample.jobs_s, 20);
+        assert_eq!(
+            config.sample,
+            from_ron::<Config>(r#"(sample: (jobs: "20s"))"#)
+                .unwrap()
+                .sample
+        );
     }
 }

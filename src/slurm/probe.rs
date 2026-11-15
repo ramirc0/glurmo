@@ -200,6 +200,7 @@ fn suggest(site: &Site, squeue_ms: u64, sinfo_ms: u64) -> Intervals {
         nodes_s: duty(sinfo_ms, 30),
         partitions_s: 600,
         lookups,
+        ..Intervals::default()
     }
 }
 

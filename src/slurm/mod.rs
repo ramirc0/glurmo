@@ -152,6 +152,9 @@ pub struct Intervals {
     pub partitions_s: u64,
     /// Placement lookups per jobs tick.
     pub lookups: u64,
+    /// Read and dropped, so configs from 0.3.0 and before, which set a stats interval, still load.
+    #[serde(default, skip_serializing)]
+    pub(crate) stats: crate::config::Retired,
 }
 
 impl Default for Intervals {
@@ -161,6 +164,7 @@ impl Default for Intervals {
             nodes_s: 30,
             partitions_s: 600,
             lookups: 25,
+            stats: crate::config::Retired,
         }
     }
 }

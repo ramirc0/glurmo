@@ -21,7 +21,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Removed
 
-- The sampler no longer asks slurmctld for scheduler stats every minute, and the stream no longer carries them. No view showed them. `glurmo probe` still reads them. A config that sets `sample: (stats: ...)` must drop that key, or it fails to load.
+- The sampler no longer asks slurmctld for scheduler stats every minute, and the stream no longer carries them. No view showed them. `glurmo probe` still reads them. A config that still sets `sample: (stats: ...)` loads, and the key is ignored.
 
 ### Fixed
 
