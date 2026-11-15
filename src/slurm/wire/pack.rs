@@ -9,14 +9,8 @@ const FLOAT_MULT: f64 = 1_000_000.0;
 pub const NO_VAL: u32 = 0xffff_fffe;
 /// The 64-bit "no value" sentinel.
 pub const NO_VAL64: u64 = 0xffff_ffff_ffff_fffe;
-/// The 16-bit "no value" sentinel.
-pub const NO_VAL16: u16 = 0xfffe;
 /// The 32-bit "infinite" sentinel.
 pub const INFINITE: u32 = 0xffff_ffff;
-/// The 64-bit "infinite" sentinel.
-pub const INFINITE64: u64 = 0xffff_ffff_ffff_ffff;
-/// The 16-bit "infinite" sentinel.
-pub const INFINITE16: u16 = 0xffff;
 
 /// Reads values in the order the sender packed them.
 pub struct Unpack<'a> {
@@ -95,15 +89,6 @@ impl<'a> Unpack<'a> {
     /// Fails when the buffer runs out.
     pub fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    /// A boolean, packed as one byte.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the buffer runs out.
-    pub fn bool(&mut self) -> Result<bool> {
-        Ok(self.u8()? != 0)
     }
 
     /// A `time_t`, packed as a signed 64-bit integer.

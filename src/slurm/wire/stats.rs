@@ -8,6 +8,8 @@ use glurmo_model::{RpcCount, Stats};
 
 /// The request.
 pub const REQUEST: u16 = 2035;
+/// The reply.
+pub const RESPONSE: u16 = 2036;
 
 const GET: u16 = 1;
 

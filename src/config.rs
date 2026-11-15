@@ -8,13 +8,15 @@ use anyhow::{Context, Result};
 use ron::extensions::Extensions;
 use serde::{Deserialize, Serialize};
 
-use crate::slurm::Intervals;
+use crate::slurm::{Backend, Intervals};
 
 /// Everything `config.ron` can set. Every field has a default.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// How often to run each command.
+    /// How to reach Slurm.
+    pub slurm: Reach,
+    /// How often to ask Slurm for each kind of data.
     pub sample: Intervals,
     /// Where history lives and how long it stays.
     pub store: Storage,
@@ -26,6 +28,16 @@ pub struct Config {
     pub tui: Tui,
     /// GPU models by partition, for nodes whose GRES names no type.
     pub gpu_models: BTreeMap<String, String>,
+}
+
+/// How to reach Slurm.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Reach {
+    /// The protocol, or Slurm's commands as a fallback.
+    pub backend: Backend,
+    /// slurmctld's `host:port` addresses, primary first. Empty reads them from slurm.conf.
+    pub controller: Vec<String>,
 }
 
 /// Where history lives and how long it stays.

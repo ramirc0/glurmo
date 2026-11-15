@@ -1,12 +1,10 @@
 //! Replays of recorded zlurm traffic for tests.
 
-use std::io::Write;
-
 use crate::config::{Config, from_ron};
 use crate::hub::Hub;
 use crate::sampler::Sampler;
-use crate::slurm::Slurm;
-use crate::slurm::source::{Exchange, Replay, Source};
+use crate::slurm::recording::{Exchange, Replay};
+use crate::slurm::{Slurm, Source};
 use crate::store::{Settings, Store};
 
 /// The defaults, with zlurm's GPU models.
@@ -25,13 +23,14 @@ pub async fn busy_quarter_hour_with(mut edit: impl FnMut(&mut Exchange)) -> Slur
         .join("tests/fixtures/slurm-23.11/busy-15m.jsonl.zst");
     let mut compressed = std::fs::File::open(path).unwrap();
     let decoder = ruzstd::decoding::StreamingDecoder::new(&mut compressed).unwrap();
-    let mut recording = tempfile::NamedTempFile::new().unwrap();
-    for line in std::io::BufRead::lines(std::io::BufReader::new(decoder)) {
-        let mut exchange: Exchange = serde_json::from_str(&line.unwrap()).unwrap();
-        edit(&mut exchange);
-        writeln!(recording, "{}", serde_json::to_string(&exchange).unwrap()).unwrap();
-    }
-    Slurm::connect(Source::Replay(Replay::open(recording.path()).unwrap()))
+    let exchanges = std::io::BufRead::lines(std::io::BufReader::new(decoder))
+        .map(|line| {
+            let mut exchange: Exchange = serde_json::from_str(&line.unwrap()).unwrap();
+            edit(&mut exchange);
+            exchange
+        })
+        .collect();
+    Slurm::connect(Source::Replay(Replay::new(exchanges)), None)
         .await
         .unwrap()
 }

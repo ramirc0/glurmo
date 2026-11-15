@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::hub::{Hub, Message};
 use crate::sampler::Sampler;
 use crate::slurm::Slurm;
-use crate::slurm::source::Source;
+use crate::slurm::Source;
 use crate::store::{By, History, Settings, Store, UsageQuery};
 use glurmo_model::UnixTime;
 use glurmo_model::usage::{Usage, step_for};
@@ -98,7 +98,7 @@ impl Feed {
     ///
     /// Fails when Slurm cannot be reached or the store cannot be created.
     pub async fn embedded(config: &Config) -> Result<Self> {
-        let slurm = Slurm::connect(Source::Live).await?;
+        let slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
         let parent = std::env::var_os("XDG_RUNTIME_DIR")
             .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
         let dir = tempfile::Builder::new()

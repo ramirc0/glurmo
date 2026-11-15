@@ -15,6 +15,8 @@ use glurmo_model::{
 
 /// The request for every job.
 pub const REQUEST: u16 = 2003;
+/// The reply to either job request.
+pub const RESPONSE: u16 = 2004;
 /// The request for one job, or every task of an array by its base ID.
 pub const SINGLE_REQUEST: u16 = 2021;
 
@@ -277,6 +279,11 @@ pub(super) fn hex_tasks(text: &str) -> Result<Bitmap> {
 }
 
 impl Job {
+    /// The job's ID.
+    pub fn id(&self) -> JobId {
+        self.id
+    }
+
     /// The UID of the job's owner.
     pub fn user_id(&self) -> u32 {
         self.user_id

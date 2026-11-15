@@ -9,8 +9,12 @@ use glurmo_model::{Node, NodeName, Partition, PartitionName};
 
 /// The node request.
 pub const NODE_REQUEST: u16 = 2007;
+/// The node reply.
+pub const NODE_RESPONSE: u16 = 2008;
 /// The partition request.
 pub const PARTITION_REQUEST: u16 = 2009;
+/// The partition reply.
+pub const PARTITION_RESPONSE: u16 = 2010;
 
 const SHOW_ALL: u16 = 1;
 const SHOW_DETAIL: u16 = 1 << 1;

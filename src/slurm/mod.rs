@@ -1,32 +1,31 @@
 //! The only code that knows Slurm: commands, output formats and quirks.
 
+pub mod cli;
 pub mod fields;
 pub mod hostlist;
 pub mod probe;
-pub mod pseudonymize;
+pub mod recording;
 pub mod sacct;
 pub mod scontrol;
 pub mod sdiag;
 pub mod sinfo;
-pub mod source;
 pub mod squeue;
-#[allow(dead_code)]
 pub mod wire;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::config::Reach;
+use cli::Cli;
 use glurmo_model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
+use recording::{Answer, Call, Recorder, Replay};
 use sacct::Outcome;
-use scontrol::{CpuMap, Placed};
-use source::{Exchange, Source};
+use scontrol::Placed;
+use wire::Wire;
 
 /// A Slurm release, such as 23.11.4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,7 +170,7 @@ impl Default for Intervals {
 }
 
 /// The answer to a placement lookup.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Lookup {
     /// The job and its placement.
     Found(Placed),
@@ -179,9 +178,47 @@ pub enum Lookup {
     Gone,
 }
 
-/// Runs Slurm commands through a [`Source`] and parses their output into model types.
+/// Where answers come from.
+pub enum Source {
+    /// Slurm's protocol, spoken to slurmctld and slurmdbd.
+    Wire(Wire),
+    /// Slurm's commands, run on this host.
+    Cli(Cli),
+    /// A recording.
+    Replay(Replay),
+}
+
+impl Source {
+    /// The live cluster, reached as the config says.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the protocol backend finds no controller.
+    pub fn live(reach: &Reach) -> Result<Self> {
+        Ok(match reach.backend {
+            Backend::Wire if reach.controller.is_empty() => {
+                Self::Wire(Wire::new(wire::controllers()?))
+            }
+            Backend::Wire => Self::Wire(Wire::new(reach.controller.clone())),
+            Backend::Cli => Self::Cli(Cli::default()),
+        })
+    }
+}
+
+/// How glurmo reaches a live cluster.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Backend {
+    /// Slurm 23.11's protocol, which controllers through 25.05 accept.
+    #[default]
+    Wire,
+    /// Slurm's commands, for clusters the protocol cannot reach.
+    Cli,
+}
+
+/// Asks Slurm through a [`Source`], recording each call and answer if asked to.
 pub struct Slurm {
     source: Source,
+    recorder: Option<Recorder>,
     site: Site,
 }
 
@@ -190,11 +227,24 @@ impl Slurm {
     ///
     /// # Errors
     ///
-    /// Fails when `scontrol show config` fails or lacks a needed setting.
-    pub async fn connect(mut source: Source) -> Result<Self> {
-        let exchange = source.run(scontrol::config_argv()).await?;
-        let site = checked(&exchange, scontrol::parse_config)?;
-        Ok(Self { source, site })
+    /// Fails when the configuration cannot be read or lacks a needed setting.
+    pub async fn connect(source: Source, recorder: Option<Recorder>) -> Result<Self> {
+        let mut slurm = Self {
+            source,
+            recorder,
+            site: Site {
+                cluster: String::new(),
+                version: Version(0, 0, 0),
+                min_job_age_s: 0,
+                private_data: Vec::new(),
+                rate_limit: None,
+            },
+        };
+        let Answer::Config(site) = slurm.ask(Call::Config).await? else {
+            bail!("the configuration call gave another answer");
+        };
+        slurm.site = site;
+        Ok(slurm)
     }
 
     /// The site facts read at connection.
@@ -204,81 +254,122 @@ impl Slurm {
 
     /// The current time, which a replay drives.
     pub fn now(&self) -> UnixTime {
-        self.source.now()
+        match &self.source {
+            Source::Replay(replay) => replay.now(),
+            Source::Wire(_) | Source::Cli(_) => UnixTime::now(),
+        }
     }
 
     /// Waits until `time`. A replay moves its clock there at once.
     pub async fn sleep_until(&mut self, time: UnixTime) {
-        self.source.sleep_until(time).await;
+        match &mut self.source {
+            Source::Replay(replay) => replay.sleep_until(time).await,
+            Source::Wire(_) | Source::Cli(_) => {
+                let wait = u64::try_from(time.0 - UnixTime::now().0).unwrap_or(0);
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            }
+        }
     }
 
-    /// Every job squeue lists, including ones that ended within `MinJobAge`.
+    /// Asks one question and records it and its answer.
     ///
     /// # Errors
     ///
-    /// Fails when squeue fails, writes to stderr, or prints output that does not parse.
+    /// Fails when the source fails, or the answer cannot be recorded.
+    pub async fn ask(&mut self, call: Call) -> Result<Answer> {
+        let at = self.now();
+        let answer = match &mut self.source {
+            Source::Wire(wire) => wire.answer(&call).await,
+            Source::Cli(cli) => cli.answer(&call).await,
+            Source::Replay(replay) => replay.answer(&call),
+        };
+        if let Some(recorder) = &mut self.recorder {
+            recorder.write(&recording::Exchange {
+                at,
+                call,
+                answer: answer
+                    .as_ref()
+                    .map(Clone::clone)
+                    .map_err(|error| format!("{error:#}")),
+            })?;
+        }
+        answer
+    }
+
+    /// Every job, including ones that ended within `MinJobAge`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the source fails.
     pub async fn jobs(&mut self) -> Result<Vec<Attempt>> {
-        self.query(squeue::argv(), squeue::parse).await
+        match self.ask(Call::Jobs).await? {
+            Answer::Jobs(jobs) => Ok(jobs),
+            other => mismatched(&other),
+        }
     }
 
     /// Every node, with its partitions merged.
     ///
     /// # Errors
     ///
-    /// Fails when sinfo fails, writes to stderr, or prints output that does not parse.
+    /// Fails when the source fails.
     pub async fn nodes(&mut self) -> Result<Vec<Node>> {
-        self.query(sinfo::argv(), sinfo::parse).await
+        match self.ask(Call::Nodes).await? {
+            Answer::Nodes(nodes) => Ok(nodes),
+            other => mismatched(&other),
+        }
     }
 
     /// Every partition, hidden ones included.
     ///
     /// # Errors
     ///
-    /// Fails when scontrol fails, writes to stderr, or prints output that does not parse.
+    /// Fails when the source fails.
     pub async fn partitions(&mut self) -> Result<Vec<Partition>> {
-        self.query(scontrol::partitions_argv(), scontrol::parse_partitions)
-            .await
+        match self.ask(Call::Partitions).await? {
+            Answer::Partitions(partitions) => Ok(partitions),
+            other => mismatched(&other),
+        }
     }
 
-    /// The placement of every job the controller knows, for a cold start.
+    /// The placement of every job the controller knows.
     ///
     /// # Errors
     ///
-    /// Fails when scontrol fails, writes to stderr, prints output that does not parse,
-    /// or names a node missing from `nodes`.
-    pub async fn placements(&mut self, nodes: &[Node]) -> Result<Vec<Placed>> {
-        let map = CpuMap::new(nodes, self.site.version);
-        self.query(scontrol::jobs_argv(), |stdout| {
-            scontrol::parse_jobs(stdout, &map)
-        })
-        .await
+    /// Fails when the source fails.
+    pub async fn placements(&mut self) -> Result<Vec<Placed>> {
+        match self.ask(Call::Placements).await? {
+            Answer::Placements(placements) => Ok(placements),
+            other => mismatched(&other),
+        }
     }
 
     /// Looks up one job's placement. A job the controller has purged is [`Lookup::Gone`].
     ///
     /// # Errors
     ///
-    /// Fails like [`Slurm::placements`], or when scontrol prints no job.
-    pub async fn lookup(&mut self, attempt: &Attempt, nodes: &[Node]) -> Result<Lookup> {
-        let map = CpuMap::new(nodes, self.site.version);
-        let exchange = self.source.run(scontrol::lookup_argv(attempt)).await?;
-        if exchange.status != 0 && exchange.stderr.contains(scontrol::GONE) {
-            return Ok(Lookup::Gone);
+    /// Fails when the source fails.
+    pub async fn lookup(&mut self, attempt: &Attempt) -> Result<Lookup> {
+        let call = Call::Lookup {
+            key: attempt.key,
+            printed: attempt.printed_id(),
+        };
+        match self.ask(call).await? {
+            Answer::Lookup(lookup) => Ok(lookup),
+            other => mismatched(&other),
         }
-        let mut jobs = checked(&exchange, |stdout| scontrol::parse_jobs(stdout, &map))?;
-        if jobs.is_empty() {
-            bail!("scontrol printed no job for {}", exchange.argv.join(" "));
-        }
-        Ok(Lookup::Found(jobs.swap_remove(0)))
     }
 
     /// What accounting holds for `jobs`, every requeued attempt included.
     ///
     /// # Errors
     ///
-    /// Fails when sacct fails, writes to stderr, or prints output that does not parse.
+    /// Fails when the source fails.
     pub async fn outcomes(&mut self, jobs: &[JobId]) -> Result<Vec<Outcome>> {
-        self.query(sacct::argv(jobs), sacct::parse).await
+        match self.ask(Call::Outcomes(jobs.to_vec())).await? {
+            Answer::Outcomes(outcomes) => Ok(outcomes),
+            other => mismatched(&other),
+        }
     }
 
     /// Every allocation accounting holds that was pending or running between `from` and `to`,
@@ -286,40 +377,36 @@ impl Slurm {
     ///
     /// # Errors
     ///
-    /// Fails when sacct fails, writes to stderr, or prints output that does not parse.
+    /// Fails when the source fails.
     pub async fn history(&mut self, from: UnixTime, to: UnixTime) -> Result<Vec<Attempt>> {
-        self.query(sacct::history_argv(from, to)?, sacct::parse_history)
-            .await
+        match self.ask(Call::History { from, to }).await? {
+            Answer::History(attempts) => Ok(attempts),
+            other => mismatched(&other),
+        }
     }
 
     /// Scheduler and RPC counters.
     ///
     /// # Errors
     ///
-    /// Fails when sdiag fails, writes to stderr, or prints output that does not parse.
+    /// Fails when the source fails.
     pub async fn stats(&mut self) -> Result<Stats> {
-        self.query(sdiag::argv(), sdiag::parse).await
-    }
-
-    /// Runs any command through the source, without parsing.
-    ///
-    /// # Errors
-    ///
-    /// Fails like [`Source::run`].
-    pub async fn run(&mut self, argv: Vec<String>) -> Result<Exchange> {
-        self.source.run(argv).await
+        match self.ask(Call::Stats).await? {
+            Answer::Stats(stats) => Ok(stats),
+            other => mismatched(&other),
+        }
     }
 
     /// Reads everything once: the cold start of a sampler.
     ///
     /// # Errors
     ///
-    /// Fails when any command fails.
+    /// Fails when any call fails.
     pub async fn sample(&mut self) -> Result<Sample> {
         let at = self.now();
         let nodes = self.nodes().await?;
         let jobs = self.jobs().await?;
-        let placements = self.placements(&nodes).await?;
+        let placements = self.placements().await?;
         Ok(Sample {
             at,
             site: self.site.clone(),
@@ -330,42 +417,10 @@ impl Slurm {
             stats: self.stats().await?,
         })
     }
-
-    async fn query<T>(
-        &mut self,
-        argv: Vec<String>,
-        parse: impl FnOnce(&str) -> Result<T>,
-    ) -> Result<T> {
-        let exchange = self.source.run(argv).await?;
-        checked(&exchange, parse)
-    }
 }
 
-/// Parses a command's output once it has exited cleanly and written nothing to stderr.
-/// Output that fails to parse is kept for a test fixture.
-fn checked<T>(exchange: &Exchange, parse: impl FnOnce(&str) -> Result<T>) -> Result<T> {
-    let command = exchange.argv.join(" ");
-    if exchange.status != 0 || !exchange.stderr.is_empty() {
-        bail!(
-            "{command} exited with {}: {}",
-            exchange.status,
-            exchange.stderr.trim()
-        );
-    }
-    parse(&exchange.stdout).map_err(|error| match keep_unparsed(exchange) {
-        Ok(path) => error.context(format!("{command}: output saved to {}", path.display())),
-        Err(save) => error.context(format!("{command}: output not saved: {save:#}")),
-    })
-}
-
-/// Appends an exchange to `$XDG_STATE_HOME/glurmo/unparsed.jsonl`.
-fn keep_unparsed(exchange: &Exchange) -> Result<PathBuf> {
-    let state = crate::xdg::state_home()?.join("glurmo");
-    fs::create_dir_all(&state)?;
-    let path = state.join("unparsed.jsonl");
-    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-    writeln!(file, "{}", serde_json::to_string(exchange)?)?;
-    Ok(path)
+fn mismatched<T>(answer: &Answer) -> Result<T> {
+    bail!("an answer of the wrong kind: {answer:?}")
 }
 
 /// Everything read at once.
@@ -429,13 +484,12 @@ impl Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use source::Replay;
 
     async fn replay(fixture: &str) -> Slurm {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(fixture);
-        Slurm::connect(Source::Replay(Replay::open(&path).unwrap()))
+        Slurm::connect(Source::Replay(Replay::open(&path).unwrap()), None)
             .await
             .unwrap()
     }
@@ -466,10 +520,7 @@ mod tests {
         let mut purged = sample.jobs[0].clone();
         purged.key.job = JobId(1);
         purged.array = None;
-        assert_eq!(
-            slurm.lookup(&purged, &sample.nodes).await.unwrap(),
-            Lookup::Gone
-        );
+        assert_eq!(slurm.lookup(&purged).await.unwrap(), Lookup::Gone);
     }
 
     #[test]

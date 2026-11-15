@@ -34,7 +34,6 @@ pub async fn full_names(logins: &[Login]) -> Result<HashMap<Login, String>> {
 /// # Errors
 ///
 /// Fails when `getent` cannot run or runs past the timeout.
-#[allow(dead_code)]
 pub async fn logins(uids: &[u32]) -> Result<HashMap<u32, Login>> {
     let keys: Vec<String> = uids.iter().map(u32::to_string).collect();
     let keys: Vec<&str> = keys.iter().map(String::as_str).collect();

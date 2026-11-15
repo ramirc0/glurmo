@@ -1,6 +1,7 @@
 //! What accounting holds: outcomes of jobs that left squeue unseen, and history for a backfill.
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 use super::fields::{columns, integer, is_placeholder, job_state, seconds, time, tres};
 use super::hostlist::{count_ids, expand_hosts};
@@ -9,7 +10,7 @@ use glurmo_model::{
 };
 
 /// What accounting holds for one attempt.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
     /// The job ID and submit time.
     pub key: AttemptKey,

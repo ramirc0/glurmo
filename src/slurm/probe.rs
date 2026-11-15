@@ -7,14 +7,15 @@ use std::time::Instant;
 use anyhow::Result;
 use serde::Serialize;
 
-use super::{Intervals, Lookup, Site, Slurm, scontrol, sinfo, squeue};
-use glurmo_model::{Attempt, JobState, RpcCount, Stats};
+use super::recording::Call;
+use super::{Intervals, Lookup, Site, Slurm};
+use glurmo_model::{JobState, RpcCount, Stats};
 
 /// Runs per command. The minimum delta over them filters out other users' RPCs.
 const RUNS: usize = 3;
 
-const SQUEUE: &str = "squeue, every job";
-const SINFO: &str = "sinfo, every node";
+const JOBS: &str = "jobs";
+const NODES: &str = "nodes";
 
 /// What the probe found.
 #[derive(Debug, Serialize)]
@@ -23,8 +24,6 @@ pub struct Report {
     pub site: Site,
     /// What this user can see.
     pub capabilities: Capabilities,
-    /// `-O` fields this Slurm version rejects.
-    pub missing_fields: Vec<String>,
     /// Each command's latency and controller cost.
     pub costs: Vec<Cost>,
     /// Sampling intervals that keep the controller load low.
@@ -61,44 +60,42 @@ pub struct Cost {
 ///
 /// # Errors
 ///
-/// Fails when a command cannot run at all.
+/// Fails when a call fails while it is being timed.
 pub async fn probe(slurm: &mut Slurm) -> Result<Report> {
-    let squeue_check = slurm.run(squeue::argv()).await?;
-    let sinfo_check = slurm.run(sinfo::argv()).await?;
-    let missing_fields = [&squeue_check.stderr, &sinfo_check.stderr]
-        .into_iter()
-        .flat_map(|stderr| stderr.lines())
-        .filter_map(|line| line.split_once("format specification: "))
-        .map(|(_, field)| field.trim().to_owned())
-        .collect();
     let jobs = slurm.jobs().await.unwrap_or_default();
-    let nodes = slurm.nodes().await.unwrap_or_default();
+    let sees_nodes = slurm.nodes().await.is_ok();
     let running = jobs.iter().find(|job| job.state == JobState::Running);
     let scheduler_stats = slurm.stats().await.is_ok();
 
-    let mut commands: Vec<(&'static str, Vec<String>)> = vec![
-        (SQUEUE, squeue::argv()),
-        (SINFO, sinfo::argv()),
-        ("scontrol show job, every job", scontrol::jobs_argv()),
-        ("scontrol show partition", scontrol::partitions_argv()),
-        ("scontrol show config", scontrol::config_argv()),
+    let mut calls: Vec<(&'static str, Call)> = vec![
+        (JOBS, Call::Jobs),
+        (NODES, Call::Nodes),
+        ("placement, every job", Call::Placements),
+        ("partitions", Call::Partitions),
+        ("configuration", Call::Config),
     ];
     let mut exact_placement = None;
     if let Some(job) = running {
-        commands.insert(
-            2,
-            ("scontrol show job, one job", scontrol::lookup_argv(job)),
-        );
-        if let Ok(Lookup::Found(placed)) = slurm.lookup(job, &nodes).await {
+        let lookup = Call::Lookup {
+            key: job.key,
+            printed: job.printed_id(),
+        };
+        calls.insert(2, ("placement, one job", lookup));
+        if let Ok(Lookup::Found(placed)) = slurm.lookup(job).await {
             exact_placement = Some(!placed.placement.0.is_empty());
         }
     }
     let mut costs = Vec::new();
-    for (label, argv) in commands {
-        costs.push(cost(slurm, label, argv, scheduler_stats).await?);
+    for (label, call) in calls {
+        costs.push(cost(slurm, label, &call, scheduler_stats).await?);
     }
     let history = match running.or(jobs.first()) {
-        Some(job) => Some(sees_history(slurm, job).await?),
+        Some(job) => Some(
+            slurm
+                .outcomes(&[job.key.job])
+                .await
+                .is_ok_and(|outcomes| outcomes.iter().any(|o| o.key.job == job.key.job)),
+        ),
         None => None,
     };
     let site = slurm.site().clone();
@@ -108,27 +105,26 @@ pub async fn probe(slurm: &mut Slurm) -> Result<Report> {
             .find(|cost| cost.label == label)
             .map_or(0, |cost| cost.latency_ms)
     };
-    let suggested = suggest(&site, latency(SQUEUE), latency(SINFO));
+    let suggested = suggest(&site, latency(JOBS), latency(NODES));
     Ok(Report {
         capabilities: Capabilities {
             sees_all_jobs: !site.private_data.iter().any(|item| item == "jobs"),
-            sees_nodes: sinfo_check.status == 0,
+            sees_nodes,
             exact_placement,
             history,
             scheduler_stats,
         },
         site,
-        missing_fields,
         costs,
         suggested,
     })
 }
 
-/// Times a command and measures its RPCs between sdiag snapshots.
+/// Times a call and measures its RPCs between stats snapshots.
 async fn cost(
     slurm: &mut Slurm,
     label: &'static str,
-    argv: Vec<String>,
+    call: &Call,
     with_rpcs: bool,
 ) -> Result<Cost> {
     let mut latencies = Vec::new();
@@ -140,7 +136,7 @@ async fn cost(
             Stats::default()
         };
         let started = Instant::now();
-        slurm.run(argv.clone()).await?;
+        slurm.ask(call.clone()).await?;
         latencies.push(started.elapsed());
         if !with_rpcs {
             continue;
@@ -186,16 +182,6 @@ fn rpc_deltas(before: &Stats, after: &Stats) -> Vec<RpcCount> {
             }
         })
         .collect()
-}
-
-/// Whether sacct lists a job that squeue lists, which may belong to another user.
-async fn sees_history(slurm: &mut Slurm, job: &Attempt) -> Result<bool> {
-    let id = job.key.job.0.to_string();
-    let argv = ["sacct", "-n", "-X", "-P", "-o", "JobIDRaw", "-j", &id]
-        .map(String::from)
-        .to_vec();
-    let exchange = slurm.run(argv).await?;
-    Ok(exchange.status == 0 && exchange.stdout.lines().any(|line| line == id))
 }
 
 /// Picks intervals that keep each command's duty cycle near 2%, and the jobs interval below
@@ -259,20 +245,7 @@ impl fmt::Display for Report {
             "  scheduler stats   {}",
             yes_no(capabilities.scheduler_stats)
         )?;
-        if self.missing_fields.is_empty() {
-            writeln!(f, "\nfields        all present")?;
-        } else {
-            writeln!(
-                f,
-                "\nfields        missing: {}",
-                self.missing_fields.join(", ")
-            )?;
-        }
-        writeln!(
-            f,
-            "\n{:<30} {:>7}  controller RPCs per call",
-            "command", "ms"
-        )?;
+        writeln!(f, "\n{:<30} {:>7}  controller RPCs per call", "call", "ms")?;
         for cost in &self.costs {
             let rpcs: Vec<String> = cost
                 .rpcs

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::fields::{
     gpu_indices, gres, integer, is_placeholder, job_state, megabytes, seconds, time,
@@ -12,8 +12,7 @@ use super::fields::{
 use super::hostlist::{expand_hosts, expand_ids};
 use super::{Site, Version, rate_limit};
 use glurmo_model::{
-    Attempt, JobId, JobState, Node, NodeCells, NodeName, Partition, PartitionName, Placement,
-    UnixTime,
+    JobId, JobState, Node, NodeCells, NodeName, Partition, PartitionName, Placement, UnixTime,
 };
 
 /// One line of `scontrol -o` output, split into `Key=value` pairs.
@@ -69,11 +68,6 @@ impl<'a> Record<'a> {
             .iter()
             .map(|(key, value)| (*key, &self.line[value.clone()]))
     }
-
-    /// Every key with the byte range of its value in the line.
-    pub fn spans(&self) -> &[(&'a str, Range<usize>)] {
-        &self.pairs
-    }
 }
 
 fn tokens(line: &str) -> Vec<(usize, &str)> {
@@ -106,20 +100,11 @@ pub fn jobs_argv() -> Vec<String> {
         .to_vec()
 }
 
-/// The command that looks up one job's placement.
-///
-/// An array task is looked up as `ID_TASK`, because its ID may be the array's base ID, which returns every task.
-pub fn lookup_argv(attempt: &Attempt) -> Vec<String> {
-    let mut argv = jobs_argv();
-    argv.push(attempt.printed_id());
-    argv
-}
-
 /// What scontrol prints on stderr for a job the controller no longer knows.
 pub const GONE: &str = "Invalid job id specified";
 
 /// A job's placement as scontrol reports it.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placed {
     /// The job ID.
     pub job: JobId,
@@ -154,7 +139,7 @@ impl CpuMap {
     }
 }
 
-/// Parses the output of [`jobs_argv`] or [`lookup_argv`], one job per line.
+/// Parses the output of [`jobs_argv`], with or without a job ID, one job per line.
 ///
 /// # Errors
 ///

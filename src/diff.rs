@@ -161,11 +161,6 @@ impl Known {
             Event::Partitions(partitions)
         })
     }
-
-    /// The last node listing.
-    pub fn nodes(&self) -> &[Node] {
-        &self.nodes
-    }
 }
 
 /// Moves one listed job along, and records the events that takes.

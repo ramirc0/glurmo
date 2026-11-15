@@ -30,7 +30,8 @@ use glurmo_model::{Cluster, JobState, Owner};
 use hub::Hub;
 use library::Library;
 use sampler::Sampler;
-use slurm::source::{Exchange, Recorder, Replay, Source};
+use slurm::Source;
+use slurm::recording::{Recorder, Replay};
 use slurm::{Sample, Slurm};
 use store::{History, Settings, Store};
 
@@ -77,7 +78,7 @@ enum Command {
         #[arg(long)]
         store: bool,
     },
-    /// Sample the cluster and save every command's output as JSON lines.
+    /// Sample the cluster and save every call and its answer as JSON lines.
     Record {
         /// Rewrite logins, IDs, job names and paths, so the recording can become a test fixture.
         #[arg(long)]
@@ -88,11 +89,19 @@ enum Command {
         /// Where to write the recording.
         out: PathBuf,
     },
-    /// Rewrite a raw recording's logins, IDs, job names and site addresses, so it can become a test fixture.
+    /// Rewrite a raw recording's logins and job names, so it can become a test fixture.
     Pseudonymize {
         /// The raw recording.
         raw: PathBuf,
         /// Where to write the rewritten recording.
+        out: PathBuf,
+    },
+    /// Turn a recording of Slurm's command output, which glurmo made before it spoke the protocol, into
+    /// one of calls and answers.
+    Convert {
+        /// The recording of command output.
+        old: PathBuf,
+        /// Where to write the converted recording.
         out: PathBuf,
     },
 }
@@ -112,7 +121,7 @@ async fn main() -> Result<()> {
             tui::run(&config, server.as_deref()).await?;
         }
         Command::Probe => {
-            let mut slurm = Slurm::connect(Source::Live).await?;
+            let mut slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
             print!("{}", slurm::probe::probe(&mut slurm).await?);
         }
         Command::Sample {
@@ -122,9 +131,9 @@ async fn main() -> Result<()> {
         } => {
             let source = match replay {
                 Some(path) => Source::Replay(Replay::open(&path)?),
-                None => Source::Live,
+                None => Source::live(&config.slurm)?,
             };
-            let mut slurm = Slurm::connect(source).await?;
+            let mut slurm = Slurm::connect(source, None).await?;
             if once {
                 let sample = slurm.sample().await?;
                 println!("{}", serde_json::to_string(&sample)?);
@@ -144,19 +153,31 @@ async fn main() -> Result<()> {
             minutes,
             out,
         } => {
-            let slurm =
-                Slurm::connect(Source::Record(Recorder::create(&out, pseudonymize)?)).await?;
+            let recorder = Recorder::create(&out, pseudonymize)?;
+            let slurm = Slurm::connect(Source::live(&config.slurm)?, Some(recorder)).await?;
             let until = glurmo_model::UnixTime(slurm.now().0 + minutes * 60);
             stream(slurm, &config, None, Some(until)).await?;
             eprintln!("recorded to {}", out.display());
         }
         Command::Pseudonymize { raw, out } => {
             let mut recorder = Recorder::create(&out, true)?;
+            for exchange in slurm::recording::read(&raw)? {
+                recorder.write(&exchange)?;
+            }
+        }
+        Command::Convert { old, out } => {
             let file =
-                File::open(&raw).with_context(|| format!("cannot open {}", raw.display()))?;
-            for (number, line) in BufReader::new(file).lines().enumerate() {
-                let exchange: Exchange = serde_json::from_str(&line?)
-                    .with_context(|| format!("{} line {}", raw.display(), number + 1))?;
+                File::open(&old).with_context(|| format!("cannot open {}", old.display()))?;
+            let exchanges = BufReader::new(file)
+                .lines()
+                .enumerate()
+                .map(|(number, line)| {
+                    serde_json::from_str(&line?)
+                        .with_context(|| format!("{} line {}", old.display(), number + 1))
+                })
+                .collect::<Result<Vec<slurm::cli::Exchange>>>()?;
+            let mut recorder = Recorder::create(&out, false)?;
+            for exchange in slurm::cli::convert(&exchanges)? {
                 recorder.write(&exchange)?;
             }
         }
@@ -170,7 +191,7 @@ async fn main() -> Result<()> {
 async fn serve(config: &Config, replay: Option<&Path>) -> Result<()> {
     let scratch = tempfile::tempdir()?;
     let (slurm, path, store) = if let Some(recording) = replay {
-        let slurm = Slurm::connect(Source::Replay(Replay::open(recording)?.paced())).await?;
+        let slurm = Slurm::connect(Source::Replay(Replay::open(recording)?.paced()), None).await?;
         let path = scratch.path().join("replay.sqlite");
         let settings = Settings {
             backfill_days: 0,
@@ -180,7 +201,7 @@ async fn serve(config: &Config, replay: Option<&Path>) -> Result<()> {
         let store = Store::open(&path, settings)?;
         (slurm, path, store)
     } else {
-        let slurm = Slurm::connect(Source::Live).await?;
+        let slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
         let path = store_path(&config.store, &slurm.site().cluster)?;
         let store = open_store(&config.store, &path)?;
         (slurm, path, store)

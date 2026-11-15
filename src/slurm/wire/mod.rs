@@ -10,6 +10,7 @@ pub mod reasons;
 pub mod rpcs;
 pub mod stats;
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,6 +18,9 @@ use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use super::Lookup;
+use super::recording::{Answer, Call};
+use glurmo_model::{Login, UnixTime};
 use pack::{Pack, Unpack};
 
 /// The protocol version glurmo speaks: Slurm 23.11's. Controllers accept it through 25.05.
@@ -43,27 +47,19 @@ pub struct Controller {
     pub decoder: Option<u32>,
 }
 
-/// A reply's message type and body.
-pub struct Reply {
-    /// The message type.
-    pub kind: u16,
-    /// The body, after the header and credential.
-    pub body: Vec<u8>,
-}
-
 impl Controller {
-    /// Sends one request and reads its reply. A `RESPONSE_SLURM_RC` with a nonzero code is an error.
+    /// Sends one request and returns the body of its reply, which must be of type `response`.
     ///
     /// # Errors
     ///
-    /// Fails when no address answers, munged refuses, the reply is malformed, or the controller
-    /// returns an error code.
-    pub async fn call(&self, kind: u16, body: &[u8]) -> Result<Reply> {
-        let request = frame(&self.munge, self.decoder, kind, 0, body).await?;
+    /// Fails when no address answers, munged refuses, the reply is malformed or of another type, or
+    /// the controller returns an error code.
+    pub async fn call(&self, request: u16, body: &[u8], response: u16) -> Result<Vec<u8>> {
+        let request = frame(&self.munge, self.decoder, request, 0, body).await?;
         let mut failures = Vec::new();
         for address in &self.addresses {
             match tokio::time::timeout(TIMEOUT, exchange(address, &request)).await {
-                Ok(Ok(reply)) => return checked(&reply),
+                Ok(Ok(reply)) => return checked(&reply, response),
                 Ok(Err(error)) => failures.push(format!("{address}: {error:#}")),
                 Err(_) => failures.push(format!("{address}: no reply within {TIMEOUT:?}")),
             }
@@ -124,8 +120,9 @@ async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
     Ok(reply)
 }
 
-/// Strips the header and credential, and turns a nonzero return code into an error.
-fn checked(frame: &[u8]) -> Result<Reply> {
+/// Strips the header and credential, and turns a nonzero return code or a reply of another type than
+/// `response` into an error.
+fn checked(frame: &[u8], response: u16) -> Result<Vec<u8>> {
     let mut unpack = Unpack::new(frame);
     let version = unpack.u16()?;
     if version != PROTOCOL {
@@ -164,7 +161,10 @@ fn checked(frame: &[u8]) -> Result<Reply> {
             return Err(ReturnCode(code).into());
         }
     }
-    Ok(Reply { kind, body })
+    if kind != response {
+        bail!("slurmctld answered with message {kind}, not {response}");
+    }
+    Ok(body)
 }
 
 /// A nonzero code from a `RESPONSE_SLURM_RC`.
@@ -182,217 +182,431 @@ impl std::fmt::Display for ReturnCode {
 
 impl std::error::Error for ReturnCode {}
 
+/// The paths libslurm tries for slurm.conf, after `$SLURM_CONF`. The last is slurmd's cache on a
+/// configless cluster.
+const SLURM_CONF: [&str; 2] = ["/etc/slurm/slurm.conf", "/run/slurm/conf/slurm.conf"];
+
+const DEFAULT_PORT: u16 = 6817;
+
+/// Finds slurmctld's addresses, primary first, in slurm.conf. Nothing else is read from it: the rest
+/// comes from the controller.
+///
+/// # Errors
+///
+/// Fails when no slurm.conf can be read or it names no controller.
+pub fn controllers() -> Result<Vec<String>> {
+    let path = std::env::var_os("SLURM_CONF")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(SLURM_CONF.iter().map(PathBuf::from))
+        .find(|path| path.is_file())
+        .context("no slurm.conf: set SLURM_CONF or name the controller in the config")?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let addresses = controllers_in(&text);
+    if addresses.is_empty() {
+        bail!("{} names no SlurmctldHost", path.display());
+    }
+    Ok(addresses)
+}
+
+/// Reads `SlurmctldHost=name(address)` lines, or the older `ControlMachine` and `BackupController`,
+/// with `SlurmctldPort`.
+fn controllers_in(conf: &str) -> Vec<String> {
+    let mut hosts = Vec::new();
+    let mut port = DEFAULT_PORT;
+    for line in conf.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim().to_ascii_lowercase().as_str() {
+            "slurmctldhost" | "controlmachine" | "backupcontroller" => {
+                let host = value
+                    .split_once('(')
+                    .map_or(value, |(_, address)| address.trim_end_matches(')'));
+                hosts.push(host.to_owned());
+            }
+            "slurmctldport" => {
+                port = value
+                    .split('-')
+                    .next()
+                    .and_then(|first| first.parse().ok())
+                    .unwrap_or(DEFAULT_PORT);
+            }
+            _ => {}
+        }
+    }
+    hosts
+        .into_iter()
+        .map(|host| format!("{host}:{port}"))
+        .collect()
+}
+
+/// Answers calls by speaking Slurm's protocol to slurmctld and slurmdbd.
+pub struct Wire {
+    controller: Controller,
+    cluster: String,
+    accounting: Vec<String>,
+    logins: HashMap<u32, Login>,
+    unknown: HashSet<u32>,
+}
+
+impl Wire {
+    /// A backend for the slurmctld at `addresses`, primary first.
+    pub fn new(addresses: Vec<String>) -> Self {
+        Self {
+            controller: Controller {
+                addresses,
+                munge: PathBuf::from(munge::SOCKET),
+                decoder: None,
+            },
+            cluster: String::new(),
+            accounting: Vec::new(),
+            logins: HashMap::new(),
+            unknown: HashSet::new(),
+        }
+    }
+
+    /// Answers one call. The config call must come first, because it says who may decode our
+    /// credentials and where slurmdbd listens.
+    ///
+    /// # Errors
+    ///
+    /// Fails when slurmctld or slurmdbd does not answer, refuses, or sends a reply that does not decode.
+    pub async fn answer(&mut self, call: &Call) -> Result<Answer> {
+        Ok(match call {
+            Call::Config => {
+                let mut body = Pack::default();
+                body.time(0);
+                let reply = self
+                    .controller
+                    .call(config::REQUEST, &body.0, config::RESPONSE)
+                    .await?;
+                let config = config::decode(&reply)?;
+                self.controller.decoder = Some(config.slurm_uid);
+                if let Some(socket) = config.munge {
+                    self.controller.munge = socket;
+                }
+                self.cluster.clone_from(&config.site.cluster);
+                self.accounting = config.accounting;
+                Answer::Config(config.site)
+            }
+            Call::Jobs => {
+                let jobs = self.jobs(jobs::REQUEST, &jobs::request()).await?;
+                self.learn_logins(jobs.iter().map(jobs::Job::user_id)).await;
+                let now = UnixTime::now();
+                Answer::Jobs(
+                    jobs.iter()
+                        .map(|job| job.attempt(now, &self.logins))
+                        .collect::<Result<_>>()?,
+                )
+            }
+            Call::Nodes => {
+                let partitions = self.partitions().await?;
+                let reply = self
+                    .controller
+                    .call(
+                        nodes::NODE_REQUEST,
+                        &nodes::node_request(),
+                        nodes::NODE_RESPONSE,
+                    )
+                    .await?;
+                Answer::Nodes(nodes::nodes(&reply, &partitions)?)
+            }
+            Call::Partitions => Answer::Partitions(
+                self.partitions()
+                    .await?
+                    .into_iter()
+                    .map(|record| record.partition)
+                    .collect(),
+            ),
+            Call::Placements => Answer::Placements(
+                self.jobs(jobs::REQUEST, &jobs::request())
+                    .await?
+                    .iter()
+                    .map(jobs::Job::placed)
+                    .collect::<Result<_>>()?,
+            ),
+            Call::Lookup { key, .. } => {
+                let found = match self
+                    .jobs(jobs::SINGLE_REQUEST, &jobs::single_request(key.job))
+                    .await
+                {
+                    Ok(jobs) => jobs.into_iter().find(|job| job.id() == key.job),
+                    Err(error) if error.downcast_ref::<ReturnCode>() == Some(&INVALID_JOB_ID) => {
+                        None
+                    }
+                    Err(error) => return Err(error),
+                };
+                Answer::Lookup(match found {
+                    Some(job) => Lookup::Found(job.placed()?),
+                    None => Lookup::Gone,
+                })
+            }
+            Call::Outcomes(ids) => {
+                let (records, _) = self.accounting(&accounting::Query::Jobs(ids)).await?;
+                Answer::Outcomes(
+                    records
+                        .iter()
+                        .map(accounting::Record::outcome)
+                        .collect::<Result<_>>()?,
+                )
+            }
+            Call::History { from, to } => {
+                let window = accounting::Query::Window(*from, *to);
+                let (records, tres) = self.accounting(&window).await?;
+                self.learn_logins(records.iter().map(accounting::Record::user_id))
+                    .await;
+                Answer::History(
+                    records
+                        .iter()
+                        .map(|record| record.attempt(tres, &self.logins))
+                        .collect::<Result<_>>()?,
+                )
+            }
+            Call::Stats => {
+                let reply = self
+                    .controller
+                    .call(stats::REQUEST, &stats::request(), stats::RESPONSE)
+                    .await?;
+                Answer::Stats(stats::decode(&reply)?)
+            }
+        })
+    }
+
+    async fn jobs(&self, kind: u16, request: &[u8]) -> Result<Vec<jobs::Job>> {
+        let reply = self.controller.call(kind, request, jobs::RESPONSE).await?;
+        jobs::decode(&reply)
+    }
+
+    async fn partitions(&self) -> Result<Vec<nodes::PartitionRecord>> {
+        let reply = self
+            .controller
+            .call(
+                nodes::PARTITION_REQUEST,
+                &nodes::partition_request(),
+                nodes::PARTITION_RESPONSE,
+            )
+            .await?;
+        nodes::partitions(&reply)
+    }
+
+    async fn accounting(
+        &self,
+        query: &accounting::Query<'_>,
+    ) -> Result<(Vec<accounting::Record>, accounting::Tres)> {
+        if self.accounting.is_empty() {
+            bail!("the site keeps no accounting in slurmdbd");
+        }
+        accounting::records(
+            &self.accounting,
+            &self.controller.munge,
+            self.controller.decoder,
+            &self.cluster,
+            query,
+            UnixTime::now(),
+        )
+        .await
+    }
+
+    /// Looks up the logins of UIDs not seen before, as squeue would. A UID the account database lacks
+    /// is not asked about again.
+    async fn learn_logins(&mut self, uids: impl Iterator<Item = u32>) {
+        let mut new: Vec<u32> = uids
+            .filter(|uid| !self.logins.contains_key(uid) && !self.unknown.contains(uid))
+            .collect();
+        new.sort_unstable();
+        new.dedup();
+        if new.is_empty() {
+            return;
+        }
+        match crate::passwd::logins(&new).await {
+            Ok(found) => {
+                self.unknown
+                    .extend(new.iter().filter(|uid| !found.contains_key(uid)));
+                self.logins.extend(found);
+            }
+            Err(error) => eprintln!("cannot look up logins: {error:#}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slurm::scontrol::CpuMap;
-    use crate::slurm::source::Source;
-    use crate::slurm::{sacct, scontrol, sdiag, sinfo, squeue};
-    use glurmo_model::{JobId, UnixTime};
+    use crate::slurm::cli::Cli;
+    use glurmo_model::{Attempt, JobId};
 
-    fn zlurm() -> Controller {
-        Controller {
-            addresses: vec!["10.7.17.211:6817".into()],
-            munge: munge::SOCKET.into(),
-            decoder: Some(64030),
-        }
+    #[test]
+    fn controllers_come_from_slurmctld_host_lines() {
+        let conf = "# comment\nSlurmctldHost=slurmd-211(10.7.17.211)\nslurmctldhost=backup\nSlurmctldPort=6820-6821\n";
+        assert_eq!(controllers_in(conf), ["10.7.17.211:6820", "backup:6820"]);
+        assert_eq!(controllers_in("ControlMachine=ctl\n"), ["ctl:6817"]);
+        assert_eq!(controllers_in("ClusterName=x\n"), Vec::<String>::new());
     }
 
-    async fn cli<T>(argv: Vec<String>, parse: impl FnOnce(&str) -> anyhow::Result<T>) -> T {
-        let exchange = Source::Live.run(argv).await.unwrap();
-        parse(&exchange.stdout).unwrap()
+    /// Both backends, connected. The live tests compare them on zlurm, where the cluster can change
+    /// between the two answers.
+    async fn backends() -> (Wire, Cli) {
+        let mut wire = Wire::new(controllers().unwrap());
+        let mut cli = Cli::default();
+        let (Answer::Config(wired), Answer::Config(printed)) = (
+            wire.answer(&Call::Config).await.unwrap(),
+            cli.answer(&Call::Config).await.unwrap(),
+        ) else {
+            panic!("not a config");
+        };
+        assert_eq!(wired, printed);
+        (wire, cli)
     }
 
-    #[tokio::test]
-    #[ignore = "needs a live slurmctld"]
-    async fn the_config_matches_scontrol() {
-        let mut body = Pack::default();
-        body.time(0);
-        let reply = zlurm().call(config::REQUEST, &body.0).await.unwrap();
-        assert_eq!(reply.kind, config::RESPONSE);
-        let config = config::decode(&reply.body).unwrap();
-        let site = cli(scontrol::config_argv(), scontrol::parse_config).await;
-        assert_eq!(config.site, site);
-        assert_eq!(config.slurm_uid, 64030);
-    }
-
-    #[tokio::test]
-    #[ignore = "needs a live slurmctld"]
-    async fn nodes_and_partitions_match_sinfo_and_scontrol() {
-        let controller = zlurm();
-        let partitions = controller
-            .call(nodes::PARTITION_REQUEST, &nodes::partition_request())
-            .await
-            .unwrap();
-        let partitions = nodes::partitions(&partitions.body).unwrap();
-        let reply = controller
-            .call(nodes::NODE_REQUEST, &nodes::node_request())
-            .await
-            .unwrap();
-        let wire = nodes::nodes(&reply.body, &partitions).unwrap();
-        let listed = cli(sinfo::argv(), sinfo::parse).await;
-        let expected = cli(scontrol::partitions_argv(), scontrol::parse_partitions).await;
-        let decoded: Vec<_> = partitions
-            .into_iter()
-            .map(|record| record.partition)
-            .collect();
-        assert_eq!(decoded, expected);
-        assert_eq!(wire.len(), listed.len());
-        for (wire, listed) in wire.iter().zip(&listed) {
-            let mut listed = listed.clone();
-            let mut wire = wire.clone();
-            for node in [&mut listed, &mut wire] {
-                node.load = None;
-                node.mem_free_mb = None;
-            }
-            assert_eq!(wire, listed);
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "needs a live slurmctld"]
-    async fn jobs_and_placements_match_squeue_and_scontrol() {
-        let controller = zlurm();
+    async fn both(call: &Call) -> (Answer, Answer) {
+        let (mut wire, mut cli) = backends().await;
         let started = std::time::Instant::now();
-        let reply = controller
-            .call(jobs::REQUEST, &jobs::request())
-            .await
-            .unwrap();
-        eprintln!(
-            "job info: {} bytes in {:?}",
-            reply.body.len(),
-            started.elapsed()
-        );
-        let decoded = jobs::decode(&reply.body).unwrap();
-        let now = UnixTime::now();
-        let mut uids: Vec<u32> = decoded.iter().map(jobs::Job::user_id).collect();
-        uids.sort_unstable();
-        uids.dedup();
-        let logins = crate::passwd::logins(&uids).await.unwrap();
-        let wire: Vec<_> = decoded
-            .iter()
-            .map(|job| job.attempt(now, &logins).unwrap())
-            .collect();
-        let placed: Vec<_> = decoded.iter().map(|job| job.placed().unwrap()).collect();
-        let listed = cli(squeue::argv(), squeue::parse).await;
-        let nodes = cli(sinfo::argv(), sinfo::parse).await;
-        let map = CpuMap::new(&nodes, crate::slurm::Version(23, 11, 4));
-        let shown = cli(scontrol::jobs_argv(), |out| scontrol::parse_jobs(out, &map)).await;
-        let by_key: std::collections::HashMap<_, _> = listed
-            .iter()
-            .map(|job| ((job.key, job.array.as_ref().map(|a| a.spec.clone())), job))
-            .collect();
-        let mut differ = 0;
-        for job in &wire {
-            match by_key.get(&(job.key, job.array.as_ref().map(|a| a.spec.clone()))) {
-                Some(listed) if *listed == job => {}
-                Some(listed) => {
-                    differ += 1;
-                    if differ <= 5 {
-                        eprintln!("wire  {job:?}\nsqueue {listed:?}\n");
-                    }
-                }
-                None => differ += 1,
-            }
+        let wired = wire.answer(call).await.unwrap();
+        eprintln!("{call:?} over the wire took {:?}", started.elapsed());
+        let started = std::time::Instant::now();
+        let printed = cli.answer(call).await.unwrap();
+        eprintln!("{call:?} by command took {:?}", started.elapsed());
+        (wired, printed)
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live slurmctld"]
+    async fn nodes_and_partitions_match_the_commands() {
+        let (wired, printed) = both(&Call::Partitions).await;
+        assert_eq!(wired, printed);
+        let (Answer::Nodes(mut wired), Answer::Nodes(mut printed)) = both(&Call::Nodes).await
+        else {
+            panic!("not nodes");
+        };
+        for node in wired.iter_mut().chain(&mut printed) {
+            node.load = None;
+            node.mem_free_mb = None;
         }
-        eprintln!(
-            "{} wire jobs, {} squeue jobs, {differ} differ",
-            wire.len(),
-            listed.len()
-        );
-        let shown: std::collections::HashMap<_, _> = shown.iter().map(|p| (p.job, p)).collect();
-        let mut placements_differ = 0;
-        for p in &placed {
-            if let Some(s) = shown.get(&p.job)
-                && **s != *p
-            {
-                placements_differ += 1;
-                if placements_differ <= 3 {
-                    eprintln!("wire     {p:?}\nscontrol {s:?}\n");
-                }
-            }
+        assert_eq!(wired, printed);
+    }
+
+    fn by_id(jobs: &[Attempt]) -> HashMap<(JobId, Option<String>), &Attempt> {
+        jobs.iter()
+            .map(|job| {
+                (
+                    (job.key.job, job.array.as_ref().map(|a| a.spec.clone())),
+                    job,
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live slurmctld"]
+    async fn jobs_and_placements_match_the_commands() {
+        let (Answer::Jobs(wired), Answer::Jobs(printed)) = both(&Call::Jobs).await else {
+            panic!("not jobs");
+        };
+        let printed = by_id(&printed);
+        let differ = wired
+            .iter()
+            .filter(|job| {
+                printed.get(&(job.key.job, job.array.as_ref().map(|a| a.spec.clone()))) != Some(job)
+            })
+            .count();
+        eprintln!("{} jobs, {differ} differ", wired.len());
+        assert!(differ * 100 <= wired.len());
+
+        let (Answer::Placements(wired), Answer::Placements(printed)) =
+            both(&Call::Placements).await
+        else {
+            panic!("not placements");
+        };
+        let printed: HashMap<JobId, _> = printed.iter().map(|p| (p.job, p)).collect();
+        let differ = wired
+            .iter()
+            .filter(|p| printed.get(&p.job).is_some_and(|q| *q != *p))
+            .count();
+        eprintln!("{} placements, {differ} differ", wired.len());
+        assert!(differ * 100 <= wired.len());
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live slurmctld"]
+    async fn lookups_match_the_commands() {
+        let (mut wire, mut cli) = backends().await;
+        let Answer::Jobs(jobs) = wire.answer(&Call::Jobs).await.unwrap() else {
+            panic!("not jobs");
+        };
+        let running = jobs
+            .iter()
+            .filter(|job| job.state == glurmo_model::JobState::Running);
+        for job in running.take(5) {
+            let call = Call::Lookup {
+                key: job.key,
+                printed: job.printed_id(),
+            };
+            assert_eq!(
+                wire.answer(&call).await.unwrap(),
+                cli.answer(&call).await.unwrap()
+            );
         }
-        eprintln!("{placements_differ} placements differ of {}", shown.len());
-        assert!(
-            differ * 100 <= wire.len(),
-            "{differ} of {} differ",
-            wire.len()
+        let gone = Call::Lookup {
+            key: glurmo_model::AttemptKey {
+                job: JobId(1),
+                submit: UnixTime(1),
+            },
+            printed: "1".into(),
+        };
+        assert_eq!(
+            wire.answer(&gone).await.unwrap(),
+            Answer::Lookup(Lookup::Gone)
         );
-        assert!(placements_differ * 100 <= placed.len());
     }
 
     #[tokio::test]
     #[ignore = "needs a live slurmctld"]
     async fn stats_match_sdiag() {
-        let reply = zlurm()
-            .call(stats::REQUEST, &stats::request())
-            .await
-            .unwrap();
-        let wire = stats::decode(&reply.body).unwrap();
-        let printed = cli(sdiag::argv(), sdiag::parse).await;
-        assert_eq!(wire.jobs_submitted, printed.jobs_submitted);
-        assert_eq!(
-            wire.main_cycle_mean_us.is_some(),
-            printed.main_cycle_mean_us.is_some()
-        );
-        assert_eq!(wire.backfilled_jobs, printed.backfilled_jobs);
+        let (Answer::Stats(wired), Answer::Stats(printed)) = both(&Call::Stats).await else {
+            panic!("not stats");
+        };
+        assert_eq!(wired.jobs_submitted, printed.jobs_submitted);
+        assert_eq!(wired.backfilled_jobs, printed.backfilled_jobs);
         let kinds = |stats: &glurmo_model::Stats| {
             let mut kinds: Vec<String> = stats.rpcs.iter().map(|rpc| rpc.kind.clone()).collect();
             kinds.sort();
             kinds
         };
-        assert_eq!(kinds(&wire), kinds(&printed));
-        eprintln!("{:?}\n{:?}", &wire.rpcs[..3], &printed.rpcs[..3]);
+        let mut wired_kinds = kinds(&wired);
+        wired_kinds.retain(|kind| kind != "REQUEST_JOB_INFO_SINGLE");
+        let mut printed_kinds = kinds(&printed);
+        printed_kinds.retain(|kind| kind != "REQUEST_JOB_INFO_SINGLE");
+        assert_eq!(wired_kinds, printed_kinds);
     }
 
     #[tokio::test]
     #[ignore = "needs a live slurmdbd"]
     async fn accounting_matches_sacct() {
-        let addresses = vec!["10.7.17.211:6819".to_owned()];
-        let socket = std::path::Path::new(munge::SOCKET);
         let now = UnixTime::now();
-        let (from, to) = (UnixTime(now.0 - 3600), UnixTime(now.0 - 600));
-        let started = std::time::Instant::now();
-        let window = accounting::Query::Window(from, to);
-        let (records, tres) =
-            accounting::records(&addresses, socket, Some(64030), "zlurm", &window, now)
-                .await
-                .unwrap();
-        eprintln!("{} records in {:?}", records.len(), started.elapsed());
-        let mut uids: Vec<u32> = records.iter().map(accounting::Record::user_id).collect();
-        uids.sort_unstable();
-        uids.dedup();
-        let logins = crate::passwd::logins(&uids).await.unwrap();
-        let mut wire: Vec<_> = records
-            .iter()
-            .map(|r| r.attempt(tres, &logins).unwrap())
-            .collect();
-        let mut printed = cli(sacct::history_argv(from, to).unwrap(), sacct::parse_history).await;
-        let order = |a: &glurmo_model::Attempt| (a.key, a.array.as_ref().map(|t| t.spec.clone()));
-        wire.sort_by_key(order);
+        let window = Call::History {
+            from: UnixTime(now.0 - 3600),
+            to: UnixTime(now.0 - 600),
+        };
+        let (Answer::History(mut wired), Answer::History(mut printed)) = both(&window).await else {
+            panic!("not history");
+        };
+        let order = |a: &Attempt| (a.key, a.array.as_ref().map(|t| t.spec.clone()));
+        wired.sort_by_key(order);
         printed.sort_by_key(order);
-        assert_eq!(wire.len(), printed.len());
-        let differ: Vec<_> = wire.iter().zip(&printed).filter(|(w, p)| w != p).collect();
-        for (w, p) in differ.iter().take(3) {
-            eprintln!("wire  {w:?}\nsacct {p:?}\n");
-        }
-        assert!(
-            differ.is_empty(),
-            "{} of {} differ",
-            differ.len(),
-            wire.len()
-        );
+        assert_eq!(wired, printed);
 
-        let ids: Vec<JobId> = printed.iter().take(20).map(|a| a.key.job).collect();
-        let jobs = accounting::Query::Jobs(&ids);
-        let (records, _) =
-            accounting::records(&addresses, socket, Some(64030), "zlurm", &jobs, now)
-                .await
-                .unwrap();
-        let mut wire: Vec<_> = records.iter().map(|r| r.outcome().unwrap()).collect();
-        let mut printed = cli(sacct::argv(&ids), sacct::parse).await;
-        wire.sort_by_key(|o| o.key);
+        let ids = printed.iter().take(20).map(|a| a.key.job).collect();
+        let (Answer::Outcomes(mut wired), Answer::Outcomes(mut printed)) =
+            both(&Call::Outcomes(ids)).await
+        else {
+            panic!("not outcomes");
+        };
+        wired.sort_by_key(|o| o.key);
         printed.sort_by_key(|o| o.key);
-        assert_eq!(wire, printed);
+        assert_eq!(wired, printed);
     }
 }

@@ -11,7 +11,7 @@ use crate::config::{Config, Names};
 use crate::diff::{Known, placed};
 use crate::hub::Hub;
 use crate::passwd;
-use crate::slurm::source::Exhausted;
+use crate::slurm::recording::Exhausted;
 use crate::slurm::{Lookup, Slurm};
 use crate::store::Store;
 use glurmo_model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
@@ -326,8 +326,7 @@ impl Sampler {
             None
         };
         let placements = if jobs.is_some() && self.cold {
-            let nodes = nodes.as_deref().unwrap_or(self.known.nodes());
-            Some(self.placing.time(self.slurm.placements(nodes)).await.0?)
+            Some(self.placing.time(self.slurm.placements()).await.0?)
         } else {
             None
         };
@@ -455,7 +454,7 @@ impl Sampler {
             let Some(attempt) = self.lookups.pop_front() else {
                 break;
             };
-            let lookup = self.slurm.lookup(&attempt, self.known.nodes());
+            let lookup = self.slurm.lookup(&attempt);
             match self.looking_up.time(lookup).await.0 {
                 Ok(Lookup::Found(found)) => events.extend(placed(&attempt, found)),
                 Ok(Lookup::Gone) => {}
@@ -491,6 +490,7 @@ mod tests {
 
     use super::*;
     use crate::fixture::{busy_hub, busy_quarter_hour, busy_quarter_hour_with, zlurm_config};
+    use crate::slurm::recording::Call;
     use crate::store::Settings;
     use glurmo_model::{AttemptKey, Cluster, Delta, Owner};
 
@@ -542,16 +542,13 @@ mod tests {
     async fn store_agrees_with_the_deltas_after_a_controller_outage() {
         let mut listings = 0;
         let slurm = busy_quarter_hour_with(|exchange| {
-            if exchange.argv[0] != "squeue" {
+            if exchange.call != Call::Jobs {
                 return;
             }
             listings += 1;
             // Backoff spaces these seven failures over more than MinJobAge.
             if (25..32).contains(&listings) {
-                exchange.status = 1;
-                exchange.stdout.clear();
-                exchange.stderr =
-                    "squeue: error: Unable to contact slurm controller (connect failure)\n".into();
+                exchange.answer = Err("slurmctld did not answer: connection refused".into());
             }
         })
         .await;
@@ -565,9 +562,7 @@ mod tests {
             })
             .collect();
         assert_eq!(outages.len(), 2, "{outages:?}");
-        assert!(
-            outages[0].is_some_and(|error| error.contains("Unable to contact slurm controller"))
-        );
+        assert!(outages[0].is_some_and(|error| error.contains("slurmctld did not answer")));
         assert_eq!(outages[1], None);
         let last = deltas.last().unwrap().at;
         let covered: i64 = rusqlite::Connection::open(dir.path().join("glurmo.sqlite"))
