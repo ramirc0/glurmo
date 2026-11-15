@@ -202,22 +202,27 @@ async fn usage(
 ) -> Result<Json<Vec<glurmo_model::usage::Step>>, Failure> {
     let now = UnixTime::now();
     let to = params.to.unwrap_or(now.0);
-    let query = UsageQuery {
-        from: UnixTime(params.from.unwrap_or(to - 86_400)),
-        to: UnixTime(to),
-        step_s: params.step.unwrap_or(300).max(1),
-        by: params.by.unwrap_or(By::Login),
+    let step_s = params.step.unwrap_or(300).max(1);
+    let fits = |from: &i64| {
+        to.checked_sub(*from)
+            .is_some_and(|span| span > 0 && span / step_s <= MAX_STEPS)
     };
-    if query.to <= query.from || (query.to.0 - query.from.0) / query.step_s > MAX_STEPS {
+    let Some(from) = params.from.or_else(|| to.checked_sub(86_400)).filter(fits) else {
         return Err(Failure(
             StatusCode::BAD_REQUEST,
             format!("from must come before to, with at most {MAX_STEPS} steps between"),
         ));
-    }
-    let steps = tokio::task::spawn_blocking(move || app.history.usage(&query, now))
+    };
+    let query = UsageQuery {
+        from: UnixTime(from),
+        to: UnixTime(to),
+        step_s,
+        by: params.by.unwrap_or(By::Login),
+    };
+    let usage = tokio::task::spawn_blocking(move || app.history.usage(&query, now))
         .await
         .context("the usage query panicked")??;
-    Ok(Json(steps))
+    Ok(Json(usage))
 }
 
 /// A past moment, in Unix seconds.
@@ -274,7 +279,11 @@ async fn past_events(
 ) -> Result<Json<Vec<Delta>>, Failure> {
     let from = UnixTime(params.from);
     let to = UnixTime(params.to.min(UnixTime::now().0));
-    if params.to <= params.from || params.to - params.from > MAX_PAST_S {
+    if !params
+        .to
+        .checked_sub(params.from)
+        .is_some_and(|span| span > 0 && span <= MAX_PAST_S)
+    {
         return Err(Failure(
             StatusCode::BAD_REQUEST,
             format!("from must come before to, at most {MAX_PAST_S} s before"),
@@ -539,6 +548,8 @@ mod tests {
             "/api/usage?from=10&to=5",
             "/api/usage?from=0&to=100000000&step=300",
             "/api/usage?by=person",
+            "/api/usage?from=-9000000000000000000&to=9000000000000000000&step=300",
+            "/api/usage?to=-9223372036854775000",
         ] {
             let (status, _, _) = get(&router, bad).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
@@ -579,6 +590,7 @@ mod tests {
             format!("/api/past/events?from={last}&to={first}"),
             format!("/api/past/events?from={first}&to={}", first + 7 * 3_600),
             "/api/past?at=now".to_owned(),
+            "/api/past/events?from=-9000000000000000000&to=9000000000000000000".to_owned(),
         ] {
             let (status, _, body) = get(&router, &bad).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
