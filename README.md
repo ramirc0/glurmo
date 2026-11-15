@@ -4,7 +4,7 @@ A live view of who holds which cores and GPUs on a Slurm cluster.
 
 ## Description
 
-Glurmo samples Slurm with `squeue`, `sinfo`, `scontrol`, `sdiag` and `sacct`. Each sample becomes a delta of starts, ends, core placements and queue changes. `glurmo serve` keeps the history in SQLite and streams the deltas over HTTP as server-sent events. `glurmo tui` follows that stream, or samples the cluster itself. The server also serves a web view of the same stream, sized for a desk or a wall display. Both views draw every core and GPU in the color of the user who holds it, beside panels for users, the queue, node health, and the last day of usage.
+Glurmo speaks Slurm's RPC protocol to slurmctld and slurmdbd, authenticated through munge. It needs no Slurm commands, and one call places every core of every job. Each sample becomes a delta of starts, ends, core placements and queue changes. `glurmo serve` keeps the history in SQLite and streams the deltas over HTTP as server-sent events. `glurmo tui` follows that stream, or samples the cluster itself. The server also serves a web view of the same stream, sized for a desk or a wall display. Both views draw every core and GPU in the color of the user who holds it, beside panels for users, the queue, node health, and the last day of usage.
 
 Glurmo only reads. It never acts on Slurm and sends no notifications. It shows no per-person efficiency, idle, or failure counts.
 
@@ -14,7 +14,9 @@ The name comes from Glurmo, the foreman of the Slurm factory in *Futurama*, the 
 
 ### Dependencies
 
-* Linux on x86-64, with the Slurm client commands on `PATH`. glurmo is tested on Slurm 23.11.
+* Linux on x86-64, with munged running and the cluster's munge key. glurmo speaks Slurm 23.11's protocol, which controllers through 25.05 accept. It is tested on Slurm 23.11.
+* The controller's address comes from `SlurmctldHost` in slurm.conf, found as Slurm's own tools find it. A host without slurm.conf can name the controller in the config.
+* Accounts come from `/etc/passwd`, then SSSD's socket. Without SSSD, glurmo runs `getent passwd`.
 * The history file must sit on a local disk, such as `/scratch`. SQLite locks are unreliable on NFS, Ceph or Lustre.
 * Building needs Rust 1.100 with the `x86_64-unknown-linux-musl` and `wasm32-unknown-unknown` targets, [just](https://github.com/casey/just) and [trunk](https://trunkrs.dev). `rust-toolchain.toml` pins the version. `just static` builds the web view first and embeds it in the binary.
 
@@ -31,6 +33,7 @@ Settings live in `~/.config/glurmo/config.ron`. Every field is optional.
 
 ```ron
 Config(
+    slurm: (backend: Wire, controller: ["10.7.17.211:6817"]),
     sample: (jobs: "10s", nodes: "30s", partitions: "10m", stats: "60s", lookups: 25),
     store: (path: "/scratch/you/glurmo/zlurm.sqlite", keep: Forever, backfill: Days(30)),
     server: (listen: "127.0.0.1:8765"),
@@ -40,11 +43,11 @@ Config(
 )
 ```
 
-`gpu_models` names the GPUs in each partition for clusters whose GRES lists no GPU type.
+`gpu_models` names the GPUs in each partition for clusters whose GRES lists no GPU type. `backend: Cli` runs Slurm's commands instead, for a cluster newer than 25.05. Only that backend makes `lookups` placement lookups each tick.
 
 ### Executing program
 
-* Check what the cluster allows and what each command costs:
+* Check what the cluster allows and what each call costs the controller:
   ```
   glurmo probe
   ```
@@ -57,7 +60,7 @@ Config(
   glurmo tui --server http://js029:8765
   glurmo tui
   ```
-* Sample the cluster in-process when no server runs. The view then backfills the last day from `sacct`.
+* Sample the cluster in-process when no server runs. The view then backfills the last day from slurmdbd.
   ```
   glurmo tui --embedded
   ```
@@ -94,6 +97,7 @@ Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pin
 * The terminal view writes its messages to `~/.local/state/glurmo/tui.log`, so they stay off the screen.
 * In embedded mode the history panel stays empty until the first five-minute bin closes.
 * A red banner in the header means the server or Slurm stopped answering. It says since when and why. The web view reconnects on its own and catches up without reloading.
+* `glurmo record` saves each call and its answer, and `glurmo pseudonymize` rewrites the logins and job names in a recording. `glurmo convert` turns a recording of command output, made by glurmo before it spoke the protocol, into one of calls and answers.
 
 ## Authors
 
