@@ -135,7 +135,13 @@ main.tv {
   position: relative;
   background: none;
   padding: 0;
-  overflow: hidden;
+  overflow: hidden auto;
+}
+
+.die .board {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
 }
 
 .tip {

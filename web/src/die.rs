@@ -14,7 +14,6 @@ use rtviz_model::units::{load, thousands};
 use rtviz_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use web_sys::CanvasRenderingContext2d;
 
-use wasm_bindgen::JsCast;
 
 use crate::paint::{Rgb, Surface, user_color};
 use crate::state::{Highlight, State};
@@ -501,40 +500,51 @@ fn place<'a>(node: &'a Node, frame: Rect, pitch: &Pitch) -> Tile<'a> {
 }
 
 /// The die panel. Hovering a core shows the job that holds it, and hovering elsewhere on a tile shows
-/// the node.
+/// the node. Tiles fit the panel's visible height. When even the smallest tiles overflow it, the board
+/// grows to its own height and the panel scrolls.
 #[component]
 pub fn Die(group: Grouping) -> impl IntoView {
     let state = expect_context::<State>();
     let tip = RwSignal::new(None::<Tip>);
+    let panel = NodeRef::<leptos::html::Section>::new();
+    let overflow = RwSignal::new(None::<f64>);
+    let visible = move || {
+        panel.get_untracked().map(|panel| {
+            (
+                f64::from(panel.client_width()),
+                f64::from(panel.client_height()),
+            )
+        })
+    };
     let point = move |event: web_sys::MouseEvent| {
-        let Some(panel) = event
-            .current_target()
-            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-        else {
+        let (Some(element), Some((width, height))) = (panel.get_untracked(), visible()) else {
             return;
         };
-        let frame = panel.get_bounding_client_rect();
+        let frame = element.get_bounding_client_rect();
         let x = f64::from(event.client_x()) - frame.left();
-        let y = f64::from(event.client_y()) - frame.top();
+        let y = f64::from(event.client_y()) - frame.top() + f64::from(element.scroll_top());
         let found = state.cluster.with_untracked(|cluster| {
             state.occupancy.with_untracked(|occupancy| {
                 let groups = node_groups(cluster, group);
-                let board = board(&groups, frame.width(), frame.height());
+                let board = board(&groups, width, height);
                 let (node, spot) = spot_at(&board, x, y)?;
                 Some(Tip::of(cluster, occupancy, node, spot))
             })
         });
-        tip.set(found.map(|tip| tip.at(x, y, frame.width(), frame.height())));
+        tip.set(found.map(|tip| tip.at(x, y, width, height)));
     };
     let draw = move |context: &CanvasRenderingContext2d, width: f64, height: f64| {
         let Some(theme) = state.theme.get() else {
             return;
         };
+        let height = visible().map_or(height, |(_, height)| height);
         let highlight = state.highlight.get();
         state.cluster.with(|cluster| {
             state.occupancy.with(|occupancy| {
                 let groups = node_groups(cluster, group);
                 let board = board(&groups, width, height);
+                let needed = (board.height > height).then(|| board.height.ceil());
+                overflow.maybe_update(|overflow| std::mem::replace(overflow, needed) != needed);
                 let ink = Ink {
                     context,
                     theme: &theme,
@@ -549,6 +559,7 @@ pub fn Die(group: Grouping) -> impl IntoView {
     view! {
         <section
             class="panel die"
+            node_ref=panel
             on:mousemove=move |event| {
                 if !state.tv {
                     point(event);
@@ -556,7 +567,12 @@ pub fn Die(group: Grouping) -> impl IntoView {
             }
             on:mouseleave=move |_| tip.set(None)
         >
-            <Surface draw=draw/>
+            <div
+                class="board"
+                style:min-height=move || overflow.get().map(|height| format!("{height}px"))
+            >
+                <Surface draw=draw/>
+            </div>
             {move || tip.get().map(Tip::view)}
         </section>
     }
