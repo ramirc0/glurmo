@@ -458,12 +458,19 @@ impl Store {
         Ok(())
     }
 
-    /// Deletes attempts that ended, and bins and node states that began, before `cutoff`.
+    /// Deletes attempts that ended and bins that began before `cutoff`, and node states that a later
+    /// one replaced by then.
     fn prune(&mut self, cutoff: UnixTime) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM attempts WHERE end < ?1", [cutoff.0])?;
         tx.execute("DELETE FROM usage WHERE bin < ?1", [cutoff.0])?;
-        tx.execute("DELETE FROM node_states WHERE at < ?1", [cutoff.0])?;
+        tx.execute(
+            "DELETE FROM node_states WHERE at < ?1 AND EXISTS (
+                 SELECT 1 FROM node_states AS later
+                 WHERE later.node = node_states.node AND later.at > node_states.at AND later.at <= ?1
+             )",
+            [cutoff.0],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -1676,6 +1683,37 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(left, [2]);
+    }
+
+    #[test]
+    fn prune_keeps_the_health_each_node_had_at_the_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        let named = |name: &str, state| Node {
+            name: NodeName(name.into()),
+            ..node(state)
+        };
+        let listings = [
+            (T0 - 3 * DAY_S, NodeState::Drained),
+            (T0 - 2 * DAY_S, NodeState::Idle),
+        ];
+        for (at, state) in listings {
+            let nodes = vec![named("z1", NodeState::Drained), named("z2", state)];
+            store.record(UnixTime(at), &[Event::Nodes(nodes)]).unwrap();
+        }
+        store.prune(UnixTime(T0 - DAY_S)).unwrap();
+        let left: Vec<(String, i64)> = store
+            .db
+            .prepare("SELECT node, at FROM node_states ORDER BY node, at")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            left,
+            [("z1".into(), T0 - 3 * DAY_S), ("z2".into(), T0 - 2 * DAY_S)]
+        );
     }
 
     #[test]

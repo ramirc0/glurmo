@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- Pruning keeps each node's health as it stood at the cutoff. Before, a node drained for longer than `keep` showed as up in past views.
 - Jobs stored before a run's first node listing get their cores counted again once it arrives. Before, history counted one core per CPU for them as long as they ran.
 - A job cancelled while pending counts as withdrawn. Before, the live listing counted it as started and ended, which made up 43% of zlurm's recorded starts.
 - A failed call no longer discards the listings made before it in the same tick. Before, a failed job listing held back node and partition changes until their next interval, up to 10 minutes later.
