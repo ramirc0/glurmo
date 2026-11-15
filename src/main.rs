@@ -276,7 +276,7 @@ async fn stream(
                     cluster.apply(&delta);
                     println!("{}", serde_json::to_string(&*delta)?);
                     eprintln!(
-                        "{} at {}: {} events, {} running, {} pending, {} nodes differ from sinfo",
+                        "{} at {}: {} events, {} running, {} pending, {} nodes differ from their allocation",
                         delta.seq,
                         delta.at.0,
                         delta.events.len(),
@@ -295,8 +295,8 @@ async fn stream(
     tokio::join!(sampling, printing).1
 }
 
-/// Counts nodes where the cores that visible jobs hold differ from sinfo's allocated cores.
-/// Jobs that start or end between squeue and sinfo show up here too.
+/// Counts nodes where the cores that visible jobs hold differ from the node's allocated cores.
+/// Jobs that start or end between the two calls show up here too.
 fn differing_nodes(cluster: &Cluster) -> usize {
     let occupancy = cluster.occupancy();
     cluster
@@ -315,7 +315,7 @@ fn differing_nodes(cluster: &Cluster) -> usize {
         .count()
 }
 
-/// Prints job counts and checks placed cores against sinfo on stderr.
+/// Prints job counts and checks placed cores against each node's allocation on stderr.
 fn summarize(sample: &Sample) {
     let count = |state: JobState| sample.jobs.iter().filter(|job| job.state == state).count();
     let pending_tasks: u32 = sample
@@ -341,7 +341,7 @@ fn summarize(sample: &Sample) {
     }
     let mismatches = sample.mismatches();
     eprintln!(
-        "placed cores match sinfo on {} of {} nodes",
+        "placed cores match the allocation on {} of {} nodes",
         sample.nodes.len() - mismatches.len(),
         sample.nodes.len()
     );

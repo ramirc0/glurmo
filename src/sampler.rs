@@ -1,4 +1,4 @@
-//! The tick loop. It runs the commands that are due, diffs their output, looks up placements and
+//! The tick loop. It makes the calls that are due, diffs their answers, places started jobs and
 //! publishes each tick's changes to the [`Hub`].
 
 use std::collections::{BTreeMap, VecDeque};
@@ -16,17 +16,17 @@ use crate::slurm::{Lookup, Slurm};
 use crate::store::Store;
 use glurmo_model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
 
-/// A call slower than this counts against its command, like a failure.
+/// A call slower than this counts against its kind, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
 
-/// How far a command's interval can stretch under backoff.
+/// How far a call's interval can stretch under backoff.
 const MAX_SLOWDOWN: u64 = 8;
 
 /// Healthy calls in a row that halve a stretched interval again.
 const HEALTHY_TO_RECOVER: u32 = 3;
 
-/// The shortest and longest stretch of accounting read at once. sacct takes about 0.5 ms per row,
-/// and a busy day on zlurm holds 27,000 rows, which runs past the command timeout.
+/// The shortest and longest stretch of accounting read at once. A busy day on zlurm holds 27,000
+/// rows, which sacct takes 15 s to print.
 const BACKFILL_SPAN_S: std::ops::RangeInclusive<i64> = 900..=86_400;
 
 /// A history read faster than this doubles the next window. One slower than [`SLOW_BACKFILL`] halves it.
@@ -58,7 +58,7 @@ fn name_gpus(nodes: &mut [Node], models: &BTreeMap<String, String>) {
     }
 }
 
-/// How one command has fared since the sampler started.
+/// How one kind of call has fared since the sampler started.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Calls {
     /// Calls made.
@@ -91,32 +91,32 @@ impl Calls {
     }
 }
 
-/// One command's calls, and for a command that runs on a schedule, its interval under backoff.
+/// One kind of call, and for one made on a schedule, its interval under backoff.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct CommandHealth {
-    /// The command, such as `squeue`.
-    pub command: &'static str,
-    /// Seconds between calls now, or `None` for a command that runs only when needed.
+pub struct CallHealth {
+    /// What the call reads, such as `jobs`.
+    pub call: &'static str,
+    /// Seconds between calls now, or `None` for a call made only when needed.
     pub every_s: Option<u64>,
     /// How its calls went.
     #[serde(flatten)]
     pub calls: Calls,
 }
 
-/// How every command has fared since the sampler started.
+/// How every kind of call has fared since the sampler started.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-pub struct Health(pub Vec<CommandHealth>);
+pub struct Health(pub Vec<CallHealth>);
 
-fn unpaced(command: &'static str, calls: &Calls) -> CommandHealth {
-    CommandHealth {
-        command,
+fn unpaced(call: &'static str, calls: &Calls) -> CallHealth {
+    CallHealth {
+        call,
         every_s: None,
         calls: calls.clone(),
     }
 }
 
-/// When one command runs next, how far backoff has stretched its interval, and how its calls went.
+/// When one kind of call is made next, how far backoff has stretched its interval, and how its calls went.
 struct Pace {
     every_s: u64,
     most_s: u64,
@@ -171,9 +171,9 @@ impl Pace {
         result
     }
 
-    fn health(&self, command: &'static str) -> CommandHealth {
-        CommandHealth {
-            command,
+    fn health(&self, call: &'static str) -> CallHealth {
+        CallHealth {
+            call,
             every_s: Some(self.interval_s()),
             calls: self.calls.clone(),
         }
@@ -209,9 +209,9 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    /// A sampler that runs each command at the config's interval, publishes to `hub` and keeps history in
+    /// A sampler that makes each call at the config's interval, publishes to `hub` and keeps history in
     /// `store` if there is one. It names users and GPU models as the config says.
-    /// The jobs interval stays at most `MinJobAge / 2` under backoff, so no ended job leaves squeue unseen.
+    /// The jobs interval stays at most `MinJobAge / 2` under backoff, so no ended job leaves the queue unseen.
     pub fn new(slurm: Slurm, config: &Config, store: Option<Store>, hub: Hub) -> Self {
         let intervals = config.sample;
         let jobs_most_s = (slurm.site().min_job_age_s / 2).max(intervals.jobs_s);
@@ -286,14 +286,14 @@ impl Sampler {
 
     fn health(&self) -> Health {
         Health(vec![
-            self.jobs.health("squeue"),
-            self.nodes.health("sinfo"),
-            self.partitions.health("scontrol show partition"),
-            self.stats.health("sdiag"),
-            unpaced("scontrol show job", &self.placing),
-            unpaced("scontrol show job ID", &self.looking_up),
-            unpaced("sacct -j", &self.settling),
-            unpaced("sacct -S -E", &self.backfilling),
+            self.jobs.health("jobs"),
+            self.nodes.health("nodes"),
+            self.partitions.health("partitions"),
+            self.stats.health("stats"),
+            unpaced("placements", &self.placing),
+            unpaced("lookups", &self.looking_up),
+            unpaced("outcomes", &self.settling),
+            unpaced("history", &self.backfilling),
         ])
     }
 
@@ -305,8 +305,8 @@ impl Sampler {
             .unwrap_or_default()
     }
 
-    /// Runs the due commands, then diffs their output. If any fails, the tick is dropped,
-    /// so a job counts as gone only after a squeue that worked.
+    /// Makes the due calls, then diffs their answers. If any fails, the tick is dropped,
+    /// so a job counts as gone only after a job listing that worked.
     async fn tick(&mut self, now: UnixTime) -> Result<Vec<Event>> {
         let nodes = if self.nodes.is_due(now) {
             let mut nodes = self.nodes.time(now, self.slurm.nodes()).await?;
@@ -468,7 +468,7 @@ impl Sampler {
         events
     }
 
-    /// Asks accounting how jobs that left squeue unseen ended. A failure leaves them for the next tick.
+    /// Asks accounting how jobs that left the queue unseen ended. A failure leaves them for the next tick.
     async fn settle(&mut self) -> Vec<Event> {
         let jobs = self.known.unsettled();
         if jobs.is_empty() {
@@ -477,7 +477,7 @@ impl Sampler {
         match self.settling.time(self.slurm.outcomes(&jobs)).await.0 {
             Ok(outcomes) => self.known.settle(&outcomes),
             Err(error) => {
-                eprintln!("sacct for {} jobs failed: {error:#}", jobs.len());
+                eprintln!("accounting for {} jobs failed: {error:#}", jobs.len());
                 Vec::new()
             }
         }

@@ -1,4 +1,4 @@
-//! The only code that knows Slurm: commands, output formats and quirks.
+//! The only code that knows Slurm: its protocol, its commands, and their quirks.
 
 pub mod cli;
 pub mod fields;
@@ -109,7 +109,7 @@ pub struct Site {
     pub cluster: String,
     /// The controller's Slurm version.
     pub version: Version,
-    /// How long ended jobs stay in squeue.
+    /// How long ended jobs stay in the controller's job list.
     pub min_job_age_s: u64,
     /// What the controller hides from other users, such as `jobs` or `nodes`.
     pub private_data: Vec<String>,
@@ -130,27 +130,27 @@ impl Site {
         }
     }
 
-    /// Whether squeue hides other users' jobs.
+    /// Whether the controller hides other users' jobs.
     pub fn hides_jobs(&self) -> bool {
         self.private_data.iter().any(|data| data == "jobs")
     }
 }
 
-/// How often to run each command, and how many placement lookups to make per jobs tick.
+/// How often to make each call, and how many placement lookups to make per jobs tick.
 /// In the config, intervals read like `jobs: "10s"`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Intervals {
-    /// squeue.
+    /// Jobs.
     #[serde(rename = "jobs", with = "crate::config::seconds")]
     pub jobs_s: u64,
-    /// sinfo.
+    /// Nodes.
     #[serde(rename = "nodes", with = "crate::config::seconds")]
     pub nodes_s: u64,
-    /// scontrol show partition.
+    /// Partitions.
     #[serde(rename = "partitions", with = "crate::config::seconds")]
     pub partitions_s: u64,
-    /// sdiag.
+    /// Scheduler stats.
     #[serde(rename = "stats", with = "crate::config::seconds")]
     pub stats_s: u64,
     /// Placement lookups per jobs tick.
@@ -434,27 +434,27 @@ pub struct Sample {
     pub partitions: Vec<Partition>,
     /// Nodes.
     pub nodes: Vec<Node>,
-    /// Jobs as squeue lists them.
+    /// Jobs.
     pub jobs: Vec<Attempt>,
-    /// Placements as scontrol reports them.
+    /// Placements.
     pub placements: Vec<Placed>,
     /// Scheduler counters.
     pub stats: Stats,
 }
 
-/// A node where running jobs' placed cores differ from the cores sinfo counts as allocated.
+/// A node where running jobs' placed cores differ from the cores the node counts as allocated.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Mismatch {
     /// The node.
     pub node: NodeName,
     /// Cores that running jobs' placements hold, placed or not.
     pub placed: u32,
-    /// sinfo's allocated CPUs, in cores.
+    /// The node's allocated CPUs, in cores.
     pub allocated: u32,
 }
 
 impl Sample {
-    /// Compares each node's placed cores with sinfo's allocated cores. Jobs that start or end between
+    /// Compares each node's placed cores with its allocated cores. Jobs that start or end between
     /// the two commands show up here too.
     pub fn mismatches(&self) -> Vec<Mismatch> {
         let mut placed: HashMap<&NodeName, u32> = HashMap::new();
