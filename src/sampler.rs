@@ -695,6 +695,28 @@ mod tests {
 
     #[tokio::test]
     async fn attempts_stored_before_the_first_node_listing_get_their_cores_counted_again() {
+        let core_s_by_bin = |dir: &tempfile::TempDir| -> BTreeMap<i64, i64> {
+            let db = rusqlite::Connection::open(dir.path().join("glurmo.sqlite")).unwrap();
+            let miscounted: u32 = db
+                .query_row(
+                    "SELECT count(*) FROM attempts
+                     WHERE nodes != '[]' AND coalesce(cores, 0) != (cpus + 1) / 2",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                miscounted, 0,
+                "every node in the fixture runs 2 threads per core"
+            );
+            db.prepare("SELECT bin, sum(core_s) FROM usage GROUP BY bin")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let (clean, _) = assert_store_agrees_with_the_deltas(busy_quarter_hour().await).await;
         let mut failed = false;
         let slurm = busy_quarter_hour_with(|exchange| {
             if exchange.call == Call::Nodes && !failed {
@@ -703,20 +725,8 @@ mod tests {
             }
         })
         .await;
-        let (dir, _) = assert_store_agrees_with_the_deltas(slurm).await;
-        let miscounted: u32 = rusqlite::Connection::open(dir.path().join("glurmo.sqlite"))
-            .unwrap()
-            .query_row(
-                "SELECT count(*) FROM attempts
-                 WHERE start IS NOT NULL AND end IS NULL AND cores != (cpus + 1) / 2",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            miscounted, 0,
-            "every node in the fixture runs 2 threads per core"
-        );
+        let (late, _) = assert_store_agrees_with_the_deltas(slurm).await;
+        assert_eq!(core_s_by_bin(&late), core_s_by_bin(&clean));
     }
 
     #[tokio::test]

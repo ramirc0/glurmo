@@ -177,6 +177,7 @@ impl Store {
     /// Fails when a write fails.
     pub fn record(&mut self, at: UnixTime, events: &[Event]) -> Result<()> {
         let tx = self.db.transaction()?;
+        let mut uncounted_since = None;
         for event in events {
             match event {
                 Event::Started { attempt } | Event::Withdrawn { attempt } => {
@@ -217,7 +218,7 @@ impl Store {
                         .map(|node| (node.name.clone(), node.cpus_per_core()))
                         .collect();
                     if first_listing {
-                        recount_cores(&tx, &self.cpus_per_core)?;
+                        uncounted_since = count_cores(&tx, &self.cpus_per_core)?;
                     }
                     for node in nodes {
                         let health = (health(node).to_owned(), node.reason.clone());
@@ -238,6 +239,13 @@ impl Store {
             }
         }
         tx.commit()?;
+        if let (Some(since), Some(history_from), Some(rolled_to)) = (
+            uncounted_since,
+            self.meta("history_from")?,
+            self.meta("rolled_to")?,
+        ) {
+            self.roll_bins(bin_of(since.max(history_from)), rolled_to, at)?;
+        }
         Ok(())
     }
 
@@ -822,8 +830,12 @@ fn upsert(
     Ok(())
 }
 
-/// How many cores `cpus` CPUs on `nodes` take, or `None` before the attempt has nodes.
+/// How many cores `cpus` CPUs on `nodes` take, or `None` before the attempt has nodes or the run has
+/// listed any node's threads per core.
 fn cores(cpus: u32, nodes: &[NodeName], cpus_per_core: &HashMap<NodeName, u32>) -> Option<u32> {
+    if cpus_per_core.is_empty() {
+        return None;
+    }
     nodes.first().map(|node| {
         let per_core = cpus_per_core
             .get(node)
@@ -833,25 +845,35 @@ fn cores(cpus: u32, nodes: &[NodeName], cpus_per_core: &HashMap<NodeName, u32>) 
     })
 }
 
-/// Counts the cores of running attempts again. Those stored before the run's first node listing
-/// took one core per CPU.
-fn recount_cores(tx: &Transaction, cpus_per_core: &HashMap<NodeName, u32>) -> Result<()> {
-    let running: Vec<(u32, i64, u32, String)> = tx
+/// Counts the cores of attempts stored with nodes before the run's first node listing. Returns when
+/// the earliest of them started, from where the bins need rolling up again.
+fn count_cores(
+    tx: &Transaction,
+    cpus_per_core: &HashMap<NodeName, u32>,
+) -> Result<Option<UnixTime>> {
+    let uncounted: Vec<(u32, i64, u32, String, i64)> = tx
         .prepare(
-            "SELECT job, submit, cpus, nodes FROM attempts WHERE start IS NOT NULL AND end IS NULL",
+            "SELECT job, submit, cpus, nodes, coalesce(start, submit) FROM attempts
+             WHERE cores IS NULL AND nodes != '[]'",
         )?
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (job, submit, cpus, nodes) in running {
-        let nodes: Vec<NodeName> = serde_json::from_str(&nodes)?;
+    for (job, submit, cpus, nodes, _) in &uncounted {
+        let nodes: Vec<NodeName> = serde_json::from_str(nodes)?;
         tx.execute(
-            "UPDATE attempts SET cores = coalesce(?3, cores) WHERE job = ?1 AND submit = ?2",
-            params![job, submit, cores(cpus, &nodes, cpus_per_core)],
+            "UPDATE attempts SET cores = ?3 WHERE job = ?1 AND submit = ?2",
+            params![job, submit, cores(*cpus, &nodes, cpus_per_core)],
         )?;
     }
-    Ok(())
+    Ok(uncounted.iter().map(|&(.., start)| UnixTime(start)).min())
 }
 
 /// The CPUs per core most nodes have, for a node that has left the listing.

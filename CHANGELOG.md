@@ -32,7 +32,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - An empty or relative `XDG_*_HOME` falls back to its default under `$HOME`, as the XDG spec says. Before, an empty `XDG_STATE_HOME` put the store under the current directory.
 - glurmo refuses to open a store whose schema is newer than it knows. Before, it opened it without a word.
 - Pruning keeps each node's health as it stood at the cutoff. Before, a node drained for longer than `keep` showed as up in past views.
-- Jobs stored before a run's first node listing get their cores counted again once it arrives. Before, history counted one core per CPU for them as long as they ran.
+- Jobs stored before a run's first node listing get their cores counted once it arrives, and the bins they fell in are rolled up again. Before, history counted one core per CPU for them.
 - A job cancelled while pending counts as withdrawn. Before, the live listing counted it as started and ended, which made up 43% of zlurm's recorded starts.
 - A failed call no longer discards the listings made before it in the same tick. Before, a failed job listing held back node and partition changes until their next interval, up to 10 minutes later.
 - A failed accounting read no longer hides users' colors and names. Before, a store opened while slurmdbd was down drew every core in the muted color until a read worked.
