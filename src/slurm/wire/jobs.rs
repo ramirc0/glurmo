@@ -45,6 +45,8 @@ pub struct Job {
     array_task: u32,
     array_tasks: Option<Bitmap>,
     array_max_tasks: u32,
+    /// Whether pending tasks were folded into this record, which squeue then spells as plain ranges.
+    combined: bool,
     user_id: u32,
     user_name: Option<String>,
     state: u32,
@@ -203,6 +205,7 @@ fn job(u: &mut Unpack) -> Result<Job> {
         array_task,
         array_tasks: array_tasks.as_deref().map(hex_tasks).transpose()?,
         array_max_tasks,
+        combined: false,
         user_id,
         user_name,
         state,
@@ -274,7 +277,7 @@ pub(super) fn hex_tasks(text: &str) -> Result<Bitmap> {
             }
         }
     }
-    let size = u32::try_from(digits.len() * 4)?;
+    let size = u32::try_from(text.len() * 4)?;
     Ok(Bitmap { size, set })
 }
 
@@ -345,12 +348,16 @@ impl Job {
     }
 
     fn array(&self) -> Option<ArrayTasks> {
-        array_tasks(
+        let mut tasks = array_tasks(
             self.array_base,
             self.array_task,
             self.array_tasks.as_ref(),
             self.array_max_tasks,
-        )
+        );
+        if let (true, Some(tasks), Some(range)) = (self.combined, &mut tasks, &self.array_tasks) {
+            tasks.spec = ranges(&range.set);
+        }
+        tasks
     }
 
     /// The job's cores, GPUs and memory on each node, as `scontrol -d` reports them.
@@ -413,6 +420,54 @@ impl Job {
         }
         Ok(Placement(cells))
     }
+}
+
+/// Folds pending tasks that the controller split out of an array back into the array's pending
+/// record, as squeue's `_combine_pending_array_tasks` does unless asked for `-r`. A task folds in when
+/// its name and partition match, and its reason joins the record's.
+pub fn combine_pending_arrays(jobs: &mut Vec<Job>) {
+    let pending = |job: &Job| base_state(job.state) == JOB_PENDING;
+    let mut folded = vec![false; jobs.len()];
+    for i in 0..jobs.len() {
+        if folded[i] || !pending(&jobs[i]) || jobs[i].array_tasks.is_none() {
+            continue;
+        }
+        for j in 0..jobs.len() {
+            let size = jobs[i].array_tasks.as_ref().map_or(0, |range| range.size);
+            let (record, task) = (&jobs[i], &jobs[j]);
+            if i == j
+                || folded[j]
+                || !pending(task)
+                || task.array_base != record.array_base
+                || task.array_task >= size
+                || task.name != record.name
+                || task.partition != record.partition
+            {
+                continue;
+            }
+            let (reason, task_id) = (task.state_reason, task.array_task);
+            let record = &mut jobs[i];
+            if record.state_reason != reason {
+                let desc = record
+                    .state_desc
+                    .get_or_insert_with(|| reason_name(record.state_reason));
+                let added = reason_name(reason);
+                if !desc.contains(&added) {
+                    desc.push(',');
+                    desc.push_str(&added);
+                }
+            }
+            if let Some(range) = &mut record.array_tasks
+                && let Err(at) = range.set.binary_search(&task_id)
+            {
+                range.set.insert(at, task_id);
+            }
+            record.combined = true;
+            folded[j] = true;
+        }
+    }
+    let mut keep = folded.iter().map(|folded| !folded);
+    jobs.retain(|_| keep.next().unwrap_or(true));
 }
 
 /// The array tasks a record stands for: a pending range, one task, or none.
@@ -487,6 +542,13 @@ fn stepped(set: &[u32]) -> Option<String> {
         .then(|| format!("{first}-{last}:{step}"))
 }
 
+const JOB_PENDING: u32 = 0;
+
+/// A job state without its flags.
+fn base_state(state: u32) -> u32 {
+    state & 0xff
+}
+
 /// `job_state_string`: a flag wins over the base state.
 pub(super) fn state_name(state: u32) -> &'static str {
     const FLAGS: [(u32, &str); 12] = [
@@ -518,7 +580,12 @@ pub(super) fn state_name(state: u32) -> &'static str {
         "OUT_OF_MEMORY",
     ];
     FLAGS.iter().find(|(bit, _)| state & bit != 0).map_or_else(
-        || BASES.get((state & 0xff) as usize).copied().unwrap_or("?"),
+        || {
+            BASES
+                .get(base_state(state) as usize)
+                .copied()
+                .unwrap_or("?")
+        },
         |&(_, name)| name,
     )
 }
@@ -534,6 +601,54 @@ fn reason_name(reason: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending(id: u32, task: u32, tasks: Option<&str>, name: &str, reason: u32) -> Job {
+        Job {
+            id: JobId(id),
+            array_base: 10,
+            array_task: task,
+            array_tasks: tasks.map(|hex| hex_tasks(hex).unwrap()),
+            array_max_tasks: 0,
+            combined: false,
+            user_id: 1,
+            user_name: Some("otter".into()),
+            state: 0,
+            state_reason: reason,
+            state_desc: None,
+            time_limit: 60,
+            submit: 1,
+            start: 0,
+            end: 0,
+            nodes: None,
+            partition: Some("cpu".into()),
+            resources: None,
+            gres_detail: Vec::new(),
+            name: Some(name.into()),
+            cpus: 1,
+            tres_alloc: None,
+            tres_req: None,
+        }
+    }
+
+    #[test]
+    fn pending_tasks_split_out_of_an_array_fold_back_in_as_squeue_folds_them() {
+        let mut running = pending(12, 1, None, "n", 0);
+        running.state = 1;
+        let mut jobs = vec![
+            pending(10, NO_VAL, Some("0x0C"), "n", 1),
+            pending(11, 0, None, "n", 2),
+            running,
+            pending(13, 1, None, "other", 1),
+        ];
+        combine_pending_arrays(&mut jobs);
+        let ids: Vec<u32> = jobs.iter().map(|job| job.id.0).collect();
+        assert_eq!(ids, [10, 12, 13]);
+        let logins = HashMap::new();
+        let range = jobs[0].attempt(UnixTime(0), &logins).unwrap();
+        let array = range.array.unwrap();
+        assert_eq!((array.spec.as_str(), array.count), ("0,2-3", 3));
+        assert_eq!(range.reason.as_deref(), Some("Priority,Dependency"));
+    }
 
     #[test]
     fn task_ranges_spell_like_squeue() {

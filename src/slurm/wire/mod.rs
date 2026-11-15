@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 
 use super::Lookup;
 use super::recording::{Answer, Call};
-use glurmo_model::{Login, UnixTime};
+use glurmo_model::{Attempt, Login, UnixTime};
 use pack::{Pack, Unpack};
 
 /// The protocol version glurmo speaks: Slurm 23.11's. Controllers accept it through 25.05.
@@ -293,16 +293,7 @@ impl Wire {
                 self.accounting = config.accounting;
                 Answer::Config(config.site)
             }
-            Call::Jobs => {
-                let jobs = self.jobs(jobs::REQUEST, &jobs::request()).await?;
-                self.learn_logins(jobs.iter().map(jobs::Job::user_id)).await;
-                let now = UnixTime::now();
-                Answer::Jobs(
-                    jobs.iter()
-                        .map(|job| job.attempt(now, &self.logins))
-                        .collect::<Result<_>>()?,
-                )
-            }
+            Call::Jobs => Answer::Jobs(self.attempts().await?),
             Call::Nodes => {
                 let partitions = self.partitions().await?;
                 let reply = self
@@ -374,6 +365,17 @@ impl Wire {
                 Answer::Stats(stats::decode(&reply)?)
             }
         })
+    }
+
+    /// Every job as squeue lists it.
+    async fn attempts(&mut self) -> Result<Vec<Attempt>> {
+        let mut jobs = self.jobs(jobs::REQUEST, &jobs::request()).await?;
+        jobs::combine_pending_arrays(&mut jobs);
+        self.learn_logins(jobs.iter().map(jobs::Job::user_id)).await;
+        let now = UnixTime::now();
+        jobs.iter()
+            .map(|job| job.attempt(now, &self.logins))
+            .collect()
     }
 
     async fn jobs(&self, kind: u16, request: &[u8]) -> Result<Vec<jobs::Job>> {
