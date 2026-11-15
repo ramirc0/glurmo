@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use super::jobs::{array_tasks, hex_tasks, state_name};
-use super::pack::{INFINITE, NO_VAL, NO_VAL64, Pack, Unpack};
+use super::pack::{INFINITE, NO_VAL, Pack, Unpack};
 use super::{GLOBAL_AUTH_KEY, Protocol, SLURMDBD_CONNECTION, Session, TIMEOUT, frame, read_frame};
 use crate::slurm::fields::job_state;
 use crate::slurm::hostlist::expand_hosts;
@@ -152,15 +152,15 @@ async fn call(stream: &mut TcpStream, kind: u16, body: &[u8], expected: u16) -> 
     }
 }
 
-/// Every TRES, deleted ones included.
+/// Every TRES, deleted ones included, as sacct asks for them. Old jobs can hold a TRES deleted since.
 fn tres_condition() -> Vec<u8> {
     let mut body = Pack::default();
-    body.u64(NO_VAL64)
+    body.u64(0)
         .u32(NO_VAL)
         .u32(NO_VAL)
         .u32(NO_VAL)
         .u32(NO_VAL)
-        .u16(0);
+        .u16(1);
     body.0
 }
 
@@ -528,6 +528,12 @@ mod tests {
         assert_eq!(attempt.partitions.len(), 2);
         assert_eq!(attempt.time_limit_s, Some(3_600));
         assert_eq!((attempt.start, attempt.end), (None, None));
+    }
+
+    #[test]
+    fn the_tres_request_includes_deleted_ones_as_sacct_does() {
+        let body = tres_condition();
+        assert_eq!(body[body.len() - 2..], 1_u16.to_be_bytes());
     }
 
     #[test]
