@@ -47,7 +47,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Sample the cluster, keep its history and serve both over HTTP.
-    Serve,
+    Serve {
+        /// Answer from a recording at the pace it was recorded, with history in a throwaway store, and
+        /// keep serving its last state once it runs out.
+        #[arg(long, value_name = "FILE")]
+        replay: Option<PathBuf>,
+    },
     /// Show the cluster in the terminal, following a server or sampling in-process.
     Tui {
         /// The server to follow, such as `http://js029:8765`. It overrides the config's.
@@ -96,7 +101,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load(cli.config.as_deref())?;
     match cli.command {
-        Command::Serve => serve(&config).await?,
+        Command::Serve { replay } => serve(&config, replay.as_deref()).await?,
         Command::Tui { server, embedded } => {
             let server = if embedded {
                 None
@@ -159,11 +164,26 @@ async fn main() -> Result<()> {
 }
 
 /// Samples into the store and serves the stream, history, themes and layouts until the process ends.
-/// Theme and layout files are read from `$XDG_CONFIG_HOME/rtviz`.
-async fn serve(config: &Config) -> Result<()> {
-    let slurm = Slurm::connect(Source::Live).await?;
-    let path = store_path(&config.store, &slurm.site().cluster)?;
-    let store = open_store(&config.store, &path)?;
+/// Theme and layout files are read from `$XDG_CONFIG_HOME/rtviz`. With `replay`, the samples come from a
+/// recording and the store is a temporary one.
+async fn serve(config: &Config, replay: Option<&Path>) -> Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let (slurm, path, store) = if let Some(recording) = replay {
+        let slurm = Slurm::connect(Source::Replay(Replay::open(recording)?.paced())).await?;
+        let path = scratch.path().join("replay.sqlite");
+        let settings = Settings {
+            backfill_days: 0,
+            keep_days: None,
+            backup: scratch.path().join("backup.sqlite"),
+        };
+        let store = Store::open(&path, settings)?;
+        (slurm, path, store)
+    } else {
+        let slurm = Slurm::connect(Source::Live).await?;
+        let path = store_path(&config.store, &slurm.site().cluster)?;
+        let store = open_store(&config.store, &path)?;
+        (slurm, path, store)
+    };
     let hub = Hub::new(slurm.site().clone());
     let dir = xdg::config_home()?.join("rtviz");
     let (library, _) = watch::channel(Library::load(&dir));
@@ -174,8 +194,15 @@ async fn serve(config: &Config) -> Result<()> {
         config.server.listen,
         path.display()
     );
+    let sample = async {
+        sampler.run(None).await;
+        if replay.is_some() {
+            eprintln!("the replay ran out; serving its last state");
+            std::future::pending::<()>().await;
+        }
+    };
     tokio::select! {
-        () = sampler.run(None) => Ok(()),
+        () = sample => Ok(()),
         () = library::keep_current(&dir, &library) => Ok(()),
         served = server::serve(config.server.listen, router) => served,
     }

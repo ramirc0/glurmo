@@ -31,11 +31,11 @@ workspace = true
 [dev-dependencies]
 insta = "1.49.0"
 ruzstd = "0.9.1"
-tokio = { version = "1.54.1", features = ["io-util"] }
+tokio = { version = "1.54.1", features = ["io-util", "test-util"] }
 tower = { version = "0.5.3", features = ["util"] }
 
 [workspace]
-members = ["model"]
+members = ["model", "web"]
 
 [workspace.lints.rust]
 missing_docs = "warn"

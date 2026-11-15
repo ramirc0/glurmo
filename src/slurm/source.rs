@@ -74,7 +74,13 @@ impl Source {
                 let wait = u64::try_from(time.0 - UnixTime::now().0).unwrap_or(0);
                 tokio::time::sleep(Duration::from_secs(wait)).await;
             }
-            Self::Replay(replay) => replay.now = replay.now.max(time),
+            Self::Replay(replay) => {
+                if replay.paced {
+                    let wait = u64::try_from(time.0 - replay.now.0).unwrap_or(0);
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                }
+                replay.now = replay.now.max(time);
+            }
         }
     }
 }
@@ -176,6 +182,7 @@ impl Recorder {
 pub struct Replay {
     answers: HashMap<Vec<String>, VecDeque<Exchange>>,
     now: UnixTime,
+    paced: bool,
 }
 
 impl Replay {
@@ -189,6 +196,7 @@ impl Replay {
         let mut replay = Self {
             answers: HashMap::new(),
             now: UnixTime(0),
+            paced: false,
         };
         for (number, line) in BufReader::new(file).lines().enumerate() {
             let exchange: Exchange = serde_json::from_str(&line?)
@@ -203,6 +211,14 @@ impl Replay {
                 .push_back(exchange);
         }
         Ok(replay)
+    }
+
+    /// Makes the replay wait out the recorded time between ticks, so a browser sees it unfold live.
+    pub fn paced(self) -> Self {
+        Self {
+            paced: true,
+            ..self
+        }
     }
 
     fn answer(&mut self, argv: Vec<String>) -> Result<Exchange> {
@@ -321,6 +337,22 @@ mod tests {
         assert!(error.is::<Exhausted>());
         source.sleep_until(UnixTime(200)).await;
         assert_eq!(source.now(), UnixTime(200));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_paced_replay_waits_out_the_time_between_ticks() {
+        let path = recording(&[exchange(100, &["squeue"], "")]);
+        let mut source = Source::Replay(Replay::open(path.path()).unwrap().paced());
+        let started = tokio::time::Instant::now();
+        source.sleep_until(UnixTime(130)).await;
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+        assert_eq!(source.now(), UnixTime(130));
+        source.sleep_until(UnixTime(120)).await;
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(30),
+            "the past costs no time"
+        );
     }
 
     #[tokio::test]
