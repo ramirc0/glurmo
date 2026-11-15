@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- An empty or relative `XDG_*_HOME` falls back to its default under `$HOME`, as the XDG spec says. Before, an empty `XDG_STATE_HOME` put the store under the current directory.
 - glurmo refuses to open a store whose schema is newer than it knows. Before, it opened it without a word.
 - Pruning keeps each node's health as it stood at the cutoff. Before, a node drained for longer than `keep` showed as up in past views.
 - Jobs stored before a run's first node listing get their cores counted again once it arrives. Before, history counted one core per CPU for them as long as they ran.
