@@ -597,12 +597,41 @@ aside.editor a {
 }
 
 .history .timeline {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   cursor: crosshair;
   touch-action: none;
+}
+
+/* White in every theme, edged in black so it shows on light ones too. 18px leaves the time axis clear. */
+.history .timeline .cursor {
+  position: absolute;
+  top: 0;
+  bottom: 18px;
+  width: 1px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+  pointer-events: none;
+}
+
+.history .timeline .cursor span {
+  position: absolute;
+  top: 0;
+  left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #fff;
+  color: #000;
+  font: 500 11px var(--mono);
+  white-space: nowrap;
+}
+
+.history .timeline .cursor.flip span {
+  right: 6px;
+  left: auto;
 }
 
 .controls {

@@ -1,6 +1,6 @@
 //! Cores in use over time, stacked by user, with the queue's depth and a time axis below. It doubles as
 //! a timeline: the wheel or a drag pans it, ctrl and the wheel or a pinch zooms it, and a click replays
-//! the cluster from that moment.
+//! the cluster from that moment. A line marks the moment under the pointer.
 
 use glurmo_model::layout::Span;
 use glurmo_model::units::thousands;
@@ -32,6 +32,10 @@ const SPANS_S: (i64, i64) = (3_600, 90 * 86_400);
 const DRAG_PX: f64 = 4.0;
 /// How much one pixel of wheel zooms.
 const ZOOM_PER_PX: f64 = 0.002;
+/// Closer than this to the right edge, the cursor's time goes left of its line.
+const FLIP_PX: f64 = 170.0;
+/// A span longer than this dates the cursor's time as well.
+const DAY_S: i64 = 86_400;
 /// A click this close to now goes back to live rather than replaying.
 const NEAR_NOW_S: f64 = 60.0;
 
@@ -138,6 +142,7 @@ pub fn History(span: Span) -> impl IntoView {
 fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
     let state = expect_context::<State>();
     let press = StoredValue::new(None::<Drag>);
+    let hover = RwSignal::new(None::<Hover>);
     let pressed = move |event: web_sys::PointerEvent| {
         if state.editing() || event.button() != 0 {
             return;
@@ -156,9 +161,17 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
         }));
     };
     let moved = move |event: web_sys::PointerEvent| {
-        let (Some(mut held), Some(spot)) =
-            (press.get_value(), Spot::of(&event, span_s.get_untracked()))
-        else {
+        let spot = Spot::of(&event, span_s.get_untracked());
+        hover.set(spot.as_ref().filter(|spot| spot.x >= LABELS).map(|spot| {
+            #[expect(clippy::cast_possible_truncation, reason = "seconds fit in an i64")]
+            let at = view_end(state) - spot.before_end_s as i64;
+            Hover {
+                x: spot.x,
+                at,
+                flip: spot.room < FLIP_PX,
+            }
+        }));
+        let (Some(mut held), Some(spot)) = (press.get_value(), spot) else {
             return;
         };
         let dx = spot.x - held.x;
@@ -245,11 +258,31 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
             on:pointermove=moved
             on:pointerup=released
             on:pointercancel=move |_| press.set_value(None)
+            on:pointerleave=move |_| hover.set(None)
             on:wheel=wheeled
         >
             {children()}
+            {move || {
+                hover.get().map(|Hover { x, at, flip }| {
+                    let dated = span_s.get() > DAY_S;
+                    view! {
+                        <div class="cursor" class:flip=flip style:left=format!("{x}px")>
+                            <span>{clock(UnixTime(at), dated)}</span>
+                        </div>
+                    }
+                })
+            }}
         </div>
     }
+}
+
+/// Where the pointer rests over the graph, and the moment under it.
+#[derive(Clone, Copy)]
+struct Hover {
+    x: f64,
+    at: i64,
+    /// Whether the time goes left of the line, near the right edge.
+    flip: bool,
 }
 
 /// A press on the timeline: where it started, and where the timeline ended then.
@@ -268,6 +301,8 @@ struct Spot {
     per_px: f64,
     /// How long before the timeline's end the pointer's moment is.
     before_end_s: f64,
+    /// CSS pixels from the pointer to the timeline's right edge.
+    room: f64,
 }
 
 impl Spot {
@@ -286,6 +321,7 @@ impl Spot {
             x,
             per_px,
             before_end_s: (frame.width() - x.max(LABELS)) * per_px,
+            room: frame.width() - x,
         })
     }
 }
