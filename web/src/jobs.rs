@@ -396,7 +396,7 @@ fn cells(state: State, cluster: &Cluster, group: &JobGroup, tasks: Option<AnyVie
 
 /// Scrolls the list just enough to show its first lit row.
 fn reveal_lit(scroller: NodeRef<leptos::html::Div>) {
-    let Some(scroller) = scroller.get_untracked() else {
+    let Some(scroller) = scroller.try_get_untracked().flatten() else {
         return;
     };
     let Ok(Some(row)) = scroller.query_selector("tbody tr.lit") else {
