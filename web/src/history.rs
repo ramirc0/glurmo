@@ -3,6 +3,8 @@
 //! stretch to zoom to, and a click replays the cluster from that moment. A line marks the moment under
 //! the pointer.
 
+use std::collections::HashMap;
+
 use glurmo_model::layout::Span;
 use glurmo_model::units::thousands;
 use glurmo_model::usage::Column;
@@ -57,68 +59,72 @@ pub fn History(span: Span) -> impl IntoView {
         let mono = format!("500 11px \"{}\", monospace", theme.fonts.mono);
         context.set_font(&mono);
         let muted = Rgb::of(&theme.ui.muted);
-        let usage = state.usage.get();
-        let usage = match &usage {
-            Ok(usage) if !usage.steps.is_empty() => usage,
-            Ok(_) => return note(context, "no history here", muted),
-            Err(error) => return note(context, &format!("no history: {error}"), muted),
-        };
-        let graph_w = width - LABELS;
-        let graph_h = height - QUEUE - AXIS;
-        if graph_w < COLUMN || graph_h < 10.0 {
-            return;
-        }
-        let span_s = span_s();
-        let end = state
-            .timeline
-            .with(|timeline| timeline.end)
-            .map_or(usage.to.0, |end| end.0);
-        let from = end - span_s;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a panel is far narrower than u16::MAX columns"
-        )]
-        let count = (graph_w / COLUMN).floor() as u16;
-        let columns = usage.columns(from, span_s, count);
-        // Every node's cores, up or not, so the scale holds still as nodes fail and between live and replay.
-        let installed: u64 = state
-            .cluster
-            .with(|cluster| cluster.nodes.iter().map(|node| u64::from(node.cores)).sum());
-        let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
-        let peak = columns.iter().map(total).max().unwrap_or(0);
-        let scale = installed.max(peak).max(1);
-        state.cluster.with(|cluster| {
-            for (i, column) in columns.iter().enumerate() {
-                #[expect(clippy::cast_precision_loss, reason = "a small count")]
-                let x = LABELS + i as f64 * COLUMN;
-                let mut y = graph_h;
-                for (login, cores) in &column.cores {
-                    #[expect(clippy::cast_precision_loss, reason = "core counts fit in an f64")]
-                    let h = graph_h * *cores as f64 / scale as f64;
-                    let color = user_color(&theme, cluster, &Login((*login).to_owned()));
-                    context.set_fill_style_str(&color.css());
-                    context.fill_rect(x, y - h, COLUMN + 1.0, h);
-                    y -= h;
+        state.usage.with(|usage| {
+            let usage = match usage {
+                Ok(usage) if !usage.steps.is_empty() => usage,
+                Ok(_) => return note(context, "no history here", muted),
+                Err(error) => return note(context, &format!("no history: {error}"), muted),
+            };
+            let graph_w = width - LABELS;
+            let graph_h = height - QUEUE - AXIS;
+            if graph_w < COLUMN || graph_h < 10.0 {
+                return;
+            }
+            let span_s = span_s();
+            let end = state
+                .timeline
+                .with(|timeline| timeline.end)
+                .map_or(usage.to.0, |end| end.0);
+            let from = end - span_s;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a panel is far narrower than u16::MAX columns"
+            )]
+            let count = (graph_w / COLUMN).floor() as u16;
+            let columns = usage.columns(from, span_s, count);
+            // Every node's cores, up or not, so the scale holds still as nodes fail and between live and replay.
+            let installed: u64 = state
+                .cluster
+                .with(|cluster| cluster.nodes.iter().map(|node| u64::from(node.cores)).sum());
+            let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
+            let peak = columns.iter().map(total).max().unwrap_or(0);
+            let scale = installed.max(peak).max(1);
+            let mut colors: HashMap<&str, String> = HashMap::new();
+            state.cluster.with(|cluster| {
+                for (i, column) in columns.iter().enumerate() {
+                    #[expect(clippy::cast_precision_loss, reason = "a small count")]
+                    let x = LABELS + i as f64 * COLUMN;
+                    let mut y = graph_h;
+                    for &(login, cores) in column.cores.iter().filter(|(_, cores)| *cores > 0) {
+                        #[expect(clippy::cast_precision_loss, reason = "core counts fit in an f64")]
+                        let h = graph_h * cores as f64 / scale as f64;
+                        let color = colors.entry(login).or_insert_with(|| {
+                            user_color(&theme, cluster, &Login(login.to_owned())).css()
+                        });
+                        context.set_fill_style_str(color);
+                        context.fill_rect(x, y - h, COLUMN + 1.0, h);
+                        y -= h;
+                    }
+                }
+            });
+            context.set_fill_style_str(&muted.css());
+            context.set_text_align("right");
+            let _ = context.fill_text(&thousands(scale), LABELS - 6.0, 10.0);
+            let _ = context.fill_text("0", LABELS - 6.0, graph_h);
+            let _ = context.fill_text("queue", LABELS - 6.0, graph_h + QUEUE - 6.0);
+            context.set_text_align("left");
+            queue(context, &columns, graph_h, Rgb::of(&theme.state.drain));
+            axis(context, from, span_s, graph_w, height, muted);
+            if let Some(playhead) = state.replay.get() {
+                #[expect(clippy::cast_precision_loss, reason = "seconds fit in an f64")]
+                let x = LABELS + (playhead.at - from as f64) / span_s as f64 * graph_w;
+                if (LABELS..=width).contains(&x) {
+                    context.set_fill_style_str(&Rgb::of(&theme.ui.text).css());
+                    context.fill_rect(x - 1.0, 0.0, 2.0, graph_h + QUEUE);
                 }
             }
         });
-        context.set_fill_style_str(&muted.css());
-        context.set_text_align("right");
-        let _ = context.fill_text(&thousands(scale), LABELS - 6.0, 10.0);
-        let _ = context.fill_text("0", LABELS - 6.0, graph_h);
-        let _ = context.fill_text("queue", LABELS - 6.0, graph_h + QUEUE - 6.0);
-        context.set_text_align("left");
-        queue(context, &columns, graph_h, Rgb::of(&theme.state.drain));
-        axis(context, from, span_s, graph_w, height, muted);
-        if let Some(playhead) = state.replay.get() {
-            #[expect(clippy::cast_precision_loss, reason = "seconds fit in an f64")]
-            let x = LABELS + (playhead.at - from as f64) / span_s as f64 * graph_w;
-            if (LABELS..=width).contains(&x) {
-                context.set_fill_style_str(&Rgb::of(&theme.ui.text).css());
-                context.fill_rect(x - 1.0, 0.0, 2.0, graph_h + QUEUE);
-            }
-        }
     };
     view! {
         <section class="panel history">

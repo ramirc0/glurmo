@@ -141,7 +141,7 @@ impl Usage {
                     return Column::default();
                 };
                 let mut cores = cores.clone();
-                cores.sort_by_key(|(login, _)| (std::cmp::Reverse(totals[login]), *login));
+                cores.sort_by_cached_key(|(login, _)| (std::cmp::Reverse(totals[login]), *login));
                 Column {
                     cores,
                     waiting: wait_s[at] / step_s,
@@ -154,6 +154,30 @@ impl Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logins_with_equal_totals_stack_by_login() {
+        let step = |key: &str| Step {
+            at: UnixTime(0),
+            key: key.into(),
+            core_s: 600,
+            gpu_s: 0,
+            wait_s: 0,
+            started: 0,
+            ended: 0,
+            failed: None,
+        };
+        let usage = Usage {
+            from: UnixTime(0),
+            to: UnixTime(300),
+            step_s: 300,
+            steps: vec![step("otter"), step("heron"), step("lynx")],
+        };
+        assert_eq!(
+            usage.columns(0, 300, 1)[0].cores,
+            [("heron", 2), ("lynx", 2), ("otter", 2)]
+        );
+    }
 
     #[test]
     fn waiting_sums_every_login_before_it_rounds() {
