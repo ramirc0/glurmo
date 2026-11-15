@@ -134,7 +134,8 @@ if (pull) {
   const after = await stats();
   lines.push(`stream before the pull: ${JSON.stringify(before)}`);
   lines.push(`stream after the pull:  ${JSON.stringify(after)}`);
-  if (!before || !after || after.snapshots !== before.snapshots || after.deltas <= before.deltas || after.reconnects <= before.reconnects) {
+  const count = (stats, name) => stats?.[name] ?? 0;
+  if (count(after, "snapshots") !== count(before, "snapshots") || count(after, "deltas") <= count(before, "deltas") || count(after, "reconnects") <= count(before, "reconnects")) {
     lines.push("the stream did not resume with deltas alone");
     failed = true;
   }
