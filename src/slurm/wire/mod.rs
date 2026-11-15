@@ -21,6 +21,7 @@ use tokio::net::TcpStream;
 
 use super::Lookup;
 use super::recording::{Answer, Call};
+use super::scontrol::Placed;
 use glurmo_model::{Attempt, Login, UnixTime};
 use pack::{Pack, Unpack};
 
@@ -264,6 +265,10 @@ impl std::fmt::Display for ReturnCode {
 
 impl std::error::Error for ReturnCode {}
 
+fn placed(jobs: &[jobs::Job]) -> Result<Vec<Placed>> {
+    jobs.iter().map(jobs::Job::placed).collect()
+}
+
 /// The accounting records that convert. One that does not is logged and skipped, so it cannot block
 /// the rest.
 fn readable<T>(converted: impl Iterator<Item = Result<T>>) -> Vec<T> {
@@ -345,6 +350,8 @@ pub struct Wire {
     accounting: Vec<String>,
     logins: HashMap<u32, Login>,
     unknown: HashSet<u32>,
+    /// The placements from the last job listing, for a placement call that comes right after it.
+    next_placements: Option<Result<Vec<Placed>>>,
 }
 
 impl Wire {
@@ -368,6 +375,7 @@ impl Wire {
             accounting: Vec::new(),
             logins: HashMap::new(),
             unknown: HashSet::new(),
+            next_placements: None,
         })
     }
 
@@ -410,6 +418,7 @@ impl Wire {
     ///
     /// Fails when slurmctld or slurmdbd does not answer, refuses, or sends a reply that does not decode.
     pub async fn answer(&mut self, call: &Call) -> Result<Answer> {
+        let listed = self.next_placements.take();
         Ok(match call {
             Call::Config => Answer::Config(self.connect().await?),
             Call::Jobs => Answer::Jobs(self.attempts().await?),
@@ -436,13 +445,10 @@ impl Wire {
                     .map(|record| record.partition)
                     .collect(),
             ),
-            Call::Placements => Answer::Placements(
-                self.jobs(jobs::REQUEST, &jobs::request())
-                    .await?
-                    .iter()
-                    .map(jobs::Job::placed)
-                    .collect::<Result<_>>()?,
-            ),
+            Call::Placements => Answer::Placements(match listed {
+                Some(placements) => placements?,
+                None => placed(&self.jobs(jobs::REQUEST, &jobs::request()).await?)?,
+            }),
             Call::Lookup { key, .. } => {
                 let found = match self
                     .jobs(
@@ -487,9 +493,10 @@ impl Wire {
         })
     }
 
-    /// Every job as squeue lists it.
+    /// Every job as squeue lists it. Keeps their placements for the placement call that follows.
     async fn attempts(&mut self) -> Result<Vec<Attempt>> {
         let mut jobs = self.jobs(jobs::REQUEST, &jobs::request()).await?;
+        self.next_placements = Some(placed(&jobs));
         jobs::combine_pending_arrays(&mut jobs);
         self.learn_logins(jobs.iter().map(jobs::Job::user_id)).await;
         let now = UnixTime::now();
@@ -659,6 +666,88 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(signed.await.unwrap(), u32::MAX);
+    }
+
+    /// A sack socket that signs every request.
+    fn sack_forever(socket: &std::path::Path) {
+        let listener = tokio::net::UnixListener::bind(socket).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _protocol = stream.read_u16().await.unwrap();
+                let len = stream.read_u32().await.unwrap() as usize;
+                let mut rest = vec![0; len - 4];
+                stream.read_exact(&mut rest).await.unwrap();
+                stream.write_u32(4).await.unwrap();
+                stream.write_all(b"a.b\0").await.unwrap();
+            }
+        });
+    }
+
+    /// A slurmctld that answers every request with `body` as message `kind`, and counts requests.
+    async fn controller_answering(
+        kind: u16,
+        body: Vec<u8>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = requests.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let len = stream.read_u32().await.unwrap() as usize;
+                let mut request = vec![0; len];
+                stream.read_exact(&mut request).await.unwrap();
+                let frame = reply(kind, &body);
+                stream
+                    .write_u32(u32::try_from(frame.len()).unwrap())
+                    .await
+                    .unwrap();
+                stream.write_all(&frame).await.unwrap();
+            }
+        });
+        (address, requests)
+    }
+
+    fn wire_to(addresses: Vec<String>, sack: PathBuf) -> Wire {
+        Wire {
+            controller: Controller {
+                addresses,
+                session: Session {
+                    issuer: Issuer::Sack(sack),
+                    decoder: None,
+                    protocol: Protocol::V23_11,
+                },
+            },
+            cluster: String::new(),
+            accounting: Vec::new(),
+            logins: HashMap::new(),
+            unknown: HashSet::new(),
+            next_placements: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn placements_right_after_jobs_reuse_their_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let sack = dir.path().join("sack.socket");
+        sack_forever(&sack);
+        let mut no_jobs = Pack::default();
+        no_jobs.u32(0).time(0).time(0);
+        let (address, requests) = controller_answering(jobs::RESPONSE, no_jobs.0).await;
+        let mut wire = wire_to(vec![address], sack);
+        let count = || requests.load(std::sync::atomic::Ordering::SeqCst);
+        wire.answer(&Call::Jobs).await.unwrap();
+        wire.answer(&Call::Placements).await.unwrap();
+        assert_eq!(count(), 1);
+        wire.answer(&Call::Placements).await.unwrap();
+        assert_eq!(count(), 2, "a reply serves one placement call only");
+        wire.answer(&Call::Jobs).await.unwrap();
+        wire.answer(&Call::Partitions).await.ok();
+        wire.answer(&Call::Placements).await.unwrap();
+        assert_eq!(count(), 5, "another call in between drops the reply");
     }
 
     #[test]
