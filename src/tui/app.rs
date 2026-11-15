@@ -146,6 +146,11 @@ impl App {
 
     /// Acts on a key.
     pub fn key(&mut self, key: KeyEvent) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        if key.code == KeyCode::Char('c') && control {
+            self.quit = true;
+            return;
+        }
         if self.filter.editing {
             match key.code {
                 KeyCode::Enter => self.filter.editing = false,
@@ -153,7 +158,7 @@ impl App {
                 KeyCode::Backspace => {
                     self.filter.text.pop();
                 }
-                KeyCode::Char(c) => self.filter.text.push(c),
+                KeyCode::Char(c) if !control => self.filter.text.push(c),
                 _ => {}
             }
             return;
@@ -167,7 +172,6 @@ impl App {
             KeyCode::Esc if self.filter().is_some() => self.filter = Filter::default(),
             KeyCode::Esc if self.filled => self.filled = false,
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
             KeyCode::Tab => self.focus = (self.focus + 1) % panels,
             KeyCode::BackTab => self.focus = (self.focus + panels - 1) % panels,
             KeyCode::Down | KeyCode::Char('j') => self.scroll(1),
@@ -349,6 +353,15 @@ mod tests {
         assert_eq!(app.filter(), None);
         press(&mut app, KeyCode::Char('q'));
         assert!(app.quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_while_editing_the_filter() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('/'));
+        app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.quit);
+        assert_eq!(app.filter.text, "");
     }
 
     #[test]
