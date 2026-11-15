@@ -8,6 +8,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A drag on the history timeline highlights a stretch and zooms to it, instead of panning. The wheel still pans.
 
+### Fixed
+
+- The command backend reads jobs whose `SubmitLine` spans several lines, as an `sbatch --wrap` script with newlines does. Before, one such job failed every placement read.
+
 ## [0.1.0] - 2026-11-15
 
 ### Added

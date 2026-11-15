@@ -139,15 +139,24 @@ impl CpuMap {
     }
 }
 
-/// Parses the output of [`jobs_argv`], with or without a job ID, one job per line.
+/// Parses the output of [`jobs_argv`], with or without a job ID.
+///
+/// Each job starts on a line that begins with `JobId=`. `SubmitLine` keeps the newlines of an `sbatch --wrap` script, so a
+/// job can run over several lines.
 ///
 /// # Errors
 ///
-/// Fails on a line without the job fields, a bad value, or a node that sinfo did not list.
+/// Fails on a job without the job fields, a bad value, or a node that sinfo did not list.
 pub fn parse_jobs(stdout: &str, map: &CpuMap) -> Result<Vec<Placed>> {
-    stdout
-        .lines()
-        .map(|line| placed(line, map).with_context(|| format!("scontrol line {line:?}")))
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(stdout.match_indices("\nJobId=").map(|(i, _)| i + 1))
+        .chain([stdout.len()])
+        .collect();
+    starts
+        .windows(2)
+        .map(|pair| stdout[pair[0]..pair[1]].trim_end())
+        .filter(|job| !job.is_empty())
+        .map(|job| placed(job, map).with_context(|| format!("scontrol job {job:?}")))
         .collect()
 }
 
@@ -425,6 +434,18 @@ mod tests {
     fn spacing_from_25_11_parses_the_same() {
         let line = "JobId=3249466\tJobName=bash UserId=otter(1) JobState=RUNNING StartTime=1790684947 NumCPUs=72 JOB_GRES=(null) Nodes=z1054    CPU_IDs=0-71  Mem=1000000 GRES= MinCPUsNode=1";
         assert_eq!(one(line).placement, one(RUNNING).placement);
+    }
+
+    #[test]
+    fn submit_lines_can_span_lines() {
+        let wrapped = RUNNING.replace(
+            "Power= ",
+            "Power= SubmitLine=sbatch --wrap='cd /x\nexport NumCPUs=8\nJobs=2 python run.py' TresPerTask=cpu=1",
+        );
+        let jobs = parse_jobs(&format!("{wrapped}\n{GPU}\n"), &zlurm()).unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].placement, one(RUNNING).placement);
+        assert_eq!(jobs[1].job, JobId(3_923_677));
     }
 
     /// `CPU_IDs` formatted the way Slurm 23.11 cuts them: 127 characters into the buffer, then the last one zapped.
