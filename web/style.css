@@ -617,6 +617,16 @@ aside.editor a {
   pointer-events: none;
 }
 
+.history .timeline .playhead {
+  position: absolute;
+  top: 0;
+  bottom: 18px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+  pointer-events: none;
+}
+
 .history .timeline .selection {
   position: absolute;
   top: 0;

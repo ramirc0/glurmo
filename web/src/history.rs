@@ -1,13 +1,13 @@
 //! Cores in use over time, stacked by user, with the queue's depth and a time axis below. It doubles as
 //! a timeline: the wheel pans it, shift or ctrl with the wheel, or a pinch, zooms it, a drag selects a
 //! stretch to zoom to, and a click replays the cluster from that moment. A line marks the moment under
-//! the pointer.
+//! the pointer, and another the moment a replay has reached.
 
 use std::collections::HashMap;
 
 use glurmo_model::layout::Span;
 use glurmo_model::units::thousands;
-use glurmo_model::usage::Column;
+use glurmo_model::usage::{Column, Usage};
 use glurmo_model::{Login, UnixTime};
 use leptos::prelude::*;
 use web_sys::CanvasRenderingContext2d;
@@ -71,11 +71,7 @@ pub fn History(span: Span) -> impl IntoView {
                 return;
             }
             let span_s = span_s();
-            let end = state
-                .timeline
-                .with(|timeline| timeline.end)
-                .map_or(usage.to.0, |end| end.0);
-            let from = end - span_s;
+            let from = chart_end(state, usage) - span_s;
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -116,14 +112,6 @@ pub fn History(span: Span) -> impl IntoView {
             context.set_text_align("left");
             queue(context, &columns, graph_h, Rgb::of(&theme.state.drain));
             axis(context, from, span_s, graph_w, height, muted);
-            if let Some(playhead) = state.replay.get() {
-                #[expect(clippy::cast_precision_loss, reason = "seconds fit in an f64")]
-                let x = LABELS + (playhead.at - from as f64) / span_s as f64 * graph_w;
-                if (LABELS..=width).contains(&x) {
-                    context.set_fill_style_str(&Rgb::of(&theme.ui.text).css());
-                    context.fill_rect(x - 1.0, 0.0, 2.0, graph_h + QUEUE);
-                }
-            }
         });
     };
     view! {
@@ -294,6 +282,17 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
                 })
             }}
             {move || {
+                let at = state.replay.get()?.at;
+                let span_s = span_s.get();
+                let end = state.usage.with(|usage| Some(chart_end(state, usage.as_ref().ok()?)))?;
+                #[expect(clippy::cast_precision_loss, reason = "seconds fit in an f64")]
+                let share = (at - (end - span_s) as f64) / span_s as f64;
+                (0.0..=1.0).contains(&share).then(|| {
+                    let left = format!("calc({LABELS}px + {share} * (100% - {LABELS}px))");
+                    view! { <div class="playhead" style:left=left></div> }
+                })
+            }}
+            {move || {
                 hover.get().map(|Hover { x, at, flip }| {
                     let dated = span_s.get() > DAY_S;
                     view! {
@@ -374,6 +373,14 @@ impl Spot {
             room: frame.width() - x,
         })
     }
+}
+
+/// Where the chart ends: where the timeline was panned to, else where `usage` was read up to.
+fn chart_end(state: State, usage: &Usage) -> i64 {
+    state
+        .timeline
+        .with(|timeline| timeline.end)
+        .map_or(usage.to.0, |end| end.0)
 }
 
 /// Where the timeline ends now, in seconds since the epoch.
