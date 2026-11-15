@@ -3,8 +3,9 @@
 // deltas and no fresh snapshot.
 //
 // Usage: node web/check.mjs SERVER OUT.png [--size 1920x1080] [--query '?layout=tv'] [--settle 8] [--pull 3]
-//        [--pinch SCALE], which zooms in as a pinch does, [--eval EXPRESSION], which prints the expression's
-//        value, awaited if it is a promise, after the page settles.
+//        [--pinch SCALE], which zooms in as a pinch does, [--zoom LEVEL], which zooms as the browser's
+//        zoom does, [--eval EXPRESSION], which prints the expression's value, awaited if it is a promise,
+//        after the page settles.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -27,6 +28,7 @@ const settle = Number(option("settle", "8"));
 const pull = option("pull", null);
 const expression = option("eval", null);
 const pinch = option("pinch", null);
+const zoom = Number(option("zoom", "1"));
 const chrome = process.env.CHROME ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome`;
 const sleep = (seconds) => new Promise((done) => setTimeout(done, seconds * 1000));
 
@@ -112,7 +114,13 @@ listeners.push(({ method, params }) => {
 await page("Runtime.enable");
 await page("Log.enable");
 await page("Page.enable");
-await page("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+// Browser zoom keeps the screen's pixels and scales CSS pixels, so the page lays out a wider viewport.
+await page("Emulation.setDeviceMetricsOverride", {
+  width: Math.round(width / zoom),
+  height: Math.round(height / zoom),
+  deviceScaleFactor: zoom,
+  mobile: false,
+});
 await page("Page.navigate", { url });
 await sleep(settle);
 
