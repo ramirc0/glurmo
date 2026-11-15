@@ -10,11 +10,11 @@ use serde::Serialize;
 use crate::config::{Config, Names};
 use crate::diff::{Known, placed};
 use crate::hub::Hub;
-use crate::model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
 use crate::passwd;
 use crate::slurm::source::Exhausted;
 use crate::slurm::{Lookup, Slurm};
 use crate::store::Store;
+use rtviz_model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
 
 /// A call slower than this counts against its command, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
@@ -491,8 +491,8 @@ mod tests {
 
     use super::*;
     use crate::fixture::{busy_hub, busy_quarter_hour, busy_quarter_hour_with, zlurm_config};
-    use crate::model::{AttemptKey, Cluster, Delta, Owner};
     use crate::store::Settings;
+    use rtviz_model::{AttemptKey, Cluster, Delta, Owner};
 
     /// One line per delta: its time, how many events of each kind it holds, and how the cluster looks after it.
     fn summary(delta: &Delta, start: UnixTime, cluster: &Cluster) -> String {

@@ -10,9 +10,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::{self, error::RecvError};
 
-use crate::model::{Cluster, Delta, Event, UnixTime};
 use crate::sampler::Health;
 use crate::slurm::Site;
+use rtviz_model::{Cluster, Delta, Event, UnixTime};
 
 /// How long a delta stays available to clients that reconnect.
 const RING_S: i64 = 3_600;
@@ -263,7 +263,7 @@ impl Follow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Stats;
+    use rtviz_model::Stats;
 
     const BOOT: UnixTime = UnixTime(1_000);
 

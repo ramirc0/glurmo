@@ -12,8 +12,8 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use super::app::App;
 use super::palette::Palette;
 use super::{die, header, history, mine, nodes, partitions, queue, ticker, users};
-use crate::layout::{Direction, Pane, Size};
-use crate::model::{
+use rtviz_model::layout::{Direction, Pane, Size};
+use rtviz_model::{
     Attempt, Cluster, Login, Node, NodeFlag, NodeName, NodeState, Occupancy, Owner, UnixTime,
 };
 
@@ -361,9 +361,9 @@ mod tests {
     use crate::config::{Tui, from_ron};
     use crate::hub::Message;
     use crate::library::Library;
-    use crate::model::UnixTime;
     use crate::store::Step;
     use crate::tui::feed::{Link, Update, Usage};
+    use rtviz_model::UnixTime;
 
     /// The busy quarter hour as a view sees it after following every delta, seen by the user with
     /// the most running jobs, over a made-up day of usage by the four busiest users.

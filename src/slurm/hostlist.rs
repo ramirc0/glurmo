@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::model::NodeName;
+use rtviz_model::NodeName;
 
 /// Expands a hostlist such as `z[018-020,1060],js029` into hostnames, in order.
 ///

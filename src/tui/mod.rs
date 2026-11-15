@@ -30,9 +30,9 @@ use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
 use crate::library::Library;
-use crate::model::Login;
 use app::App;
 use feed::{Feed, Update};
+use rtviz_model::Login;
 
 /// How often theme and layout files are checked for changes.
 const LIBRARY_EVERY: Duration = Duration::from_secs(2);

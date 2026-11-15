@@ -10,8 +10,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::config::from_ron;
-use crate::layout::Layout;
-use crate::theme::Theme;
+use rtviz_model::layout::Layout;
+use rtviz_model::theme::Theme;
 
 const THEMES: [(&str, &str); 3] = [
     ("rose-pine", include_str!("../themes/rose-pine.ron")),
@@ -125,7 +125,7 @@ fn ron_files(dir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Pane;
+    use rtviz_model::layout::Pane;
 
     #[test]
     fn built_ins_parse() {

@@ -2,7 +2,7 @@
 
 use jiff::tz::TimeZone;
 
-use crate::model::UnixTime;
+use rtviz_model::UnixTime;
 
 /// Writes `1205` as `1,205`.
 pub fn thousands(number: u64) -> String {

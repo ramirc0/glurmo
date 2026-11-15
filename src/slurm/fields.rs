@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 
 use super::hostlist::expand_ids;
-use crate::model::{EndState, JobState, UnixTime};
+use rtviz_model::{EndState, JobState, UnixTime};
 
 /// Builds an `-O` spec such as `JobID:0|,Name:0`.
 ///

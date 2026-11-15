@@ -11,8 +11,8 @@ use ratatui::widgets::{Paragraph, Widget};
 use super::feed::Usage;
 use super::units::thousands;
 use super::view::{Focus, Scene};
-use crate::layout::Span;
-use crate::model::Login;
+use rtviz_model::Login;
+use rtviz_model::layout::Span;
 
 /// Lower blocks by eighths, from empty to full.
 const LOWER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];

@@ -20,12 +20,12 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::config::to_ron;
 use crate::hub::{EventId, Hub, Message};
-use crate::layout::Layout;
 use crate::library::Library;
-use crate::model::{Outage, UnixTime};
 use crate::sampler::Health;
 use crate::store::{By, History, UsageQuery};
-use crate::theme::Theme;
+use rtviz_model::layout::Layout;
+use rtviz_model::theme::Theme;
+use rtviz_model::{Outage, UnixTime};
 
 /// How long a browser waits before it reconnects a dropped stream.
 const RETRY: Duration = Duration::from_secs(5);
@@ -297,11 +297,11 @@ async fn health(State(app): State<App>) -> Json<Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Event, Stats};
     use crate::slurm::Site;
     use crate::store::{Settings, Store};
     use axum::body::Body;
     use axum::http::Request;
+    use rtviz_model::{Event, Stats};
     use tokio_stream::StreamExt;
     use tower::ServiceExt;
 

@@ -9,11 +9,11 @@ use super::feed::{Link, Update, Usage};
 use super::view;
 use crate::config::Tui;
 use crate::hub::Message;
-use crate::layout::{Layout, Pane};
 use crate::library::Library;
-use crate::model::{Attempt, Cluster, Delta, Event, Login, PartitionName, UnixTime};
 use crate::slurm::Site;
-use crate::theme::Theme;
+use rtviz_model::layout::{Layout, Pane};
+use rtviz_model::theme::Theme;
+use rtviz_model::{Attempt, Cluster, Delta, Event, Login, PartitionName, UnixTime};
 
 /// Ticker lines kept.
 const TICKER: usize = 200;
@@ -279,7 +279,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::model::{AttemptKey, JobId, JobState};
+    use rtviz_model::{AttemptKey, JobId, JobState};
 
     fn app() -> App {
         App::new(

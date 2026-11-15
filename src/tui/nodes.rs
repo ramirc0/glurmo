@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
 use super::view::{Focus, Scene, scrolled, trouble};
-use crate::model::NodeState;
+use rtviz_model::NodeState;
 
 /// Counts by state on the first line, then one line per node that is out.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {

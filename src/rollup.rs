@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::model::{EndState, Login, PartitionName, UnixTime};
+use rtviz_model::{EndState, Login, PartitionName, UnixTime};
 
 /// How long one bin lasts.
 pub const BIN_S: i64 = 300;

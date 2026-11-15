@@ -1787,6 +1787,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "ron",
+ "rtviz-model",
  "rusqlite",
  "rustix",
  "ruzstd",
@@ -1796,6 +1797,15 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+]
+
+[[package]]
+name = "rtviz-model"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

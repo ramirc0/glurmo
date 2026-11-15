@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 
 use super::units::thousands;
 use super::view::{Focus, Scene, scrolled};
-use crate::model::{Login, Owner};
+use rtviz_model::{Login, Owner};
 
 /// The widest name shown.
 const NAME: usize = 12;

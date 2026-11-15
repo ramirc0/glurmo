@@ -8,11 +8,11 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{
+use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
+use rtviz_model::{
     Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeName, NodeState,
     PartitionName, UnixTime, User,
 };
-use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
 
 const DAY_S: i64 = 86_400;
 
@@ -835,7 +835,7 @@ fn mount_kind<'a>(path: &Path, mounts: &'a str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ArrayTasks, NodeCells, Placement};
+    use rtviz_model::{ArrayTasks, NodeCells, Placement};
 
     const T0: i64 = 1_794_614_400;
 

@@ -2,7 +2,7 @@
 
 use ratatui::style::Color;
 
-use crate::theme::{self, Theme};
+use rtviz_model::theme::{self, Theme};
 
 /// The colors one frame draws with.
 #[derive(Clone, Debug, PartialEq)]

@@ -13,8 +13,8 @@ use ratatui::widgets::Block;
 
 use super::units::{load, thousands};
 use super::view::{Focus, Scene, scrolled, trouble, usable};
-use crate::layout::Grouping;
-use crate::model::{Node, NodeFlag, NodeState};
+use rtviz_model::layout::Grouping;
+use rtviz_model::{Node, NodeFlag, NodeState};
 
 /// Columns between node entries.
 const GAP: u16 = 3;
@@ -138,7 +138,7 @@ fn groups<'a>(scene: &'a Scene, grouping: Grouping) -> Vec<Group<'a>> {
 /// The group's name, its node count, and the cores and GPUs held.
 fn title(scene: &Scene, group: &Group) -> Line<'static> {
     let palette = &scene.palette;
-    let held = |cells: &[Option<crate::model::Owner>]| {
+    let held = |cells: &[Option<rtviz_model::Owner>]| {
         cells.iter().filter(|cell| cell.is_some()).count() as u64
     };
     let (mut cores, mut gpus) = ((0, 0), (0, 0));
@@ -289,8 +289,8 @@ mod tests {
     use super::*;
     use crate::config::Tui;
     use crate::library::Library;
-    use crate::model::{Login, NodeName};
     use crate::tui::app::App;
+    use rtviz_model::{Login, NodeName};
 
     fn node(name: &str, cores: u32, gpus: u32) -> Node {
         Node {

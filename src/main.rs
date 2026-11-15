@@ -5,16 +5,13 @@ mod diff;
 #[cfg(test)]
 mod fixture;
 mod hub;
-mod layout;
 mod library;
-mod model;
 mod passwd;
 mod rollup;
 mod sampler;
 mod server;
 mod slurm;
 mod store;
-mod theme;
 mod tui;
 mod xdg;
 
@@ -30,7 +27,7 @@ use tokio::sync::watch;
 use config::{Config, Keep, Storage};
 use hub::Hub;
 use library::Library;
-use model::{Cluster, JobState, Owner};
+use rtviz_model::{Cluster, JobState, Owner};
 use sampler::Sampler;
 use slurm::source::{Exchange, Recorder, Replay, Source};
 use slurm::{Sample, Slurm};
@@ -143,7 +140,7 @@ async fn main() -> Result<()> {
         } => {
             let slurm =
                 Slurm::connect(Source::Record(Recorder::create(&out, pseudonymize)?)).await?;
-            let until = model::UnixTime(slurm.now().0 + minutes * 60);
+            let until = rtviz_model::UnixTime(slurm.now().0 + minutes * 60);
             stream(slurm, &config, None, Some(until)).await?;
             eprintln!("recorded to {}", out.display());
         }
@@ -213,7 +210,7 @@ async fn stream(
     slurm: Slurm,
     config: &Config,
     store: Option<Store>,
-    until: Option<model::UnixTime>,
+    until: Option<rtviz_model::UnixTime>,
 ) -> Result<()> {
     let mut cluster = Cluster {
         hides_jobs: slurm.site().hides_jobs(),

@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use super::feed::Link;
 use super::units::{clock, percent, since, thousands};
 use super::view::Scene;
-use crate::model::UnixTime;
+use rtviz_model::UnixTime;
 
 /// Eighth blocks, from empty to full.
 const EIGHTHS: [&str; 9] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];

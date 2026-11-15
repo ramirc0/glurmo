@@ -5,9 +5,9 @@ default:
 # Check formatting, lint with clippy, build the docs and run the tests.
 check:
     cargo fmt --check
-    cargo clippy --all-targets -- -D warnings
-    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-    cargo test
+    cargo clippy --workspace --all-targets -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    cargo test --workspace
 
 # Run rtviz with arguments.
 run *args:

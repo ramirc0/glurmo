@@ -3,6 +3,15 @@
 use serde::{Deserialize, Serialize};
 
 /// A named arrangement of panels.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::layout::{Layout, Pane};
+///
+/// let layout = Layout { name: "bare".into(), root: Pane::Users };
+/// assert_eq!(layout.root, Pane::Users);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
@@ -13,6 +22,15 @@ pub struct Layout {
 }
 
 /// A split into sized panes, or one panel.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::layout::{Direction, Pane, Size};
+///
+/// let pane = Pane::Split(Direction::Vertical, vec![(Size::Length(1), Pane::Header), (Size::Fill(1), Pane::Users)]);
+/// assert!(matches!(pane, Pane::Split(Direction::Vertical, _)));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pane {
     /// Panes side by side or stacked, each with its size.
@@ -49,6 +67,14 @@ pub enum Pane {
 }
 
 /// Which way a split runs.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::layout::Direction;
+///
+/// assert_ne!(Direction::Vertical, Direction::Horizontal);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Direction {
     /// Panes stacked top to bottom.
@@ -59,6 +85,15 @@ pub enum Direction {
 
 /// A pane's share of its split. Each maps onto the ratatui constraint of the same name.
 /// On the web, a length counts lines of monospace text.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::layout::Size;
+///
+/// let size: Size = serde_json::from_str(r#"{"Percentage": 66}"#).unwrap();
+/// assert_eq!(size, Size::Percentage(66));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Size {
     /// Exactly this many lines or columns.
@@ -72,6 +107,14 @@ pub enum Size {
 }
 
 /// How a panel groups nodes or jobs.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::layout::Grouping;
+///
+/// assert_eq!(serde_json::to_string(&Grouping::Hardware).unwrap(), r#""Hardware""#);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Grouping {
     /// By hardware: CPU generation, core count and GPU model.
@@ -81,6 +124,14 @@ pub enum Grouping {
 }
 
 /// How the queue panel sums pending jobs.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::layout::QueueBy;
+///
+/// assert_eq!(serde_json::to_string(&QueueBy::Login).unwrap(), r#""Login""#);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueueBy {
     /// One row per partition, with the most common reason to wait.
@@ -90,6 +141,14 @@ pub enum QueueBy {
 }
 
 /// A stretch of time back from now.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::layout::Span;
+///
+/// assert_eq!(serde_json::to_string(&Span::Hours(24)).unwrap(), r#"{"Hours":24}"#);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Span {
     /// Hours.
@@ -100,6 +159,15 @@ pub enum Span {
 
 impl Span {
     /// The span in seconds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rtviz_model::layout::Span;
+    ///
+    /// assert_eq!(Span::Hours(2).seconds(), 7_200);
+    /// assert_eq!(Span::Days(1).seconds(), 86_400);
+    /// ```
     pub fn seconds(self) -> i64 {
         match self {
             Self::Hours(hours) => i64::from(hours) * 3_600,

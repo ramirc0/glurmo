@@ -9,8 +9,8 @@ use ratatui::text::{Line, Span};
 
 use super::units::{since, thousands};
 use super::view::{Focus, Scene, scrolled};
-use crate::layout::QueueBy;
-use crate::model::UnixTime;
+use rtviz_model::UnixTime;
+use rtviz_model::layout::QueueBy;
 
 /// The widest key shown.
 const KEY: usize = 12;
@@ -59,7 +59,7 @@ pub fn draw(scene: &Scene, by: QueueBy, area: Rect, buf: &mut Buffer, focus: Foc
         .map(|(key, waiting)| {
             let color = match by {
                 QueueBy::Partition => palette.text,
-                QueueBy::Login => scene.color(&crate::model::Login((*key).to_owned())),
+                QueueBy::Login => scene.color(&rtviz_model::Login((*key).to_owned())),
             };
             let reason = waiting
                 .reasons

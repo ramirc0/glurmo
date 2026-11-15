@@ -10,11 +10,11 @@ use tokio::sync::{mpsc, watch};
 use super::sse::SseReader;
 use crate::config::Config;
 use crate::hub::{Hub, Message};
-use crate::model::UnixTime;
 use crate::sampler::Sampler;
 use crate::slurm::Slurm;
 use crate::slurm::source::Source;
 use crate::store::{By, History, Settings, Step, Store, UsageQuery};
+use rtviz_model::UnixTime;
 
 /// How long to wait before reconnecting to a server, as the server's `retry` field also says.
 const RETRY: Duration = Duration::from_secs(5);
@@ -292,8 +292,8 @@ async fn read(
 mod tests {
     use super::*;
     use crate::library::Library;
-    use crate::model::{Event, Stats};
     use crate::slurm::Site;
+    use rtviz_model::{Event, Stats};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
 

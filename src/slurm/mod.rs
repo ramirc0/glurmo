@@ -21,7 +21,7 @@ use std::str::FromStr;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
+use rtviz_model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
 use sacct::Outcome;
 use scontrol::{CpuMap, Placed};
 use source::{Exchange, Source};

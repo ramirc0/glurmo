@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 
 use super::units::{span, thousands};
 use super::view::{Focus, Scene, scrolled, usable};
-use crate::model::PartitionName;
+use rtviz_model::PartitionName;
 
 /// The widest partition name shown.
 const NAME: usize = 12;

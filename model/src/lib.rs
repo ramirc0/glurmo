@@ -1,16 +1,35 @@
 //! Scheduler-neutral types that the Slurm module returns and the views consume.
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub mod layout;
+pub mod theme;
+
 /// A job ID unique to each array task, as sacct's `JobIDRaw` prints it.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::JobId;
+///
+/// assert_eq!(serde_json::to_string(&JobId(4242)).unwrap(), "4242");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct JobId(pub u32);
 
 /// Seconds since the Unix epoch.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::UnixTime;
+///
+/// assert!(UnixTime(10) < UnixTime(20));
+/// assert_eq!(serde_json::to_string(&UnixTime(10)).unwrap(), "10");
+/// ```
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]
@@ -19,15 +38,36 @@ pub struct UnixTime(pub i64);
 
 impl UnixTime {
     /// Reads the system clock. A clock set before 1970 reads as 0.
+    ///
+    /// It does not exist on wasm, where the standard library's clock panics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rtviz_model::UnixTime;
+    ///
+    /// assert!(UnixTime::now() > UnixTime(1_700_000_000));
+    /// ```
+    #[cfg(not(target_family = "wasm"))]
     pub fn now() -> Self {
-        let since = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         Self(i64::try_from(since.as_secs()).unwrap_or(i64::MAX))
     }
 }
 
 /// One run of a job. A requeue keeps the job ID but resets the submit time.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{AttemptKey, JobId, UnixTime};
+///
+/// let first = AttemptKey { job: JobId(7), submit: UnixTime(100) };
+/// let requeued = AttemptKey { job: JobId(7), submit: UnixTime(500) };
+/// assert_ne!(first, requeued);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AttemptKey {
     /// The job ID.
@@ -37,21 +77,55 @@ pub struct AttemptKey {
 }
 
 /// A user's login name.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::Login;
+///
+/// let login: Login = serde_json::from_str(r#""otter""#).unwrap();
+/// assert_eq!(login, Login("otter".into()));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Login(pub String);
 
 /// A compute node's hostname.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::NodeName;
+///
+/// assert_eq!(serde_json::to_string(&NodeName("z1001".into())).unwrap(), r#""z1001""#);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeName(pub String);
 
 /// A partition, or a queue in schedulers that call it that.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::PartitionName;
+///
+/// assert_eq!(serde_json::to_string(&PartitionName("5days".into())).unwrap(), r#""5days""#);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PartitionName(pub String);
 
 /// Where a job is in its life.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{EndState, JobState};
+///
+/// let state: JobState = serde_json::from_str(r#"{"ended": "timeout"}"#).unwrap();
+/// assert_eq!(state, JobState::Ended(EndState::Timeout));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -68,6 +142,15 @@ pub enum JobState {
 }
 
 /// How a job finished.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::EndState;
+///
+/// let state: EndState = serde_json::from_str(r#""out_of_memory""#).unwrap();
+/// assert_eq!(state, EndState::OutOfMemory);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndState {
@@ -93,6 +176,15 @@ pub enum EndState {
 
 impl EndState {
     /// Whether the attempt failed to finish its work: it failed, ran out of memory or time, or lost its node.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rtviz_model::EndState;
+    ///
+    /// assert!(EndState::Timeout.is_failure());
+    /// assert!(!EndState::Cancelled.is_failure());
+    /// ```
     pub fn is_failure(self) -> bool {
         matches!(
             self,
@@ -102,6 +194,15 @@ impl EndState {
 }
 
 /// The tasks of a job array that one queue row stands for.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{ArrayTasks, JobId};
+///
+/// let tasks = ArrayTasks { job: JobId(3441951), spec: "0-3,8%2".into(), count: 5 };
+/// assert_eq!(tasks.count, 5);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrayTasks {
     /// The array's base job ID.
@@ -113,6 +214,22 @@ pub struct ArrayTasks {
 }
 
 /// A job as the queue lists it.
+///
+/// # Examples
+///
+/// ```
+/// # let json = r#"{
+/// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
+/// #     "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
+/// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
+/// #     "nodes": ["z1001"], "reason": null, "name": "align"
+/// # }"#;
+/// use rtviz_model::{Attempt, JobState};
+///
+/// let attempt: Attempt = serde_json::from_str(json).unwrap();
+/// assert_eq!(attempt.state, JobState::Running);
+/// assert_eq!(attempt.login.0, "otter");
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Attempt {
     /// The job ID and submit time.
@@ -148,6 +265,14 @@ pub struct Attempt {
 }
 
 /// A node's state, neutral across schedulers.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::NodeState;
+///
+/// assert_eq!(serde_json::to_string(&NodeState::Draining).unwrap(), r#""draining""#);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeState {
@@ -168,6 +293,15 @@ pub enum NodeState {
 }
 
 /// A condition that can hold in any node state.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::NodeFlag;
+///
+/// let flag: NodeFlag = serde_json::from_str(r#""not_responding""#).unwrap();
+/// assert_eq!(flag, NodeFlag::NotResponding);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeFlag {
@@ -182,6 +316,22 @@ pub enum NodeFlag {
 }
 
 /// A compute node.
+///
+/// # Examples
+///
+/// ```
+/// # let json = r#"{
+/// #     "name": "z1001", "partitions": ["5days"], "state": "mixed", "flags": [], "state_raw": "MIXED",
+/// #     "reason": null, "cpus": 8, "cpus_alloc": 4, "sockets": 1, "cores": 4, "load": 2.5,
+/// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
+/// #     "gpu_model": "V100", "features": ["avx512"]
+/// # }"#;
+/// use rtviz_model::{Node, NodeState};
+///
+/// let node: Node = serde_json::from_str(json).unwrap();
+/// assert_eq!(node.state, NodeState::Mixed);
+/// assert_eq!(node.gpu_model.as_deref(), Some("V100"));
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     /// The hostname.
@@ -224,12 +374,40 @@ pub struct Node {
 
 impl Node {
     /// How many CPUs make up one core: the threads per core, or 1 when the node schedules whole cores as CPUs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "name": "z1001", "partitions": ["5days"], "state": "mixed", "flags": [], "state_raw": "MIXED",
+    /// #     "reason": null, "cpus": 8, "cpus_alloc": 4, "sockets": 1, "cores": 4, "load": 2.5,
+    /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
+    /// #     "gpu_model": "V100", "features": ["avx512"]
+    /// # }"#;
+    /// use rtviz_model::Node;
+    ///
+    /// let mut node: Node = serde_json::from_str(json).unwrap();
+    /// assert_eq!(node.cpus_per_core(), 2);
+    /// node.cpus = 4;
+    /// assert_eq!(node.cpus_per_core(), 1);
+    /// ```
     pub fn cpus_per_core(&self) -> u32 {
         self.cpus.checked_div(self.cores).unwrap_or(1).max(1)
     }
 }
 
 /// A partition and its nodes.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::Partition;
+///
+/// let json = r#"{"name": "5days", "nodes": ["z1001"], "max_time_s": 432000,
+///                "default": false, "hidden": false, "state_raw": "UP"}"#;
+/// let partition: Partition = serde_json::from_str(json).unwrap();
+/// assert_eq!(partition.max_time_s, Some(432_000));
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Partition {
     /// The name.
@@ -247,6 +425,21 @@ pub struct Partition {
 }
 
 /// The cores, GPUs and memory a job holds on one node.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{NodeCells, NodeName};
+///
+/// let cells = NodeCells {
+///     node: NodeName("z1001".into()),
+///     cores: vec![0, 1],
+///     unplaced: 0,
+///     gpus: vec![1],
+///     mem_mb: Some(16_000),
+/// };
+/// assert_eq!(cells.cores.len(), 2);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeCells {
     /// The node.
@@ -262,18 +455,50 @@ pub struct NodeCells {
 }
 
 /// Where a job's cores and GPUs are, node by node.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::Placement;
+///
+/// let placement: Placement = serde_json::from_str(
+///     r#"[{"node": "z1001", "cores": [0, 1], "unplaced": 0, "gpus": [], "mem_mb": null}]"#,
+/// )
+/// .unwrap();
+/// assert_eq!(placement.0[0].node.0, "z1001");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Placement(pub Vec<NodeCells>);
 
 impl Placement {
     /// Whether every core's index is known.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rtviz_model::{NodeCells, NodeName, Placement};
+    ///
+    /// let mut cells = NodeCells { node: NodeName("z1".into()), cores: vec![0], unplaced: 0, gpus: vec![], mem_mb: None };
+    /// assert!(Placement(vec![cells.clone()]).is_exact());
+    /// cells.unplaced = 3;
+    /// assert!(!Placement(vec![cells]).is_exact());
+    /// ```
     pub fn is_exact(&self) -> bool {
         self.0.iter().all(|cells| cells.unplaced == 0)
     }
 }
 
 /// Counters since the controller's last daily reset. A counter this Slurm version does not print is `None`.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::Stats;
+///
+/// let stats = Stats { jobs_started: Some(1_200), ..Stats::default() };
+/// assert_eq!(stats.jobs_completed, None);
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stats {
     /// Controller threads busy with RPCs.
@@ -301,6 +526,15 @@ pub struct Stats {
 }
 
 /// How often the controller served one message type, and for how long in total.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::RpcCount;
+///
+/// let rpc = RpcCount { kind: "REQUEST_JOB_INFO".into(), count: 9, total_us: 270_000 };
+/// assert_eq!(rpc.total_us / rpc.count, 30_000);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RpcCount {
     /// The message type, such as `REQUEST_JOB_INFO`.
@@ -312,6 +546,15 @@ pub struct RpcCount {
 }
 
 /// Someone who has held cores or waited in the queue.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{Login, User};
+///
+/// let user: User = serde_json::from_str(r#"{"login": "otter", "name": null, "color_slot": 3}"#).unwrap();
+/// assert_eq!(user.login, Login("otter".into()));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     /// The login.
@@ -323,6 +566,15 @@ pub struct User {
 }
 
 /// A stretch of failed ticks, which leaves the view stale. It usually means the controller is down.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{Outage, UnixTime};
+///
+/// let outage = Outage { since: UnixTime(1_700_000_000), error: "squeue timed out".into() };
+/// assert_eq!(outage.since, UnixTime(1_700_000_000));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outage {
     /// When the first failed tick started.
@@ -332,6 +584,19 @@ pub struct Outage {
 }
 
 /// One change the sampler saw in a tick.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{AttemptKey, Event, JobId, UnixTime};
+///
+/// let event: Event = serde_json::from_str(
+///     r#"{"ended": {"key": {"job": 7, "submit": 100}, "at": 200, "state": null}}"#,
+/// )
+/// .unwrap();
+/// let key = AttemptKey { job: JobId(7), submit: UnixTime(100) };
+/// assert_eq!(event, Event::Ended { key, at: UnixTime(200), state: None });
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Event {
@@ -385,6 +650,15 @@ pub enum Event {
 }
 
 /// The changes from one tick.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{Delta, Event};
+///
+/// let delta: Delta = serde_json::from_str(r#"{"seq": 3, "at": 200, "events": [{"outage": null}]}"#).unwrap();
+/// assert_eq!(delta.events, [Event::Outage(None)]);
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Delta {
     /// Counts deltas from 1 since the sampler started.
@@ -396,6 +670,21 @@ pub struct Delta {
 }
 
 /// A running attempt and, once known, where it runs.
+///
+/// # Examples
+///
+/// ```
+/// # let json = r#"{
+/// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
+/// #     "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
+/// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
+/// #     "nodes": ["z1001"], "reason": null, "name": "align"
+/// # }"#;
+/// use rtviz_model::{Attempt, Running};
+///
+/// let running = Running { attempt: serde_json::from_str(json).unwrap(), placement: None };
+/// assert!(running.placement.is_none());
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Running {
     /// The attempt as the queue listed it when it started.
@@ -405,6 +694,19 @@ pub struct Running {
 }
 
 /// The cluster as a stream of deltas builds it up.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::Cluster;
+///
+/// let cluster: Cluster = serde_json::from_str(
+///     r#"{"at": null, "nodes": [], "partitions": [], "running": [], "queue": [],
+///         "stats": null, "hides_jobs": false, "users": {}, "outage": null}"#,
+/// )
+/// .unwrap();
+/// assert!(cluster.running.is_empty());
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cluster {
     /// When the last delta was sampled.
@@ -463,6 +765,15 @@ fn keyed<'de, V: Deserialize<'de> + Keyed, D: Deserializer<'de>>(
 }
 
 /// Who holds a core or GPU.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{AttemptKey, JobId, Owner, UnixTime};
+///
+/// let owner = Owner::Attempt(AttemptKey { job: JobId(7), submit: UnixTime(100) });
+/// assert_ne!(owner, Owner::Hidden);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Owner {
@@ -473,6 +784,15 @@ pub enum Owner {
 }
 
 /// Who holds each core and GPU on one node. `None` is free.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{Occupancy, Owner};
+///
+/// let occupancy = Occupancy { cores: vec![Some(Owner::Hidden), None], gpus: vec![] };
+/// assert_eq!(occupancy.cores.iter().flatten().count(), 1);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Occupancy {
     /// Cores, by index.
@@ -483,6 +803,23 @@ pub struct Occupancy {
 
 impl Cluster {
     /// Applies one delta.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
+    /// #     "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
+    /// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
+    /// #     "nodes": ["z1001"], "reason": null, "name": "align"
+    /// # }"#;
+    /// use rtviz_model::{Cluster, Delta, Event};
+    ///
+    /// let mut cluster = Cluster::default();
+    /// let attempt = serde_json::from_str(json).unwrap();
+    /// cluster.apply(&Delta { seq: 1, at: rtviz_model::UnixTime(200), events: vec![Event::Started { attempt }] });
+    /// assert_eq!(cluster.running.len(), 1);
+    /// ```
     pub fn apply(&mut self, delta: &Delta) {
         self.at = Some(delta.at);
         for event in &delta.events {
@@ -533,6 +870,31 @@ impl Cluster {
     /// Exact cells go down first. Each attempt's remaining cores then take the first free slots on its
     /// nodes, in key order: all of them when its placement is unknown, or the ones a cut-off CPU list
     /// left out. An attempt with no placement spreads its CPUs and GPUs evenly over its nodes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
+    /// #     "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
+    /// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
+    /// #     "nodes": ["z1001"], "reason": null, "name": "align"
+    /// # }"#;
+    /// # let node = r#"{
+    /// #     "name": "z1001", "partitions": ["5days"], "state": "mixed", "flags": [], "state_raw": "MIXED",
+    /// #     "reason": null, "cpus": 8, "cpus_alloc": 4, "sockets": 1, "cores": 4, "load": 2.5,
+    /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
+    /// #     "gpu_model": "V100", "features": ["avx512"]
+    /// # }"#;
+    /// use rtviz_model::{Cluster, Delta, Event, NodeName, UnixTime};
+    ///
+    /// let mut cluster = Cluster { nodes: vec![serde_json::from_str(node).unwrap()], ..Cluster::default() };
+    /// let attempt = serde_json::from_str(json).unwrap();
+    /// cluster.apply(&Delta { seq: 1, at: UnixTime(200), events: vec![Event::Started { attempt }] });
+    /// let z1001 = &cluster.occupancy()[&NodeName("z1001".into())];
+    /// assert_eq!(z1001.cores.iter().flatten().count(), 4, "8 CPUs at 2 threads per core");
+    /// assert_eq!(z1001.gpus.iter().flatten().count(), 1);
+    /// ```
     pub fn occupancy(&self) -> BTreeMap<NodeName, Occupancy> {
         let mut nodes: BTreeMap<NodeName, Occupancy> = self
             .nodes

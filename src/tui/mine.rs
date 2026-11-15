@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 
 use super::units::{since, span};
 use super::view::{Focus, Scene, scrolled};
-use crate::model::Attempt;
+use rtviz_model::Attempt;
 
 /// The widest job name shown.
 const NAME: usize = 16;
