@@ -123,6 +123,20 @@ fn count(name: &str) {
     let _ = js_sys::Reflect::set(&counters, &name, &(value + 1.0).into());
 }
 
+/// Counts each font that finishes loading in `state`. A canvas asks for a font only when it draws, so
+/// it draws once in a fallback and again when the font arrives.
+pub fn watch_fonts(state: State) {
+    let loaded = Closure::<dyn FnMut()>::new(move || state.fonts.update(|count| *count += 1));
+    if document()
+        .fonts()
+        .add_event_listener_with_callback("loadingdone", loaded.as_ref().unchecked_ref())
+        .is_err()
+    {
+        web_sys::console::error_1(&"cannot watch fonts load".into());
+    }
+    loaded.forget();
+}
+
 /// Reads the themes and layouts into `state`.
 pub fn load_library(state: State) {
     spawn_local(async move {

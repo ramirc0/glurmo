@@ -37,6 +37,7 @@ fn App() -> impl IntoView {
     feed::load_library(state);
     feed::follow(state);
     feed::watch_usage(state);
+    feed::watch_fonts(state);
     Effect::new(move |_| {
         let css = state
             .theme

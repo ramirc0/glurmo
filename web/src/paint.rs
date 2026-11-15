@@ -65,7 +65,7 @@ pub fn display_name(cluster: &Cluster, login: &Login) -> String {
 }
 
 /// A canvas that fills its panel and calls `draw` with the context and its size in CSS pixels whenever
-/// the panel resizes, the fonts finish loading, or a signal `draw` reads changes.
+/// the panel resizes, a font finishes loading, or a signal `draw` reads changes.
 #[component]
 pub fn Surface<F>(draw: F) -> impl IntoView
 where
@@ -74,7 +74,7 @@ where
     let frame = NodeRef::<html::Div>::new();
     let canvas = NodeRef::<html::Canvas>::new();
     let size = RwSignal::new((0.0, 0.0));
-    let fonts = RwSignal::new(false);
+    let fonts = expect_context::<crate::state::State>().fonts;
     frame.on_load(move |frame| {
         let resized = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
             let entry: ResizeObserverEntry = entries.get(0).unchecked_into();
@@ -88,12 +88,6 @@ where
         resized.forget();
         let observer = StoredValue::new_local(observer);
         on_cleanup(move || observer.with_value(ResizeObserver::disconnect));
-    });
-    leptos::task::spawn_local(async move {
-        if let Ok(ready) = document().fonts().ready() {
-            let _ = wasm_bindgen_futures::JsFuture::from(ready).await;
-        }
-        fonts.try_set(true);
     });
     Effect::new(move |_| {
         let (width, height) = size.get();

@@ -3,6 +3,7 @@
 // deltas and no fresh snapshot.
 //
 // Usage: node web/check.mjs SERVER OUT.png [--size 1920x1080] [--query '?layout=tv'] [--settle 8] [--pull 3]
+//        [--eval EXPRESSION], which prints the expression's value after the page settles.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -23,6 +24,7 @@ const [width, height] = option("size", "1920x1080").split("x").map(Number);
 const query = option("query", "");
 const settle = Number(option("settle", "8"));
 const pull = option("pull", null);
+const expression = option("eval", null);
 const chrome = process.env.CHROME ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome`;
 const sleep = (seconds) => new Promise((done) => setTimeout(done, seconds * 1000));
 
@@ -134,6 +136,11 @@ if (pull) {
     lines.push("the stream did not resume with deltas alone");
     failed = true;
   }
+}
+
+if (expression) {
+  const { result } = await page("Runtime.evaluate", { expression: `JSON.stringify(${expression})`, returnByValue: true, awaitPromise: true });
+  lines.push(`${expression} = ${result.value}`);
 }
 
 const { data } = await page("Page.captureScreenshot", { format: "png" });

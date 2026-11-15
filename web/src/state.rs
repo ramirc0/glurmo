@@ -52,6 +52,8 @@ pub struct State {
     pub highlight: RwSignal<Option<Login>>,
     /// Whoever the address names with `me`.
     pub me: RwSignal<Option<Login>>,
+    /// Counts fonts finished loading, so canvases redraw in them.
+    pub fonts: RwSignal<u32>,
     /// Whether this is a wall display: no cursor, and the highlight cycles through users.
     pub tv: bool,
 }
@@ -112,6 +114,7 @@ impl State {
             }),
             highlight: RwSignal::new(None),
             me: RwSignal::new(address.me.map(Login)),
+            fonts: RwSignal::new(0),
             tv: address.tv,
         }
     }
