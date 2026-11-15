@@ -54,20 +54,27 @@ pub fn draw(scene: &Scene, grouping: Grouping, area: Rect, buf: &mut Buffer, foc
     )
 }
 
-/// Each group's title, then its entries in lines `width` wide.
+/// Each group's title, then its entries in lines `width` wide. A group whose entries are wider than
+/// that puts one node on each line and wraps its cores, GPUs and gauges onto lines below.
 fn lines_of(scene: &Scene, groups: &[NodeGroup], width: u16, gauges: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for group in groups {
         lines.push(title(scene, group));
         let shape = Shape::of(&group.nodes, gauges);
-        let per_line = usize::from(((width + GAP) / (shape.width() + GAP)).max(1));
+        if shape.width() > width {
+            for node in &group.nodes {
+                lines.extend(entry(scene, node, &shape).wrapped(usize::from(width)));
+            }
+            continue;
+        }
+        let per_line = usize::from((width + GAP) / (shape.width() + GAP));
         for row in group.nodes.chunks(per_line) {
             let mut spans = Vec::new();
             for (i, node) in row.iter().enumerate() {
                 if i > 0 {
                     spans.push(Span::raw(" ".repeat(usize::from(GAP))));
                 }
-                spans.extend(entry(scene, node, &shape));
+                spans.extend(entry(scene, node, &shape).spans());
             }
             lines.push(Line::from(spans));
         }
@@ -141,16 +148,71 @@ impl Shape {
     }
 }
 
-/// One node: its name, its cores, its GPUs, then its load and free memory or why it is out.
-fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Vec<Span<'static>> {
+/// One node: its name, then pieces a line may break between. They are its cores, its GPUs, and its
+/// load and free memory or why it is out.
+struct Entry {
+    name: Span<'static>,
+    pieces: Vec<Vec<Span<'static>>>,
+}
+
+impl Entry {
+    /// The entry on one line, a space between its parts.
+    fn spans(self) -> Vec<Span<'static>> {
+        let mut spans = vec![self.name];
+        for piece in self.pieces {
+            spans.push(Span::raw(" "));
+            spans.extend(piece);
+        }
+        spans
+    }
+
+    /// The entry on as many lines `width` wide as it takes, its pieces lined up after the name.
+    fn wrapped(self, width: usize) -> Vec<Line<'static>> {
+        let indent = self.name.width() + 1;
+        let room = width.saturating_sub(indent).max(1);
+        let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+        let mut used = 0;
+        for piece in self.pieces {
+            let piece_width: usize = piece.iter().map(Span::width).sum();
+            if used > 0 && used + 1 + piece_width <= room {
+                rows.last_mut().unwrap().push(Span::raw(" "));
+                used += 1;
+            } else if used > 0 {
+                rows.push(Vec::new());
+                used = 0;
+            }
+            for span in piece {
+                if used > 0 && used + span.width() > room {
+                    rows.push(Vec::new());
+                    used = 0;
+                }
+                used += span.width();
+                rows.last_mut().unwrap().push(span);
+            }
+        }
+        let mut lead = Some(vec![self.name, Span::raw(" ")]);
+        rows.into_iter()
+            .map(|row| {
+                let mut spans = lead
+                    .take()
+                    .unwrap_or_else(|| vec![Span::raw(" ".repeat(indent))]);
+                spans.extend(row);
+                Line::from(spans)
+            })
+            .collect()
+    }
+}
+
+/// One node's entry, its columns as wide as `shape` says.
+fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Entry {
     let palette = &scene.palette;
     let out = out(scene, node);
     let empty = out.map_or(palette.free, |color| palette.fade(color, OUT));
     let name_color = out.filter(|_| !node.is_usable()).unwrap_or(palette.subtle);
-    let mut spans = vec![Span::styled(
-        format!("{:<width$} ", node.name.0, width = usize::from(shape.name)),
+    let name = Span::styled(
+        format!("{:<width$}", node.name.0, width = usize::from(shape.name)),
         name_color,
-    )];
+    );
     let (cores, gpus) = scene
         .occupancy
         .get(&node.name)
@@ -158,44 +220,53 @@ fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Vec<Span<'static>> {
             (occupancy.cores.as_slice(), occupancy.gpus.as_slice())
         });
     let half = cores.len().div_ceil(2);
-    for i in 0..usize::from(shape.strip) {
-        if i >= half {
-            spans.push(Span::raw(" "));
-            continue;
-        }
-        let top = scene.cell(cores[i], empty);
-        let bottom = cores.get(i + half).map_or(palette.base, |cell| {
-            palette.fade(scene.cell(*cell, empty), LOWER)
-        });
-        spans.push(Span::styled("▀", Style::new().fg(top).bg(bottom)));
-    }
-    if shape.gpus > 0 {
-        spans.push(Span::raw(" "));
-        for i in 0..usize::from(shape.gpus) {
-            match gpus.get(i) {
-                Some(cell) => spans.push(Span::styled("■", scene.cell(*cell, empty))),
-                None => spans.push(Span::raw(" ")),
+    let strip = (0..usize::from(shape.strip))
+        .map(|i| {
+            if i >= half {
+                return Span::raw(" ");
             }
-        }
+            let top = scene.cell(cores[i], empty);
+            let bottom = cores.get(i + half).map_or(palette.base, |cell| {
+                palette.fade(scene.cell(*cell, empty), LOWER)
+            });
+            Span::styled("▀", Style::new().fg(top).bg(bottom))
+        })
+        .collect();
+    let mut pieces = vec![strip];
+    if shape.gpus > 0 {
+        pieces.push(
+            (0..usize::from(shape.gpus))
+                .map(|i| match gpus.get(i) {
+                    Some(cell) => Span::styled("■", scene.cell(*cell, empty)),
+                    None => Span::raw(" "),
+                })
+                .collect(),
+        );
     }
-    if !shape.gauges {
-        return spans;
+    if shape.gauges {
+        pieces.push(gauges(scene, node, out));
     }
+    Entry { name, pieces }
+}
+
+/// A node's load and free memory, or why it is out.
+fn gauges(scene: &Scene, node: &Node, out: Option<Color>) -> Vec<Span<'static>> {
+    let palette = &scene.palette;
     if let Some(word) = node.trouble() {
-        spans.push(Span::styled(
-            format!(" {word:<10}"),
+        return vec![Span::styled(
+            format!("{word:<10}"),
             out.unwrap_or(palette.text),
-        ));
-        return spans;
+        )];
     }
     let load = node.load.map_or_else(|| "-".to_owned(), load);
     let free = node
         .mem_free_mb
         .map(|free| (free * 100).checked_div(node.mem_mb).unwrap_or(0).min(99));
     let free = free.map_or_else(|| "-".to_owned(), |free| format!("{free}%"));
-    spans.push(Span::styled(format!(" {load:>5}"), palette.text));
-    spans.push(Span::styled(format!(" {free:>4}"), palette.muted));
-    spans
+    vec![
+        Span::styled(format!("{load:>5}"), palette.text),
+        Span::styled(format!(" {free:>4}"), palette.muted),
+    ]
 }
 
 /// The color of a node that is out: down or draining. `None` for a node that takes jobs.
@@ -205,5 +276,35 @@ fn out(scene: &Scene, node: &Node) -> Option<Color> {
         NodeState::Down | NodeState::Unknown => Some(scene.palette.down),
         NodeState::Draining | NodeState::Drained => Some(scene.palette.drain),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::view::tests::busy_app;
+
+    #[tokio::test]
+    async fn nodes_wider_than_the_panel_wrap_and_keep_every_gpu() {
+        let app = busy_app().await;
+        let scene = Scene::new(&app);
+        for grouping in [Grouping::Hardware, Grouping::Partition] {
+            let groups = node_groups(scene.cluster(), grouping);
+            let gpus: u32 = groups
+                .iter()
+                .flat_map(|group| &group.nodes)
+                .map(|node| node.gpus)
+                .sum();
+            for gauges in [true, false] {
+                let lines = lines_of(&scene, &groups, 78, gauges);
+                assert!(lines.iter().all(|line| line.width() <= 78), "{grouping:?}");
+                let drawn = lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .filter(|span| span.content == "■")
+                    .count();
+                assert_eq!(drawn, gpus as usize, "{grouping:?} with gauges {gauges}");
+            }
+        }
     }
 }

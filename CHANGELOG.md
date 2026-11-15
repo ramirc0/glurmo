@@ -14,6 +14,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - The command backend reads a job whose name holds newlines. squeue prints such a name over several lines. Before, one such job failed every job listing while it was listed.
 - The command backend sets aside a job that scontrol prints unreadably, logs it, and saves it once to `unparsed.jsonl`. That covers a job on a node sinfo did not list, and a job whose name holds ` UserId=` or starts a line with `JobId=`. Before, one such job failed the whole placement listing, and a name holding ` UserId=` could set the job's start or CPU count.
 - The command backend logs what a command that succeeds prints on stderr, once per text, and reads its output. Before, any stderr failed the call, so a host whose Slurm logs a warning on every command failed every call.
+- The TUI wraps a node wider than its cores panel onto more lines, its GPUs and gauges lined up under its cores. Before, the panel cut it, and the `jobs` layout showed 7 of js029's 8 GPUs.
 
 ## [0.3.0] - 2026-11-15
 

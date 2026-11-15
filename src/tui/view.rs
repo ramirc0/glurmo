@@ -327,7 +327,7 @@ fn help(scene: &Scene, area: Rect, buf: &mut Buffer) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -351,7 +351,7 @@ mod tests {
 
     /// The busy quarter hour as a view sees it after following every delta, seen by the user with
     /// the most running jobs, over a made-up day of usage by the four busiest users.
-    async fn busy_app() -> App {
+    pub(in crate::tui) async fn busy_app() -> App {
         let hub = crate::fixture::busy_stored_hub().await;
         let mut app = App::new(
             Library::load(Path::new("/nonexistent")),
