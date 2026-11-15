@@ -150,7 +150,6 @@ pub fn nodes(body: &[u8], partitions: &[PartitionRecord], protocol: Protocol) ->
                 Protocol::V25_11 => v25_11(u),
             };
             raw.and_then(|raw| raw.node(protocol))
-                .map(Some)
                 .with_context(|| format!("node {i}"))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -173,7 +172,8 @@ pub fn nodes(body: &[u8], partitions: &[PartitionRecord], protocol: Protocol) ->
 
 /// The fields glurmo reads from one node record.
 struct Raw {
-    name: String,
+    /// `None` in the blank record a controller below 24.11 packs for a hidden node or an empty slot.
+    name: Option<String>,
     state: u32,
     cpus: u16,
     sockets: u16,
@@ -192,7 +192,7 @@ struct Raw {
 }
 
 fn v23_11(u: &mut Unpack) -> Result<Raw> {
-    let name = u.str()?.context("a node without a name")?;
+    let name = u.str()?;
     u.skip_strs(3)?;
     let _port = u.u16()?;
     let _next_state = u.u32()?;
@@ -261,7 +261,7 @@ fn v23_11(u: &mut Unpack) -> Result<Raw> {
 }
 
 fn v25_11(u: &mut Unpack) -> Result<Raw> {
-    let name = u.str()?.context("a node without a name")?;
+    let name = Some(u.str()?.context("a node without a name")?);
     u.skip_strs(3)?;
     let _cert_flags = u.u16()?;
     let _port = u.u16()?;
@@ -335,7 +335,11 @@ fn v25_11(u: &mut Unpack) -> Result<Raw> {
 }
 
 impl Raw {
-    fn node(self, protocol: Protocol) -> Result<Node> {
+    /// The node, or `None` for a blank record, which sinfo skips too.
+    fn node(self, protocol: Protocol) -> Result<Option<Node>> {
+        let Some(name) = self.name else {
+            return Ok(None);
+        };
         let state = mixed(
             self.state,
             self.cpus_effective,
@@ -345,8 +349,8 @@ impl Raw {
         let state_raw = state_complete(state, protocol);
         let (state, flags) = node_state(&state_raw);
         let gres_total = gres(&self.gres_total)?;
-        Ok(Node {
-            name: NodeName(self.name),
+        Ok(Some(Node {
+            name: NodeName(name),
             partitions: Vec::new(),
             state,
             flags,
@@ -367,7 +371,7 @@ impl Raw {
                 .features
                 .filter(|features| !features.is_empty())
                 .map_or_default(|features| features.split(',').map(str::to_owned).collect()),
-        })
+        }))
     }
 }
 
@@ -493,6 +497,50 @@ mod tests {
             "idle+blocked+external"
         );
         assert_eq!(state_complete(3 | 1 << 31, Protocol::V23_11), "allocated+?");
+    }
+
+    /// A 23.11 node record named `name`, idle, with 8 CPUs. `None` packs the blank record the
+    /// controller sends for a FUTURE node or an empty slot.
+    fn v23_11_record(body: &mut Pack, name: Option<&str>) {
+        body.str(name).str(None).str(None).str(None).u16(0).u32(0);
+        body.u32(if name.is_some() { 2 } else { 0 }).str(None);
+        body.u16(8).u16(1).u16(1).u16(8).u16(1).u64(1024).u32(0);
+        body.str(None).u32(0).u16(0).u32(0).u64(0).str(None).u16(8);
+        body.u32(0).u64(0).u32(1).u32(0);
+        for _time in 0..5 {
+            body.time(0);
+        }
+        body.u32(CONS_TRES).u16(0).u64(0).str(None).u64(0);
+        for _str in 0..12 {
+            body.str(None);
+        }
+        body.u64(0).u32(0).u64(0).u32(0).u64(0).time(0);
+        body.u64(0).u32(0).time(0).u32(0);
+        body.u32(0).str(None).str(None);
+    }
+
+    #[test]
+    fn nameless_records_below_24_11_are_skipped() {
+        let mut body = Pack::default();
+        body.u32(3).time(0);
+        v23_11_record(&mut body, None);
+        v23_11_record(&mut body, Some("z1"));
+        v23_11_record(&mut body, None);
+        let partition = PartitionRecord {
+            partition: Partition {
+                name: PartitionName("short".into()),
+                nodes: vec![NodeName("z1".into())],
+                max_time_s: None,
+                default: true,
+                hidden: false,
+                state_raw: "UP".into(),
+            },
+            node_indices: vec![1],
+        };
+        let found = nodes(&body.0, &[partition], Protocol::V23_11).unwrap();
+        let names: Vec<&str> = found.iter().map(|node| node.name.0.as_str()).collect();
+        assert_eq!(names, ["z1"]);
+        assert_eq!(found[0].state_raw, "idle");
     }
 
     #[test]

@@ -27,6 +27,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - A partition's free cores and GPUs leave out draining nodes, which take no new jobs. sinfo counts their idle CPUs as other. Before, they counted as free.
 - Memory under a gigabyte reads in megabytes, as `512M`. Before, it read `0G`.
 - A running job that is suspended or resumed, or whose time limit changes, updates in both views. A suspended job reads `S` or `susp` among your jobs, and `suspended` in the job list and its tip, with no countdown. Before, it kept the state and time limit it started with.
+- The protocol backend skips the blank records a controller below 24.11 sends for FUTURE nodes and empty slots, as sinfo does. Before, one such record failed every node listing.
 
 ## [0.3.0] - 2026-11-15
 
