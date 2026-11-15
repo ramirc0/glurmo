@@ -270,8 +270,9 @@ async fn stream(
         ..Cluster::default()
     };
     let hub = Hub::new(slurm.site().clone());
-    let mut sampler = Sampler::new(slurm, config, store, hub.clone());
     let mut deltas = hub.subscribe();
+    // The sampler holds the only hub, so the stream closes when sampling stops.
+    let mut sampler = Sampler::new(slurm, config, store, hub);
     let sampling = async move { sampler.run(until).await };
     let printing = async {
         loop {
@@ -353,6 +354,30 @@ fn summarize(sample: &Sample) {
         eprintln!(
             "  {}: {} placed, {} allocated",
             mismatch.node.0, mismatch.placed, mismatch.allocated
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stream_with_an_end_returns_once_sampling_stops() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slurm-23.11/quiet.jsonl");
+        let slurm = Slurm::connect(Source::Replay(Replay::open(&path).unwrap()), None)
+            .await
+            .unwrap();
+        let until = glurmo_model::UnixTime(slurm.now().0 + 60);
+        let streamed = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stream(slurm, &fixture::zlurm_config(), None, Some(until)),
+        )
+        .await;
+        assert!(
+            streamed.is_ok(),
+            "stream kept waiting after sampling stopped"
         );
     }
 }
