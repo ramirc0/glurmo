@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tokio::signal::unix::SignalKind;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 
@@ -189,12 +190,20 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Samples into the store and serves the stream, history, themes and layouts until SIGINT, SIGTERM or
-/// SIGHUP.
-/// Theme and layout files are read from `$XDG_CONFIG_HOME/glurmo`. With `replay`, the samples come from a
-/// recording, played `speed` times faster than it was recorded, and the store is a temporary one.
+/// Samples into the store and serves the stream, history, themes and layouts until SIGINT or SIGTERM,
+/// which also cut a slow start short. SIGHUP is left alone, so `nohup` keeps working.
 async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()> {
-    let stop = shutdown::signals()?;
+    let stop = shutdown::signals(&[SignalKind::interrupt(), SignalKind::terminate()])?;
+    tokio::select! {
+        served = sample_and_serve(config, replay, speed) => served,
+        () = stop => Ok(()),
+    }
+}
+
+/// Samples into the store and serves the stream, history, themes and layouts. Theme and layout files
+/// are read from `$XDG_CONFIG_HOME/glurmo`. With `replay`, the samples come from a recording, played
+/// `speed` times faster than it was recorded, and the store is a temporary one.
+async fn sample_and_serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()> {
     let (slurm, path, store, _scratch) = if let Some(recording) = replay {
         let scratch = tempfile::tempdir()?;
         let slurm =
@@ -234,7 +243,6 @@ async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()>
         () = sample => Ok(()),
         () = library::keep_current(&dir, &library) => Ok(()),
         served = server::serve(config.server.listen, router) => served,
-        () = stop => Ok(()),
     }
 }
 

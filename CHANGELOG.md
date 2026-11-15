@@ -18,7 +18,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - The web view's banner counts up while the server or Slurm stays unreachable. Before, it showed how long it had been when the trouble began.
 - Typing a layout's name in the editor keeps the field's focus. Before, each letter rebuilt the editor, and the next `e` closed it and dropped the draft.
 - Hovering in the web view no longer slows down the longer a page stays open. Table rows read a copy of the highlight that goes away with them. Before, each rebuild of a table left its rows subscribed, and on AICR a hover took 7 ms on a fresh page and 385 ms after 120 rebuilds, as after a replay.
-- `serve` and `tui` stop cleanly on SIGINT, SIGTERM or SIGHUP. Before, `serve` left a temporary directory behind on every restart, and the TUI left the terminal in its alternate screen. `serve` makes that directory only for `--replay` now.
+- `serve` stops cleanly on SIGINT or SIGTERM, even while it starts, and `tui` also on SIGHUP. `serve` leaves SIGHUP alone, so `nohup` still works. Before, `serve` left a temporary directory behind on every restart, and the TUI left the terminal in its alternate screen. `serve` makes that directory only for `--replay` now.
 - The TUI quits on Ctrl-C while the filter is open. Before, Ctrl-C typed a `c`. It also draws a squeezed header or keys pane and a zero-hour history span, which panicked before.
 - A job with no placement yet spreads leftover CPUs and GPUs over its first nodes. Before, each node drew the rounded-up share, so one GPU over two nodes drew two.
 - The history chart's queue depth sums every user's waiting tasks before it rounds. Before, many short waits each rounded down to nothing.

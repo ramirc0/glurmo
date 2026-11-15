@@ -27,6 +27,7 @@ use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures_util::StreamExt;
 use jiff::tz::TimeZone;
 use ratatui::DefaultTerminal;
+use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
@@ -64,7 +65,11 @@ pub async fn run(config: &Config, server: Option<&str>) -> Result<()> {
     let (span, spans) = watch::channel(app.history_span_s());
     feed.watch_usage(spans, sender);
 
-    let stop = crate::shutdown::signals()?;
+    let stop = crate::shutdown::signals(&[
+        SignalKind::interrupt(),
+        SignalKind::terminate(),
+        SignalKind::hangup(),
+    ])?;
     let stderr = redirect_stderr()?;
     let result = match ratatui::try_init() {
         Ok(mut terminal) => show(&mut terminal, &mut app, &mut updates, &span, &dir, stop).await,
