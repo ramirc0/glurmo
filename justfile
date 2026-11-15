@@ -13,6 +13,10 @@ check:
 run *args:
     cargo run -- {{args}}
 
-# Build a static binary at target/x86_64-unknown-linux-musl/release/rtviz.
+# Build a static musl binary at target/x86_64-unknown-linux-musl/release/rtviz. It runs on any x86-64 Linux.
 static:
     cargo build --release --target x86_64-unknown-linux-musl
+
+# Build a dynamic glibc binary at target/release/rtviz. It runs only where glibc is at least as new as here.
+release:
+    cargo build --release
