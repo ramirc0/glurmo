@@ -13,6 +13,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- The editor turns accented letters in a name into plain ones for its file name, so `Rosé Pine Dawn` saves as `rose-pine-dawn`. Before, it dropped them.
 - A replay that nears now no longer skips the changes past the server's clock. It asks only up to 15 s before now, where the live view takes over.
 - The web view's banner counts up while the server or Slurm stays unreachable. Before, it showed how long it had been when the trouble began.
 - Typing a layout's name in the editor keeps the field's focus. Before, each letter rebuilt the editor, and the next `e` closed it and dropped the draft.

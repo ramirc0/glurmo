@@ -81,14 +81,42 @@ pub fn file_name_problem(name: &str) -> Option<String> {
 /// A file name made from a display name, such as `rose-pine-dawn` from `Rosé Pine Dawn`.
 pub fn file_name_for(name: &str) -> String {
     let mut file = String::new();
-    for c in name.chars().map(|c| c.to_ascii_lowercase()) {
+    for c in name.chars().flat_map(char::to_lowercase) {
         if c.is_ascii_alphanumeric() {
             file.push(c);
+        } else if let Some(plain) = unaccented(c) {
+            file.push_str(plain);
         } else if !file.is_empty() && !file.ends_with('-') {
             file.push('-');
         }
     }
     file.trim_end_matches('-').to_owned()
+}
+
+/// A lowercase Latin letter with its accent dropped, such as `e` for `é`.
+fn unaccented(c: char) -> Option<&'static str> {
+    Some(match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+        'æ' => "ae",
+        'ç' | 'ć' | 'č' => "c",
+        'ď' | 'đ' | 'ð' => "d",
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => "e",
+        'ğ' => "g",
+        'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => "i",
+        'ł' | 'ľ' => "l",
+        'ñ' | 'ń' | 'ň' => "n",
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => "o",
+        'œ' => "oe",
+        'ř' => "r",
+        'ß' => "ss",
+        'ś' | 'š' | 'ş' => "s",
+        'ť' | 'ţ' => "t",
+        'þ' => "th",
+        'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' | 'ų' => "u",
+        'ý' | 'ÿ' => "y",
+        'ź' | 'ż' | 'ž' => "z",
+        _ => return None,
+    })
 }
 
 /// The sidebar: the panel builder or the theme editor, each with its save and export block.
@@ -271,7 +299,8 @@ mod tests {
 
     #[test]
     fn display_names_become_file_names() {
-        assert_eq!(file_name_for("Rosé Pine Dawn"), "ros-pine-dawn");
+        assert_eq!(file_name_for("Rosé Pine Dawn"), "rose-pine-dawn");
+        assert_eq!(file_name_for("ÉCOLE Straße"), "ecole-strasse");
         assert_eq!(file_name_for("  Gruvbox (dark)  "), "gruvbox-dark");
         assert_eq!(file_name_for("---"), "");
     }
