@@ -6,8 +6,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::view::{Focus, Scene, scrolled};
-use glurmo_model::Attempt;
 use glurmo_model::units::{since, span};
+use glurmo_model::{Attempt, JobState};
 
 /// The widest job name shown.
 const NAME: usize = 16;
@@ -63,7 +63,12 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
                 .start
                 .map_or_else(String::new, |start| since(start, scene.now));
             let nodes: Vec<&str> = attempt.nodes.iter().map(|node| node.0.as_str()).collect();
-            line(attempt, "R", time, nodes.join(","))
+            let state = if attempt.state == JobState::Suspended {
+                "S"
+            } else {
+                "R"
+            };
+            line(attempt, state, time, nodes.join(","))
         })
         .collect();
     let running_count = lines.len();

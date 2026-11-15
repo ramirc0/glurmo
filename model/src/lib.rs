@@ -761,6 +761,11 @@ pub enum Event {
         /// How it ended.
         state: EndState,
     },
+    /// A running attempt was suspended or resumed, or its time limit changed.
+    Updated {
+        /// The attempt as the listing now shows it.
+        attempt: Attempt,
+    },
     /// Where an attempt's cores and GPUs are, found after it started.
     Placed {
         /// The attempt.
@@ -984,6 +989,11 @@ impl Cluster {
                     self.running.remove(key);
                 }
                 Event::Withdrawn { .. } | Event::Settled { .. } => {}
+                Event::Updated { attempt } => {
+                    if let Some(running) = self.running.get_mut(&attempt.key) {
+                        running.attempt = attempt.clone();
+                    }
+                }
                 Event::Placed { key, placement } => {
                     if let Some(running) = self.running.get_mut(key) {
                         running.placement = Some(placement.clone());
@@ -1315,6 +1325,25 @@ mod tests {
             },
             placement: Placement(cells),
         }
+    }
+
+    #[test]
+    fn an_update_replaces_a_running_attempt_and_keeps_its_placement() {
+        let mut suspended = attempt(1, 4, 0, &["z1"]);
+        suspended.state = JobState::Suspended;
+        let cluster = cluster(
+            vec![node("z1", 4, 0, 0)],
+            vec![
+                started(attempt(1, 4, 0, &["z1"])),
+                placed(1, vec![cells("z1", &[0, 1], 0, &[])]),
+                Event::Updated {
+                    attempt: suspended.clone(),
+                },
+            ],
+        );
+        let running = &cluster.running[&suspended.key];
+        assert_eq!(running.attempt, suspended);
+        assert!(running.placement.is_some());
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use glurmo_model::layout::QueueBy;
 use glurmo_model::summary::{self, Holding, holdings, partition_loads, waiting};
 use glurmo_model::units::{percent, since, span, thousands};
-use glurmo_model::{Attempt, Login, NodeName, NodeState, PartitionName};
+use glurmo_model::{Attempt, JobState, Login, NodeName, NodeState, PartitionName};
 use leptos::prelude::*;
 
 use crate::paint::{Rgb, clock, display_name, user_color};
@@ -643,7 +643,8 @@ pub fn Mine() -> impl IntoView {
                                     .map(|node| node.0.as_str())
                                     .collect::<Vec<_>>()
                                     .join(",");
-                                line(attempt, "run", time, nodes).into_any()
+                                let word = if attempt.state == JobState::Suspended { "susp" } else { "run" };
+                                line(attempt, word, time, nodes).into_any()
                             })
                             .collect();
                         lines.extend(

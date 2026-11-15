@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use glurmo_model::units::{gigabytes, load, since, span};
-use glurmo_model::{Attempt, Cluster, Node, Occupancies, Occupancy, Owner};
+use glurmo_model::{Attempt, Cluster, JobState, Node, Occupancies, Occupancy, Owner};
 use leptos::prelude::*;
 
 use crate::die::{Spot, owner_at};
@@ -119,7 +119,9 @@ fn job(
     }
     if let Some(start) = attempt.start {
         rows.push(row("running", since(start, at)));
-        if let Some(limit) = attempt.time_limit_s {
+        if attempt.state == JobState::Suspended {
+            rows.push(row("state", "suspended".to_owned()));
+        } else if let Some(limit) = attempt.time_limit_s {
             rows.push(row("left", span(start.0 + limit.cast_signed() - at.0)));
         }
     }

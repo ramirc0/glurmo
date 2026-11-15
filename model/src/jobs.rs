@@ -261,7 +261,8 @@ impl<'a> JobGroup<'a> {
     }
 
     /// Where a running group runs, or why a pending group waits. A group of more than one names its
-    /// node count, or its commonest reason and how many others there are.
+    /// node count, or its commonest reason and how many others there are. A lone suspended job says so
+    /// before its nodes.
     ///
     /// # Examples
     ///
@@ -281,12 +282,17 @@ impl<'a> JobGroup<'a> {
                     .iter()
                     .flat_map(|attempt| &attempt.nodes)
                     .collect();
-                if self.attempts.len() == 1 {
-                    nodes
+                if let [attempt] = self.attempts.as_slice() {
+                    let names = nodes
                         .iter()
                         .map(|node| node.0.as_str())
                         .collect::<Vec<_>>()
-                        .join(",")
+                        .join(",");
+                    if attempt.state == JobState::Suspended {
+                        format!("suspended · {names}")
+                    } else {
+                        names
+                    }
                 } else {
                     format!(
                         "{} node{}",
@@ -317,7 +323,7 @@ impl<'a> JobGroup<'a> {
     }
 
     /// How long a lone running attempt has left at `at`, in seconds, or `None` for a group, a pending
-    /// attempt, or one with no time limit.
+    /// or suspended attempt, or one with no time limit.
     ///
     /// # Examples
     ///
@@ -337,7 +343,9 @@ impl<'a> JobGroup<'a> {
         let [attempt] = self.attempts.as_slice() else {
             return None;
         };
-        let end = attempt.end.filter(|_| self.key.phase == Phase::Running)?;
+        let end = attempt
+            .end
+            .filter(|_| self.key.phase == Phase::Running && attempt.state != JobState::Suspended)?;
         Some((end.0 - at.0).max(0))
     }
 
@@ -579,6 +587,22 @@ pub fn example() -> Cluster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_suspended_job_reads_as_suspended_with_no_countdown() {
+        let mut cluster = example();
+        for running in cluster.running.values_mut() {
+            running.attempt.end = Some(UnixTime(1_700_003_600));
+            running.attempt.state = JobState::Suspended;
+        }
+        let search = Search {
+            text: "4250",
+            ..Search::default()
+        };
+        let groups = job_groups(&cluster, &search, Order::default());
+        assert_eq!(groups[0].left_s(UnixTime(1_700_000_600)), None);
+        assert_eq!(groups[0].place(), "suspended · z1");
+    }
 
     #[test]
     fn running_groups_come_first_whatever_the_order() {

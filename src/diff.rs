@@ -17,6 +17,8 @@ pub struct Known {
     at: UnixTime,
     attempts: HashMap<AttemptKey, Seen>,
     queue: BTreeMap<AttemptKey, Attempt>,
+    /// Attempts that held cores in the last listing, as it showed them.
+    running: HashMap<AttemptKey, Attempt>,
     nodes: Vec<Node>,
     partitions: Vec<Partition>,
 }
@@ -49,11 +51,24 @@ impl Known {
         self.since.get_or_insert(at);
         self.at = at;
         let mut events = Vec::new();
+        let mut running = HashMap::new();
         for job in jobs {
             let was = self.attempts.get(&job.key).map(|seen| seen.phase);
             let phase = next_phase(was, job, first, at, &mut events);
             self.attempts.insert(job.key, Seen { phase, listed: at });
+            if phase != Phase::Holding {
+                continue;
+            }
+            if let Some(last) = self.running.get(&job.key)
+                && changed_while_running(last, job)
+            {
+                events.push(Event::Updated {
+                    attempt: job.clone(),
+                });
+            }
+            running.insert(job.key, job.clone());
         }
+        self.running = running;
 
         let mut resubmitted: HashMap<JobId, UnixTime> = HashMap::new();
         for job in jobs {
@@ -225,6 +240,11 @@ fn next_phase(
         }
         (Some(phase @ (Phase::Ended | Phase::Settled)), _) => phase,
     }
+}
+
+/// Whether a running attempt was suspended or resumed, or its time limit or expected end moved.
+fn changed_while_running(last: &Attempt, now: &Attempt) -> bool {
+    (last.state, last.time_limit_s, last.end) != (now.state, now.time_limit_s, now.end)
 }
 
 /// The event that closes an attempt: its end while it still holds cores, or else its final state.
@@ -570,6 +590,53 @@ mod tests {
             ]
         );
         assert_eq!(known.diff_jobs(&listing, UnixTime(1_200)), []);
+    }
+
+    #[test]
+    fn running_jobs_fire_an_update_when_suspended_resumed_or_given_a_new_limit() {
+        let suspended = job(1, JobState::Suspended);
+        let mut extended = job(1, RUNNING);
+        extended.time_limit_s = Some(7_200);
+        extended.end = Some(UnixTime(8_300));
+        let mut renamed = extended.clone();
+        renamed.name = "other".into();
+        let listings: [&[Attempt]; 5] = [
+            &[job(1, RUNNING)],
+            std::slice::from_ref(&suspended),
+            &[job(1, RUNNING)],
+            &[extended.clone()],
+            &[renamed],
+        ];
+        let mut known = Known::default();
+        let updates: Vec<Vec<Event>> = listings
+            .iter()
+            .enumerate()
+            .map(|(i, jobs)| {
+                let at = UnixTime(1_000 + 100 * i64::try_from(i).unwrap());
+                known.diff_jobs(jobs, at)
+            })
+            .map(|events| {
+                events
+                    .into_iter()
+                    .filter(|event| matches!(event, Event::Updated { .. }))
+                    .collect()
+            })
+            .collect();
+        let update = |attempt: &Attempt| {
+            vec![Event::Updated {
+                attempt: attempt.clone(),
+            }]
+        };
+        assert_eq!(
+            updates,
+            [
+                Vec::new(),
+                update(&suspended),
+                update(&job(1, RUNNING)),
+                update(&extended),
+                Vec::new(),
+            ]
+        );
     }
 
     #[test]

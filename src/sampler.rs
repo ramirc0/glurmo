@@ -512,6 +512,7 @@ mod tests {
                 Event::Ended { state, .. } => format!("ended:{state:?}"),
                 Event::Withdrawn { .. } => "withdrawn".to_owned(),
                 Event::Settled { state, .. } => format!("settled:{state:?}"),
+                Event::Updated { .. } => "updated".to_owned(),
                 Event::Placed { .. } => "placed".to_owned(),
                 Event::Queued(attempts) => format!("queued:{}", attempts.len()),
                 Event::Dequeued(keys) => format!("dequeued:{}", keys.len()),
