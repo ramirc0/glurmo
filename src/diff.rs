@@ -1,6 +1,6 @@
 //! Turns each tick's listings into the events that changed since the last tick.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::model::{
     Attempt, AttemptKey, EndState, Event, JobId, JobState, Node, Partition, UnixTime,
@@ -16,7 +16,7 @@ pub struct Known {
     /// When the last listing came in.
     at: UnixTime,
     attempts: HashMap<AttemptKey, Seen>,
-    queue: Vec<Attempt>,
+    queue: BTreeMap<AttemptKey, Attempt>,
     nodes: Vec<Node>,
     partitions: Vec<Partition>,
 }
@@ -74,15 +74,29 @@ impl Known {
             }
         });
 
-        let queue: Vec<Attempt> = jobs
+        let queue: BTreeMap<AttemptKey, Attempt> = jobs
             .iter()
             .filter(|job| job.state == JobState::Pending)
+            .map(|job| (job.key, job.clone()))
+            .collect();
+        let queued: Vec<Attempt> = jobs
+            .iter()
+            .filter(|job| queue.contains_key(&job.key) && self.queue.get(&job.key) != Some(job))
             .cloned()
             .collect();
-        if queue != self.queue {
-            self.queue.clone_from(&queue);
-            events.push(Event::Queue(queue));
+        let dequeued: Vec<AttemptKey> = self
+            .queue
+            .keys()
+            .filter(|key| !queue.contains_key(key))
+            .copied()
+            .collect();
+        if !queued.is_empty() {
+            events.push(Event::Queued(queued));
         }
+        if !dequeued.is_empty() {
+            events.push(Event::Dequeued(dequeued));
+        }
+        self.queue = queue;
         events
     }
 
@@ -301,7 +315,7 @@ mod tests {
     fn without_queue(events: Vec<Event>) -> Vec<Event> {
         events
             .into_iter()
-            .filter(|event| !matches!(event, Event::Queue(_)))
+            .filter(|event| !matches!(event, Event::Queued(_) | Event::Dequeued(_)))
             .collect()
     }
 
@@ -320,7 +334,7 @@ mod tests {
                 Event::Started {
                     attempt: jobs[0].clone()
                 },
-                Event::Queue(vec![jobs[3].clone()]),
+                Event::Queued(vec![jobs[3].clone()]),
             ]
         );
     }
@@ -334,7 +348,7 @@ mod tests {
                 Event::Started {
                     attempt: job(1, RUNNING)
                 },
-                Event::Queue(vec![]),
+                Event::Dequeued(vec![key(1)]),
             ]
         );
     }
@@ -404,7 +418,7 @@ mod tests {
             attempt: cancelled.clone(),
         };
         let (known, events) = ticks(&[&[job(1, PENDING)], &[cancelled.clone()]]);
-        assert_eq!(events, [withdrawn.clone(), Event::Queue(vec![])]);
+        assert_eq!(events, [withdrawn.clone(), Event::Dequeued(vec![key(1)])]);
         assert_eq!(known.active(), HashSet::new());
         assert_eq!(
             ticks(&[&[], &[cancelled.clone()]]).1,
@@ -464,7 +478,10 @@ mod tests {
         let events = known.diff_jobs(&[first, last.clone()], UnixTime(1_200));
         assert_eq!(
             events,
-            [Event::Started { attempt: last }, Event::Queue(vec![])]
+            [
+                Event::Started { attempt: last },
+                Event::Dequeued(vec![key(10)])
+            ]
         );
     }
 
@@ -481,7 +498,7 @@ mod tests {
                     at: UnixTime(1_150),
                     state: Some(EndState::Requeued)
                 },
-                Event::Queue(vec![requeued]),
+                Event::Queued(vec![requeued]),
             ]
         );
         assert_eq!(known.unsettled(), []);
@@ -539,11 +556,25 @@ mod tests {
     }
 
     #[test]
-    fn queue_fires_only_when_it_changes() {
-        let pending: &[Attempt] = &[job(1, PENDING)];
-        let (mut known, events) = ticks(&[pending]);
-        assert_eq!(events, [Event::Queue(pending.to_vec())]);
-        assert_eq!(known.diff_jobs(pending, UnixTime(1_100)), []);
+    fn queue_sends_only_the_rows_that_joined_changed_or_left() {
+        let (mut known, events) = ticks(&[&[job(1, PENDING), job(2, PENDING)]]);
+        assert_eq!(
+            events,
+            [Event::Queued(vec![job(1, PENDING), job(2, PENDING)])]
+        );
+        let held = Attempt {
+            reason: Some("JobHeldUser".into()),
+            ..job(2, PENDING)
+        };
+        let listing = [held.clone(), job(3, PENDING)];
+        assert_eq!(
+            known.diff_jobs(&listing, UnixTime(1_100)),
+            [
+                Event::Queued(vec![held, job(3, PENDING)]),
+                Event::Dequeued(vec![key(1)]),
+            ]
+        );
+        assert_eq!(known.diff_jobs(&listing, UnixTime(1_200)), []);
     }
 
     #[test]

@@ -344,7 +344,8 @@ mod tests {
                 Event::Withdrawn { .. } => "withdrawn".to_owned(),
                 Event::Settled { state, .. } => format!("settled:{state:?}"),
                 Event::Placed { .. } => "placed".to_owned(),
-                Event::Queue(queue) => format!("queue:{}", queue.len()),
+                Event::Queued(attempts) => format!("queued:{}", attempts.len()),
+                Event::Dequeued(keys) => format!("dequeued:{}", keys.len()),
                 Event::Nodes(_) => "nodes".to_owned(),
                 Event::Partitions(_) => "partitions".to_owned(),
                 Event::Stats(_) => "stats".to_owned(),
@@ -464,7 +465,7 @@ mod tests {
             .collect();
         let pending: u32 = cluster
             .queue
-            .iter()
+            .values()
             .map(|attempt| attempt.array.as_ref().map_or(1, |array| array.count))
             .sum();
 

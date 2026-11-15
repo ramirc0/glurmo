@@ -171,8 +171,8 @@ impl Store {
                 Event::Started { attempt } | Event::Withdrawn { attempt } => {
                     upsert(&tx, &self.cpus_per_core, attempt, Origin::Live)?;
                 }
-                Event::Queue(queue) => {
-                    for attempt in queue {
+                Event::Queued(attempts) => {
+                    for attempt in attempts {
                         upsert(&tx, &self.cpus_per_core, attempt, Origin::Live)?;
                     }
                 }
@@ -215,7 +215,7 @@ impl Store {
                         }
                     }
                 }
-                Event::Partitions(_) | Event::Stats(_) => {}
+                Event::Dequeued(_) | Event::Partitions(_) | Event::Stats(_) => {}
             }
         }
         tx.commit()?;
@@ -780,7 +780,7 @@ mod tests {
                         attempt: running(2),
                     },
                     Event::Withdrawn { attempt: cancelled },
-                    Event::Queue(vec![range]),
+                    Event::Queued(vec![range]),
                 ],
             )
             .unwrap();

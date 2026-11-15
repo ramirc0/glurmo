@@ -348,8 +348,10 @@ pub enum Event {
         /// Its cells.
         placement: Placement,
     },
-    /// Every pending job, in queue order.
-    Queue(Vec<Attempt>),
+    /// Pending jobs that joined the queue or changed, in listing order.
+    Queued(Vec<Attempt>),
+    /// Pending jobs that left the queue, because they started or were withdrawn.
+    Dequeued(Vec<AttemptKey>),
     /// Every node.
     Nodes(Vec<Node>),
     /// Every partition.
@@ -389,8 +391,8 @@ pub struct Cluster {
     pub partitions: Vec<Partition>,
     /// Attempts that hold cores.
     pub running: BTreeMap<AttemptKey, Running>,
-    /// Pending jobs, in queue order.
-    pub queue: Vec<Attempt>,
+    /// Pending jobs.
+    pub queue: BTreeMap<AttemptKey, Attempt>,
     /// Scheduler counters.
     pub stats: Option<Stats>,
     /// Whether the scheduler hides other users' jobs, so cores that no visible job explains belong to someone hidden.
@@ -440,7 +442,16 @@ impl Cluster {
                         running.placement = Some(placement.clone());
                     }
                 }
-                Event::Queue(queue) => self.queue.clone_from(queue),
+                Event::Queued(attempts) => {
+                    for attempt in attempts {
+                        self.queue.insert(attempt.key, attempt.clone());
+                    }
+                }
+                Event::Dequeued(keys) => {
+                    for key in keys {
+                        self.queue.remove(key);
+                    }
+                }
                 Event::Nodes(nodes) => self.nodes.clone_from(nodes),
                 Event::Partitions(partitions) => self.partitions.clone_from(partitions),
                 Event::Stats(stats) => self.stats = Some(stats.clone()),
