@@ -1058,14 +1058,15 @@ impl Cluster {
             let spread = u32::try_from(attempt.nodes.len())
                 .unwrap_or(u32::MAX)
                 .max(1);
-            for name in &attempt.nodes {
+            let share = |total: u32, i: u32| total / spread + u32::from(i < total % spread);
+            for (i, name) in (0..).zip(&attempt.nodes) {
                 let Some(node) = nodes.get_mut(name) else {
                     continue;
                 };
-                let cpus = attempt.cpus.div_ceil(spread);
                 let per_core = cpus_per_core.get(name).copied().unwrap_or(1);
-                pack(&mut node.cores, cpus.div_ceil(per_core).max(1), owner);
-                pack(&mut node.gpus, attempt.gpus.div_ceil(spread), owner);
+                let cores = share(attempt.cpus, i).div_ceil(per_core).max(1);
+                pack(&mut node.cores, cores, owner);
+                pack(&mut node.gpus, share(attempt.gpus, i), owner);
             }
         }
         if self.hides_jobs {
@@ -1339,6 +1340,24 @@ mod tests {
             );
             assert_eq!(occupancy.gpus, [Some(owner(1)), None]);
         }
+    }
+
+    #[test]
+    fn unplaced_job_spreads_what_does_not_divide_evenly_over_the_first_nodes() {
+        let cluster = cluster(
+            vec![node("z1", 4, 2, 0), node("z2", 4, 2, 0)],
+            vec![started(attempt(1, 5, 1, &["z1", "z2"]))],
+        );
+        let occupancy = cluster.occupancy();
+        let held = |cells: fn(&Occupancy) -> &Vec<Option<Owner>>| -> usize {
+            occupancy
+                .values()
+                .flat_map(cells)
+                .filter(|cell| cell.is_some())
+                .count()
+        };
+        assert_eq!(held(|occupancy| &occupancy.cores), 3);
+        assert_eq!(held(|occupancy| &occupancy.gpus), 1);
     }
 
     #[test]
