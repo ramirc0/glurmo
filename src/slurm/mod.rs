@@ -313,7 +313,7 @@ impl Slurm {
     /// Fails when the source fails.
     pub async fn jobs(&mut self) -> Result<Vec<Attempt>> {
         match self.ask(Call::Jobs).await? {
-            Answer::Jobs(jobs) => Ok(jobs),
+            Answer::Jobs(jobs) => Ok(without_false_starts(jobs)),
             other => mismatched(&other),
         }
     }
@@ -390,7 +390,7 @@ impl Slurm {
     /// Fails when the source fails.
     pub async fn history(&mut self, from: UnixTime, to: UnixTime) -> Result<Vec<Attempt>> {
         match self.ask(Call::History { from, to }).await? {
-            Answer::History(attempts) => Ok(attempts),
+            Answer::History(attempts) => Ok(without_false_starts(attempts)),
             other => mismatched(&other),
         }
     }
@@ -491,6 +491,17 @@ impl Sample {
     }
 }
 
+/// Clears the start of each ended attempt that held no nodes. slurmctld stamps a pending job it
+/// cancels with a start equal to its end, though it never ran.
+fn without_false_starts(mut attempts: Vec<Attempt>) -> Vec<Attempt> {
+    for attempt in &mut attempts {
+        if matches!(attempt.state, JobState::Ended(_)) && attempt.nodes.is_empty() {
+            attempt.start = None;
+        }
+    }
+    attempts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +542,36 @@ mod tests {
         purged.key.job = JobId(1);
         purged.array = None;
         assert_eq!(slurm.lookup(&purged).await.unwrap(), Lookup::Gone);
+    }
+
+    #[tokio::test]
+    async fn a_job_cancelled_while_pending_never_started() {
+        use crate::slurm::recording::{Answer, read};
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/slurm-23.11/quiet.jsonl");
+        let mut exchanges = read(&path).unwrap();
+        let jobs = exchanges
+            .iter_mut()
+            .find_map(|exchange| match &mut exchange.answer {
+                Ok(Answer::Jobs(jobs)) if exchange.call == Call::Jobs => Some(jobs),
+                _ => None,
+            })
+            .unwrap();
+        let mut cancelled = jobs[0].clone();
+        cancelled.key.job = JobId(99_999_999);
+        cancelled.state = JobState::Ended(glurmo_model::EndState::Cancelled);
+        // slurmctld stamps a pending job it cancels with start = end = now.
+        cancelled.start = Some(UnixTime(1_794_000_000));
+        cancelled.end = cancelled.start;
+        cancelled.nodes = Vec::new();
+        jobs.push(cancelled.clone());
+        let mut slurm = Slurm::connect(Source::Replay(Replay::new(exchanges)), None)
+            .await
+            .unwrap();
+        let listed = slurm.jobs().await.unwrap();
+        let read = listed.iter().find(|job| job.key == cancelled.key).unwrap();
+        assert_eq!(read.start, None);
+        assert_eq!(read.end, cancelled.end);
     }
 
     #[test]
