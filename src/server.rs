@@ -38,6 +38,9 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 /// The most steps one usage query may return per key.
 const MAX_STEPS: i64 = 10_000;
 
+/// The longest step a usage query may ask for: a year.
+const MAX_STEP_S: i64 = 366 * 86_400;
+
 /// The longest window of past changes one query may ask for.
 const MAX_PAST_S: i64 = 6 * 3_600;
 
@@ -204,13 +207,19 @@ async fn usage(
     let to = params.to.unwrap_or(now.0);
     let step_s = params.step.unwrap_or(300).max(1);
     let fits = |from: &i64| {
-        to.checked_sub(*from)
-            .is_some_and(|span| span > 0 && span / step_s <= MAX_STEPS)
+        *from >= 0
+            && step_s <= MAX_STEP_S
+            && to
+                .checked_sub(*from)
+                .is_some_and(|span| span > 0 && span / step_s <= MAX_STEPS)
     };
     let Some(from) = params.from.or_else(|| to.checked_sub(86_400)).filter(fits) else {
         return Err(Failure(
             StatusCode::BAD_REQUEST,
-            format!("from must come before to, with at most {MAX_STEPS} steps between"),
+            format!(
+                "from must come before to and after 1970, with at most {MAX_STEPS} steps of at \
+                 most {MAX_STEP_S} s between"
+            ),
         ));
     };
     let query = UsageQuery {
@@ -550,6 +559,8 @@ mod tests {
             "/api/usage?by=person",
             "/api/usage?from=-9000000000000000000&to=9000000000000000000&step=300",
             "/api/usage?to=-9223372036854775000",
+            "/api/usage?step=9223372036854775807",
+            "/api/usage?from=-9223372036854775808&to=-9223372036854775000",
         ] {
             let (status, _, _) = get(&router, bad).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
