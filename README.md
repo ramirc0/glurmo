@@ -4,7 +4,7 @@ A live view of who holds which cores and GPUs on a Slurm cluster.
 
 ## Description
 
-rtviz samples Slurm with `squeue`, `sinfo`, `scontrol`, `sdiag` and `sacct`. Each sample becomes a delta of starts, ends, core placements and queue changes. `rtviz serve` keeps the history in SQLite and streams the deltas over HTTP as server-sent events. `rtviz tui` follows that stream, or samples the cluster itself. It draws every core and GPU in the color of the user who holds it, beside panels for users, the queue, node health, and the last day of usage.
+rtviz samples Slurm with `squeue`, `sinfo`, `scontrol`, `sdiag` and `sacct`. Each sample becomes a delta of starts, ends, core placements and queue changes. `rtviz serve` keeps the history in SQLite and streams the deltas over HTTP as server-sent events. `rtviz tui` follows that stream, or samples the cluster itself. The server also serves a web view of the same stream, sized for a desk or a wall display. Both views draw every core and GPU in the color of the user who holds it, beside panels for users, the queue, node health, and the last day of usage.
 
 rtviz only reads. It never acts on Slurm and sends no notifications. It shows no per-person efficiency, idle, or failure counts.
 
@@ -14,7 +14,7 @@ rtviz only reads. It never acts on Slurm and sends no notifications. It shows no
 
 * Linux on x86-64, with the Slurm client commands on `PATH`. rtviz is tested on Slurm 23.11.
 * The history file must sit on a local disk, such as `/scratch`. SQLite locks are unreliable on NFS, Ceph or Lustre.
-* Building needs Rust 1.100 with the `x86_64-unknown-linux-musl` target, and [just](https://github.com/casey/just). `rust-toolchain.toml` pins the version.
+* Building needs Rust 1.100 with the `x86_64-unknown-linux-musl` and `wasm32-unknown-unknown` targets, [just](https://github.com/casey/just) and [trunk](https://trunkrs.dev). `rust-toolchain.toml` pins the version. `just static` builds the web view first and embeds it in the binary.
 
 ### Installing
 
@@ -59,6 +59,12 @@ Config(
   ```
   rtviz tui --embedded
   ```
+* Open the web view in a browser at the server's address, such as `http://js029:8765/`. The address can pick a layout, a theme and a viewer:
+  ```
+  http://js029:8765/?layout=tv&theme=rose-pine-dawn
+  http://js029:8765/?me=otter
+  ```
+  `me` fills the `Mine` panel. The `tv` layout, or `tv` in the address, hides the cursor and lights up each user's cores in turn. Elsewhere, hovering a user lights up theirs. `t` and `l` cycle themes and layouts.
 
 The terminal view takes these keys:
 
@@ -81,7 +87,7 @@ Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pin
 * `rtviz --help` lists the commands, and `rtviz <command> --help` describes one.
 * The terminal view writes its messages to `~/.local/state/rtviz/tui.log`, so they stay off the screen.
 * In embedded mode the history panel stays empty until the first five-minute bin closes.
-* A red banner in the header means the server or Slurm stopped answering. It says since when and why.
+* A red banner in the header means the server or Slurm stopped answering. It says since when and why. The web view reconnects on its own and catches up without reloading.
 
 ## Authors
 
