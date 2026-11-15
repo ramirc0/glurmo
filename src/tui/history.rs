@@ -42,7 +42,7 @@ pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
         Ok(_) => return note(scene, "no history yet", inner, buf),
         Err(error) => return note(scene, &format!("no history: {error}"), inner, buf),
     };
-    if inner.height < 3 || inner.width <= LABELS {
+    if inner.height < 3 || inner.width <= LABELS || span_s <= 0 {
         return;
     }
     let from = usage.to.0 - span_s;

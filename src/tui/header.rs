@@ -16,6 +16,9 @@ const EIGHTHS: [&str; 9] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"
 
 /// The cluster, the sample time, cores and GPUs held, job counts, and any outage on the right.
 pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
+    if area.is_empty() {
+        return;
+    }
     let palette = &scene.palette;
     let cluster = scene.cluster();
     let site = scene
@@ -131,6 +134,9 @@ pub fn bar(part: u64, whole: u64, width: u16, fill: Color, track: Color) -> Vec<
 
 /// The keys, with the filter, layout and theme on the right. Keys that would run into those are left out.
 pub fn keys(scene: &Scene, area: Rect, buf: &mut Buffer) {
+    if area.is_empty() {
+        return;
+    }
     let palette = &scene.palette;
     let mut right = Vec::new();
     if let Some(filter) = scene.app.filter() {

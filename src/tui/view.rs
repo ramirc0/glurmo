@@ -460,6 +460,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn squeezed_panes_and_a_zero_history_span_draw_without_panicking() {
+        let mut app = busy_app().await;
+        for (name, root) in [
+            (
+                "squeezed",
+                "Split(Vertical, [(Min(10), Users), (Length(1), Header), (Length(1), Keys)])",
+            ),
+            (
+                "flat",
+                "Split(Vertical, [(Fill(1), Users), (Length(12), History(span: Hours(0)))])",
+            ),
+        ] {
+            let layout = from_ron(&format!(r#"Layout(name: "{name}", root: {root})"#)).unwrap();
+            app.library.layouts.insert(name.into(), layout);
+            app.layout = name.into();
+            render(&mut app, 100, 10);
+            render(&mut app, 100, 30);
+        }
+    }
+
+    #[tokio::test]
     async fn the_focused_panel_fills_the_screen_until_f_or_esc() {
         let mut app = busy_app().await;
         let layout = render(&mut app, 100, 30).backend().to_string();
