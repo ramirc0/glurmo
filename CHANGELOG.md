@@ -10,6 +10,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- A failed call no longer discards the listings made before it in the same tick. Before, a failed job listing held back node and partition changes until their next interval, up to 10 minutes later.
 - A failed accounting read no longer hides users' colors and names. Before, a store opened while slurmdbd was down drew every core in the muted color until a read worked.
 
 ## [0.2.0] - 2026-11-15

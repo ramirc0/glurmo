@@ -245,18 +245,23 @@ impl Sampler {
     }
 
     /// Ticks until `until`, or forever when it is `None`. A replay also stops once it runs out of answers.
-    /// A failed tick is logged and skipped. An [`Outage`] lasts while the last call of any listing failed.
+    /// A failed call is logged and ends its tick early. An [`Outage`] lasts while the last call of any listing failed.
     pub async fn run(&mut self, until: Option<UnixTime>) {
         loop {
             let at = self.slurm.now();
-            let Tick { mut events, listed } = match self.tick(at).await {
-                Ok(tick) => tick,
-                Err(error) if error.is::<Exhausted>() => return,
-                Err(error) => {
-                    eprintln!("tick at {} skipped: {error:#}", at.0);
-                    Tick::default()
+            let mut tick = Tick::default();
+            if let Err(error) = self.list(at, &mut tick).await {
+                if error.is::<Exhausted>() {
+                    return;
                 }
-            };
+                eprintln!("tick at {} cut short: {error:#}", at.0);
+            }
+            let Tick { mut events, listed } = tick;
+            match self.archive(at, &events, listed) {
+                Ok(users) if !users.is_empty() => events.push(Event::Users(self.name(users).await)),
+                Ok(_) => {}
+                Err(error) => eprintln!("store at {}: {error:#}", at.0),
+            }
             let failing = self.failing();
             if failing.is_some() != self.in_outage {
                 self.in_outage = failing.is_some();
@@ -314,72 +319,55 @@ impl Sampler {
             .unwrap_or_default()
     }
 
-    /// Makes the due calls, then diffs their answers. If any fails, the tick is dropped,
-    /// so a job counts as gone only after a job listing that worked.
-    async fn tick(&mut self, now: UnixTime) -> Result<Tick> {
-        let nodes = if self.nodes.is_due(now) {
+    /// Makes the due calls and diffs each answer as it comes into `tick`. The first failed call ends the
+    /// tick, and the changes found before it still count. Jobs are diffed only together with the
+    /// placements that go with them, so a job counts as gone only after a job listing that worked.
+    async fn list(&mut self, now: UnixTime, tick: &mut Tick) -> Result<()> {
+        if self.nodes.is_due(now) {
             let mut nodes = self.nodes.time(now, self.slurm.nodes()).await?;
             name_gpus(&mut nodes, &self.gpu_models);
-            Some(nodes)
-        } else {
-            None
-        };
-        let partitions = if self.partitions.is_due(now) {
-            Some(self.partitions.time(now, self.slurm.partitions()).await?)
-        } else {
-            None
-        };
-        let jobs = if self.jobs.is_due(now) {
-            Some(self.jobs.time(now, self.slurm.jobs()).await?)
-        } else {
-            None
-        };
-        let placements = if jobs.is_some() && (self.cold || self.slurm.places_every_tick()) {
-            Some(self.placing.time(self.slurm.placements()).await.0?)
-        } else {
-            None
-        };
-        let stats = if self.stats.is_due(now) {
-            Some(self.stats.time(now, self.slurm.stats()).await?)
-        } else {
-            None
-        };
-
-        let listed = jobs.is_some();
-        let mut events = Vec::new();
-        events.extend(nodes.and_then(|nodes| self.known.diff_nodes(nodes)));
-        events.extend(partitions.and_then(|partitions| self.known.diff_partitions(partitions)));
-        if let Some(jobs) = jobs {
+            tick.events.extend(self.known.diff_nodes(nodes));
+        }
+        if self.partitions.is_due(now) {
+            let partitions = self.partitions.time(now, self.slurm.partitions()).await?;
+            tick.events.extend(self.known.diff_partitions(partitions));
+        }
+        if self.jobs.is_due(now) {
+            let jobs = self.jobs.time(now, self.slurm.jobs()).await?;
+            let placements = if self.cold || self.slurm.places_every_tick() {
+                Some(self.placing.time(self.slurm.placements()).await.0?)
+            } else {
+                None
+            };
             let changes = self.known.diff_jobs(&jobs, now);
             self.lookups
                 .extend(changes.iter().filter_map(|event| match event {
                     Event::Started { attempt } => Some(attempt.clone()),
                     _ => None,
                 }));
-            events.extend(changes);
+            tick.events.extend(changes);
             match placements {
                 Some(placements) => {
                     for found in placements {
                         let queued = self.lookups.iter().position(|a| a.key.job == found.job);
                         if let Some(attempt) = queued.and_then(|i| self.lookups.remove(i)) {
-                            events.extend(placed(&attempt, found));
+                            tick.events.extend(placed(&attempt, found));
                         }
                     }
                     // The listing holds every job the controller knows, so the rest have gone.
                     self.lookups.clear();
                     self.cold = false;
                 }
-                None => events.extend(self.look_up().await),
+                None => tick.events.extend(self.look_up().await),
             }
-            events.extend(self.settle().await);
+            tick.events.extend(self.settle().await);
+            tick.listed = true;
         }
-        events.extend(stats.map(Event::Stats));
-        match self.archive(now, &events, listed) {
-            Ok(users) if !users.is_empty() => events.push(Event::Users(self.name(users).await)),
-            Ok(_) => {}
-            Err(error) => eprintln!("store at {}: {error:#}", now.0),
+        if self.stats.is_due(now) {
+            let stats = self.stats.time(now, self.slurm.stats()).await?;
+            tick.events.push(Event::Stats(stats));
         }
-        Ok(Tick { events, listed })
+        Ok(())
     }
 
     /// Writes a tick's events to the store. After a jobs tick it also closes attempts that vanished
@@ -700,6 +688,56 @@ mod tests {
             .unwrap();
         assert!(stored > 0);
         assert_eq!(hub.unwrap().read(|cluster| cluster.users.len()), stored);
+    }
+
+    /// The kinds of event in the first delta of the busy quarter hour, with the first answer to `failing`
+    /// replaced by an error, and how many deltas the run published.
+    async fn first_delta_when_the_first_call_fails(
+        failing: Call,
+    ) -> (HashSet<&'static str>, usize) {
+        let mut failed = false;
+        let slurm = busy_quarter_hour_with(|exchange| {
+            if exchange.call == failing && !failed {
+                failed = true;
+                exchange.answer = Err("slurmctld did not answer".into());
+            }
+        })
+        .await;
+        let hub = Hub::new(slurm.site().clone());
+        Sampler::new(slurm, &zlurm_config(), None, hub.clone())
+            .run(None)
+            .await;
+        let deltas = hub.deltas();
+        let kinds = deltas[0]
+            .events
+            .iter()
+            .map(|event| match event {
+                Event::Nodes(_) => "nodes",
+                Event::Partitions(_) => "partitions",
+                Event::Started { .. } => "started",
+                Event::Outage(_) => "outage",
+                _ => "other",
+            })
+            .collect();
+        (kinds, deltas.len())
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_listing_keeps_the_node_and_partition_listings_before_it() {
+        let (kinds, _) = first_delta_when_the_first_call_fails(Call::Jobs).await;
+        assert!(kinds.contains("nodes"), "{kinds:?}");
+        assert!(kinds.contains("partitions"), "{kinds:?}");
+        assert!(kinds.contains("outage"), "{kinds:?}");
+        assert!(!kinds.contains("started"), "{kinds:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_stats_call_keeps_the_listings_before_it() {
+        let (kinds, deltas) = first_delta_when_the_first_call_fails(Call::Stats).await;
+        for kind in ["nodes", "partitions", "started"] {
+            assert!(kinds.contains(kind), "{kinds:?}");
+        }
+        assert!(deltas > 50, "only {deltas} deltas");
     }
 
     #[tokio::test]
