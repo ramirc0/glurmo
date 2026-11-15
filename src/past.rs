@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::store::{NodeHealth, Stored};
 use glurmo_model::{
-    Attempt, Cluster, Delta, Event, JobState, Login, Node, NodeName, NodeState, Partition, Running,
-    UnixTime, User,
+    Attempt, Cluster, Delta, Event, JobState, Login, Node, NodeFlag, NodeName, NodeState,
+    Partition, Running, UnixTime, User,
 };
 
 /// What the past borrows from the present, because history does not keep it.
@@ -160,7 +160,11 @@ fn nodes_at(at: UnixTime, health: &[NodeHealth], frame: &Frame) -> Vec<Node> {
             let state = record.and_then(|record| record.state);
             Node {
                 state: state.unwrap_or(NodeState::Idle),
-                flags: Vec::new(),
+                flags: record
+                    .filter(|record| record.not_responding)
+                    .map(|_| NodeFlag::NotResponding)
+                    .into_iter()
+                    .collect(),
                 state_raw: state
                     .map_or_else(String::new, |state| format!("{state:?}").to_uppercase()),
                 reason: record.and_then(|record| record.reason.clone()),
@@ -190,6 +194,23 @@ mod tests {
             .iter()
             .map(|(node, cells)| (node.clone(), cells.cores.iter().flatten().count()))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_node_that_stopped_answering_shows_no_reply_in_the_past() {
+        let (_dir, hub) = busy_store().await;
+        let frame = hub.read(Frame::of);
+        let name = frame.nodes[0].name.clone();
+        let health = [NodeHealth {
+            node: name.clone(),
+            at: UnixTime(10),
+            state: None,
+            not_responding: true,
+            reason: None,
+        }];
+        let nodes = nodes_at(UnixTime(10), &health, &frame);
+        let node = nodes.iter().find(|node| node.name == name).unwrap();
+        assert_eq!(node.trouble(), Some("no reply"));
     }
 
     #[tokio::test]

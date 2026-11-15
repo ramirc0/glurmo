@@ -36,6 +36,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - The protocol backend signs slurmdbd credentials for any UID, as libslurm does. Before, it signed them for slurmctld's `SlurmUser`, so a slurmdbd running as another user refused every history read.
 - The protocol backend sends each call first to the controller that answered last. Before, every call waited up to 15 s on a dead primary before it tried a backup.
 - Opening a store clears the start of ended attempts that never ran, which older versions stored, and rolls up their bins again. Before, they counted as starts, and those that seemed to start in 2106 stayed in the queue of a replay after they were cancelled. On zlurm's store this repairs 4,012 attempts, 1,009 of them in 2106, and takes 16 s once.
+- Past views show a node that stopped answering the controller as no reply. History writes its health with a trailing `*`, as sinfo prints it. Before, history kept no flags, so such a node looked fine in the past. An older glurmo reads these records as unknown.
 
 ## [0.3.0] - 2026-11-15
 

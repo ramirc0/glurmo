@@ -11,8 +11,8 @@ use serde::Deserialize;
 use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
 use glurmo_model::usage::Step;
 use glurmo_model::{
-    ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeName,
-    NodeState, PartitionName, Placement, UnixTime, User,
+    ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeFlag,
+    NodeName, NodeState, PartitionName, Placement, UnixTime, User,
 };
 
 const DAY_S: i64 = 86_400;
@@ -250,7 +250,7 @@ impl Store {
                         uncounted_since = count_cores(&tx, &self.cpus_per_core)?;
                     }
                     for node in nodes {
-                        let health = (health(node).to_owned(), node.reason.clone());
+                        let health = (health(node), node.reason.clone());
                         if self.health.get(&node.name) != Some(&health) {
                             tx.execute(
                                 "INSERT OR REPLACE INTO node_states VALUES (?1, ?2, ?3, ?4)",
@@ -623,6 +623,8 @@ pub struct NodeHealth {
     /// Draining, drained, down or unknown, or `None` while it was up. History does not split up into
     /// idle, mixed and allocated.
     pub state: Option<NodeState>,
+    /// Whether the controller had lost contact with it.
+    pub not_responding: bool,
     /// Why an operator drained it or took it down.
     pub reason: Option<String>,
 }
@@ -764,10 +766,13 @@ impl History {
             "SELECT node, at, state, reason FROM node_states WHERE at <= ?1 ORDER BY at, node",
         )?;
         let rows = query.query_map([to.0], |row| {
+            let health: String = row.get(2)?;
+            let state = health.strip_suffix('*');
             Ok(NodeHealth {
                 node: NodeName(row.get(0)?),
                 at: UnixTime(row.get(1)?),
-                state: health_state(&row.get::<_, String>(2)?),
+                state: health_state(state.unwrap_or(&health)),
+                not_responding: state.is_some(),
                 reason: row.get(3)?,
             })
         })?;
@@ -1070,14 +1075,20 @@ fn state_from_name(name: &str) -> Option<EndState> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
-/// A node's health for the history: allocation changes all count as `up`.
-fn health(node: &Node) -> &'static str {
-    match node.state {
+/// A node's health for the history: allocation changes all count as `up`. A trailing `*` marks a node
+/// that does not answer the controller, as sinfo prints it.
+fn health(node: &Node) -> String {
+    let state = match node.state {
         NodeState::Idle | NodeState::Mixed | NodeState::Allocated => "up",
         NodeState::Draining => "draining",
         NodeState::Drained => "drained",
         NodeState::Down => "down",
         NodeState::Unknown => "unknown",
+    };
+    if node.flags.contains(&NodeFlag::NotResponding) {
+        format!("{state}*")
+    } else {
+        state.to_owned()
     }
 }
 
@@ -1392,6 +1403,13 @@ mod tests {
                 &[Event::Nodes(vec![node(NodeState::Draining)])],
             )
             .unwrap();
+        let silent = Node {
+            flags: vec![NodeFlag::NotResponding],
+            ..node(NodeState::Draining)
+        };
+        store
+            .record(UnixTime(4), &[Event::Nodes(vec![silent])])
+            .unwrap();
         let states: Vec<(i64, String)> = store
             .db
             .prepare("SELECT at, state FROM node_states ORDER BY at")
@@ -1400,7 +1418,29 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(states, [(0, "up".into()), (2, "draining".into())]);
+        assert_eq!(
+            states,
+            [
+                (0, "up".into()),
+                (2, "draining".into()),
+                (4, "draining*".into())
+            ]
+        );
+        let history = History::open(&dir.path().join("glurmo.sqlite"));
+        let silent: Vec<_> = history
+            .node_health(UnixTime(4))
+            .unwrap()
+            .into_iter()
+            .map(|health| (health.state, health.not_responding))
+            .collect();
+        assert_eq!(
+            silent,
+            [
+                (None, false),
+                (Some(NodeState::Draining), false),
+                (Some(NodeState::Draining), true)
+            ]
+        );
     }
 
     #[test]
