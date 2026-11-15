@@ -85,6 +85,8 @@ pub struct State {
     pub layout: Memo<Option<Layout>>,
     /// What stands out on the Die while the rest fades.
     pub highlight: RwSignal<Option<Highlight>>,
+    /// Copies of the highlight for table rows.
+    pub row_highlights: RowHighlights,
     /// Whoever the address names with `me`.
     pub me: RwSignal<Option<Login>>,
     /// Counts fonts finished loading, so canvases redraw in them.
@@ -105,6 +107,36 @@ pub struct State {
     pub pointed: StoredValue<Option<Path>>,
     /// Whether this is a wall display: no cursor, and the highlight cycles through users.
     pub tv: bool,
+}
+
+/// Copies of the highlight for table rows, which a table rebuilds on every change. `reactive_graph` 0.2
+/// keeps a dropped reader in a signal's subscriber list for as long as the signal lives, and walks the
+/// list on every write. Rows that read the page's highlight would slow each hover a little more with
+/// every rebuild. A copy dies with the rows that read it, and its list with it.
+#[derive(Clone, Copy)]
+pub struct RowHighlights(StoredValue<Vec<RwSignal<Option<Highlight>>>>);
+
+impl RowHighlights {
+    fn new() -> Self {
+        Self(StoredValue::new(Vec::new()))
+    }
+
+    /// A copy that starts at `highlight` and lives as long as the current owner.
+    fn copy(self, highlight: Option<Highlight>) -> ReadSignal<Option<Highlight>> {
+        let copy = RwSignal::new(highlight);
+        self.0.update_value(|copies| {
+            copies.retain(|copy| !copy.is_disposed());
+            copies.push(copy);
+        });
+        copy.read_only()
+    }
+
+    /// Sets every live copy to `highlight`, and forgets the dead ones.
+    fn send(self, highlight: Option<&Highlight>) {
+        self.0.update_value(|copies| {
+            copies.retain(|copy| copy.try_set(highlight.cloned()).is_none());
+        });
+    }
 }
 
 /// What stretch of time the History panels show.
@@ -166,6 +198,9 @@ impl State {
         let layout_name = RwSignal::new(address.layout);
         let draft_theme = RwSignal::new(None);
         let draft_layout = RwSignal::new(None);
+        let highlight = RwSignal::new(None);
+        let row_highlights = RowHighlights::new();
+        Effect::new(move |_| highlight.with(|lit| row_highlights.send(lit.as_ref())));
         Self {
             cluster,
             occupancy: Memo::new(move |_| cluster.with(Cluster::occupancy)),
@@ -189,7 +224,8 @@ impl State {
                     layouts.with(|layouts| pick(layouts, &layout_name.get(), "web").cloned())
                 })
             }),
-            highlight: RwSignal::new(None),
+            highlight,
+            row_highlights,
             me: RwSignal::new(address.me.map(Login)),
             fonts: RwSignal::new(0),
             zoom: RwSignal::new(crate::paint::zoom()),
@@ -201,6 +237,11 @@ impl State {
             pointed: StoredValue::new(None),
             tv: address.tv,
         }
+    }
+
+    /// A copy of the highlight for rows built under the current owner, which dies with them.
+    pub fn row_highlight(&self) -> ReadSignal<Option<Highlight>> {
+        self.row_highlights.copy(self.highlight.get_untracked())
     }
 
     /// Whether the editor is open.
@@ -240,5 +281,31 @@ fn longest_history(pane: &Pane) -> Option<i64> {
             .max(),
         Pane::History { span } => Some(span.seconds()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_highlights_keep_only_the_copies_of_live_rows() {
+        let root = Owner::new();
+        root.set();
+        let copies = RowHighlights::new();
+        let mut rows = root.child();
+        for _ in 0..200 {
+            rows.cleanup();
+            rows = root.child();
+            rows.with(|| copies.copy(None));
+        }
+        let lit = rows.with(|| copies.copy(None));
+        let node = Some(Highlight::Node(NodeName("z1".into())));
+        copies.send(node.as_ref());
+        assert_eq!(lit.get_untracked(), node);
+        assert_eq!(copies.0.with_value(Vec::len), 2);
+        rows.cleanup();
+        copies.send(None);
+        assert_eq!(copies.0.with_value(Vec::len), 0);
     }
 }

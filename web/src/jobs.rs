@@ -183,14 +183,21 @@ fn Headings(order: RwSignal<Order>) -> impl IntoView {
 /// A row per group, and under each open group a row per job.
 fn rows(state: State, cluster: &Cluster, picks: Picks) -> Vec<AnyView> {
     let opened = picks.open.get();
+    let highlight = state.row_highlight();
     let mut lines: Vec<AnyView> = Vec::new();
     for group in picks.groups(state, cluster) {
         if group.attempts.len() == 1 {
-            lines.push(row(state, cluster, &group, None));
+            lines.push(row(state, cluster, &group, highlight, None));
             continue;
         }
         let is_open = opened.contains(&group.key);
-        lines.push(row(state, cluster, &group, Some((picks.open, is_open))));
+        lines.push(row(
+            state,
+            cluster,
+            &group,
+            highlight,
+            Some((picks.open, is_open)),
+        ));
         if !is_open {
             continue;
         }
@@ -199,7 +206,7 @@ fn rows(state: State, cluster: &Cluster, picks: Picks) -> Vec<AnyView> {
                 key: group.key.clone(),
                 attempts: vec![*attempt],
             };
-            lines.push(child(state, cluster, &one));
+            lines.push(child(state, cluster, &one, highlight));
         }
         if group.attempts.len() > OPEN_ROWS {
             let more = format!(
@@ -220,10 +227,12 @@ fn rows(state: State, cluster: &Cluster, picks: Picks) -> Vec<AnyView> {
 }
 
 /// A group's row, which opens and closes on a click when `toggle` is given, or a lone job's row.
+/// It lights up by `highlight`.
 fn row(
     state: State,
     cluster: &Cluster,
     group: &JobGroup,
+    highlight: ReadSignal<Option<Highlight>>,
     toggle: Option<(RwSignal<BTreeSet<GroupKey>>, bool)>,
 ) -> AnyView {
     let key = group.key.clone();
@@ -245,17 +254,27 @@ fn row(
         toggle.map(|_| view! { <span class="count">{thousands(group.tasks())}</span> }.into_any());
     let body = cells(state, cluster, group, count);
     view! {
-        <Lit members=Members::of(group) class=class click=click>
+        <Lit members=Members::of(group) highlight=highlight class=class click=click>
             {body}
         </Lit>
     }
     .into_any()
 }
 
-/// One job in an open group.
-fn child(state: State, cluster: &Cluster, group: &JobGroup) -> AnyView {
+/// One job in an open group. It lights up by `highlight`.
+fn child(
+    state: State,
+    cluster: &Cluster,
+    group: &JobGroup,
+    highlight: ReadSignal<Option<Highlight>>,
+) -> AnyView {
     let body = cells(state, cluster, group, None);
-    view! { <Lit members=Members::of(group) class="child" click=None>{body}</Lit> }.into_any()
+    view! {
+        <Lit members=Members::of(group) highlight=highlight class="child" click=None>
+            {body}
+        </Lit>
+    }
+    .into_any()
 }
 
 /// The jobs a row stands for, and the nodes they run on.
@@ -288,11 +307,12 @@ impl Members {
     }
 }
 
-/// A row that lights its jobs' cores on the Die while hovered, and lights itself while the Die's
-/// pointer is on one of its jobs or nodes. A click runs `click`.
+/// A row that lights its jobs' cores on the Die while hovered, and lights itself while `highlight`, a
+/// copy of the page's, is on one of its jobs or nodes. A click runs `click`.
 #[component]
 fn Lit(
     members: Members,
+    highlight: ReadSignal<Option<Highlight>>,
     class: &'static str,
     click: Option<Callback<()>>,
     children: Children,
@@ -300,11 +320,7 @@ fn Lit(
     let state = expect_context::<State>();
     let members = StoredValue::new(members);
     let lit = move || {
-        members.with_value(|members| {
-            state
-                .highlight
-                .with(|highlight| members.lit_by(highlight.as_ref()))
-        })
+        members.with_value(|members| highlight.with(|highlight| members.lit_by(highlight.as_ref())))
     };
     view! {
         <tr

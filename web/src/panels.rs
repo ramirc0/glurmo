@@ -33,14 +33,19 @@ fn Bar(part: u64, whole: u64, #[prop(into)] fill: String) -> impl IntoView {
 }
 
 /// A table row that lights `highlight` on the Die while hovered, except on a wall display, where the
-/// highlight cycles on its own. It shows as lit while its highlight is on.
+/// highlight cycles on its own. It shows as lit while `current`, a copy of the page's highlight, is its
+/// own.
 #[component]
-fn LitRow(highlight: Highlight, children: Children) -> impl IntoView {
+fn LitRow(
+    highlight: Highlight,
+    current: ReadSignal<Option<Highlight>>,
+    children: Children,
+) -> impl IntoView {
     let state = expect_context::<State>();
     let lit = StoredValue::new(highlight);
     view! {
         <tr
-            class:lit=move || lit.with_value(|lit| state.highlight.with(|on| on.as_ref() == Some(lit)))
+            class:lit=move || lit.with_value(|lit| current.with(|on| on.as_ref() == Some(lit)))
             on:mouseenter=move |_| {
                 if !state.tv {
                     state.highlight.set(Some(lit.get_value()));
@@ -230,6 +235,7 @@ pub fn Users() -> impl IntoView {
                     {move || {
                         let (users, hidden, capacity) = rows();
                         let me = state.me.get();
+                        let current = state.row_highlight();
                         let mut lines: Vec<AnyView> = users
                             .into_iter()
                             .map(|(login, name, held)| {
@@ -240,7 +246,7 @@ pub fn Users() -> impl IntoView {
                                     name,
                                     held,
                                 };
-                                row.view(state)
+                                row.view(state, current)
                             })
                             .collect();
                         if hidden.cores + hidden.gpus > 0 {
@@ -279,12 +285,12 @@ struct UserRow {
 }
 
 impl UserRow {
-    /// The row, which highlights the user's cores while hovered.
-    fn view(self, state: State) -> AnyView {
+    /// The row, which highlights the user's cores while hovered and lights up by `current`.
+    fn view(self, state: State, current: ReadSignal<Option<Highlight>>) -> AnyView {
         let color = color_of(state, &self.login);
         let held = self.held;
         view! {
-            <LitRow highlight=Highlight::User(self.login)>
+            <LitRow highlight=Highlight::User(self.login) current=current>
                 <td>
                     <span class="swatch" style:background=color.clone()></span>
                 </td>
@@ -366,6 +372,7 @@ pub fn Queue(by: QueueBy) -> impl IntoView {
                 </thead>
                 <tbody>
                     {move || {
+                        let current = state.row_highlight();
                         rows()
                             .into_iter()
                             .map(|(key, jobs, tasks, cpus, gpus, wait, reason)| {
@@ -379,7 +386,7 @@ pub fn Queue(by: QueueBy) -> impl IntoView {
                                     }
                                 };
                                 view! {
-                                    <LitRow highlight=highlight>
+                                    <LitRow highlight=highlight current=current>
                                         <td class="name" style:color=color>{key}</td>
                                         <td>{thousands(jobs)}</td>
                                         <td>{thousands(tasks)}</td>
@@ -418,6 +425,7 @@ pub fn Partitions() -> impl IntoView {
                 </thead>
                 <tbody>
                     {move || {
+                        let current = state.row_highlight();
                         state
                             .cluster
                             .with(|cluster| {
@@ -442,7 +450,10 @@ pub fn Partitions() -> impl IntoView {
                                                 let free_gpus = (load.free_gpus > 0)
                                                     .then(|| load.free_gpus.to_string());
                                                 view! {
-                                                    <LitRow highlight=Highlight::Partition(partition.name.clone())>
+                                                    <LitRow
+                                                        highlight=Highlight::Partition(partition.name.clone())
+                                                        current=current
+                                                    >
                                                         <td class="name">{name}</td>
                                                         <td>{limit}</td>
                                                         <td>{running}</td>
@@ -470,6 +481,7 @@ pub fn Nodes() -> impl IntoView {
         <section class="panel nodes">
             <h2>"nodes"</h2>
             {move || {
+                let current = state.row_highlight();
                 state
                     .cluster
                     .with(|cluster| {
@@ -506,7 +518,10 @@ pub fn Nodes() -> impl IntoView {
                                         .into_iter()
                                         .map(|(name, word, drain, reason)| {
                                             view! {
-                                                <LitRow highlight=Highlight::Node(NodeName(name.clone()))>
+                                                <LitRow
+                                                    highlight=Highlight::Node(NodeName(name.clone()))
+                                                    current=current
+                                                >
                                                     <td class="name">{name}</td>
                                                     <td class="name" class:drain=drain class:down=!drain>
                                                         {word}
