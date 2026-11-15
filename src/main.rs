@@ -8,6 +8,8 @@ mod slurm;
 mod store;
 mod xdg;
 
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -16,7 +18,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use model::{Cluster, JobState, Owner};
 use sampler::Sampler;
-use slurm::source::{Recorder, Replay, Source};
+use slurm::source::{Exchange, Recorder, Replay, Source};
 use slurm::{Intervals, Sample, Slurm};
 use store::{Settings, Store};
 
@@ -59,6 +61,13 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         minutes: i64,
         /// Where to write the recording.
+        out: PathBuf,
+    },
+    /// Rewrite a raw recording's logins, IDs, job names and site addresses, so it can become a test fixture.
+    Pseudonymize {
+        /// The raw recording.
+        raw: PathBuf,
+        /// Where to write the rewritten recording.
         out: PathBuf,
     },
 }
@@ -104,6 +113,16 @@ async fn main() -> Result<()> {
             let until = model::UnixTime(slurm.now().0 + minutes * 60);
             stream(slurm, None, Some(until)).await?;
             eprintln!("recorded to {}", out.display());
+        }
+        Command::Pseudonymize { raw, out } => {
+            let mut recorder = Recorder::create(&out, true)?;
+            let file =
+                File::open(&raw).with_context(|| format!("cannot open {}", raw.display()))?;
+            for (number, line) in BufReader::new(file).lines().enumerate() {
+                let exchange: Exchange = serde_json::from_str(&line?)
+                    .with_context(|| format!("{} line {}", raw.display(), number + 1))?;
+                recorder.write(&exchange)?;
+            }
         }
     }
     Ok(())

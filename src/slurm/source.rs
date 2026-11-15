@@ -151,7 +151,12 @@ impl Recorder {
         })
     }
 
-    fn write(&mut self, exchange: &Exchange) -> Result<()> {
+    /// Appends one exchange, rewritten first if the recorder pseudonymizes.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the exchange cannot be rewritten or written.
+    pub fn write(&mut self, exchange: &Exchange) -> Result<()> {
         let mut exchange = exchange.clone();
         if let Some(pseudonyms) = &mut self.pseudonyms {
             pseudonyms.rewrite(&mut exchange)?;
