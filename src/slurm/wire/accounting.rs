@@ -463,6 +463,20 @@ impl Record {
     }
 }
 
+/// A time accounting holds. Zero means none, and so does `NO_VAL`, which slurmdbd stores as the start
+/// of a job cancelled while pending.
 fn epoch(time: i64) -> Option<UnixTime> {
-    (time != 0).then_some(UnixTime(time))
+    (time != 0 && time != i64::from(NO_VAL)).then_some(UnixTime(time))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_never_started_job_has_no_start() {
+        assert_eq!(epoch(0), None);
+        assert_eq!(epoch(i64::from(NO_VAL)), None, "a job cancelled while pending");
+        assert_eq!(epoch(1_794_731_534), Some(UnixTime(1_794_731_534)));
+    }
 }
