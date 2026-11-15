@@ -1,0 +1,860 @@
+//! Every core and GPU, colored by who holds it, in a tile per node, with nodes in groups.
+//!
+//! Tiles grow to the largest core size at which every group fits the panel, dropping each node's load
+//! and memory gauges before shrinking the cores. When even the smallest size does not fit, each node
+//! shrinks to a compact tile with one bar of its cores by user.
+
+use std::fmt::Write;
+
+use leptos::prelude::*;
+use rtviz_model::layout::Grouping;
+use rtviz_model::summary::{NodeGroup, node_groups};
+use rtviz_model::theme::Theme;
+use rtviz_model::units::{load, thousands};
+use rtviz_model::{Cluster, Login, Node, NodeFlag, NodeState, Occupancies, Owner};
+use web_sys::CanvasRenderingContext2d;
+
+use crate::paint::{Rgb, Surface, user_color};
+use crate::state::State;
+
+/// The largest and smallest core pitch tried, in CSS pixels, and the smallest that keeps gauges.
+const PITCHES: std::ops::RangeInclusive<u32> = 5..=18;
+const GAUGED_PITCHES: std::ops::RangeInclusive<u32> = 8..=18;
+/// Space around the board and between tiles.
+const MARGIN: f64 = 10.0;
+const GAP: f64 = 8.0;
+/// Height of a group's title line, and space between rows of groups and groups side by side.
+const LABEL: f64 = 24.0;
+const SHELF_GAP: f64 = 14.0;
+const GROUP_GAP: f64 = 26.0;
+/// A full tile's padding, name line, and gauge lines or bare bottom edge.
+const PAD: f64 = 8.0;
+const HEAD: f64 = 20.0;
+const FOOT: f64 = 32.0;
+const BARE_FOOT: f64 = 8.0;
+const MIN_TILE_W: f64 = 116.0;
+/// A compact tile's size.
+const COMPACT_W: f64 = 132.0;
+const COMPACT_H: f64 = 34.0;
+/// Approximate advances of a title's characters and its note's, to keep titles from running into each
+/// other. The note is monospace.
+const TITLE_CHAR: f64 = 8.5;
+const NOTE_CHAR: f64 = 6.7;
+/// How much of its color a faded core keeps when someone else is highlighted.
+const FADED: f64 = 0.22;
+/// How much of the down or drain color the free cores of a node that is out keep.
+const OUT: f64 = 0.4;
+
+/// A rectangle in CSS pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    /// Left edge.
+    pub x: f64,
+    /// Top edge.
+    pub y: f64,
+    /// Width.
+    pub w: f64,
+    /// Height.
+    pub h: f64,
+}
+
+/// Where one node's tile, cores and GPUs go.
+#[derive(Debug, PartialEq)]
+pub struct Tile<'a> {
+    /// The node.
+    pub node: &'a Node,
+    /// The whole tile.
+    pub frame: Rect,
+    /// Each core, by index. Empty for a compact tile.
+    pub cores: Vec<Rect>,
+    /// Each GPU, by index.
+    pub gpus: Vec<Rect>,
+}
+
+/// Where one group's title goes.
+#[derive(Debug, PartialEq)]
+pub struct Label {
+    /// Which group, by index into the groups.
+    pub group: usize,
+    /// The title's left edge and baseline.
+    pub x: f64,
+    /// The title's top.
+    pub y: f64,
+    /// The width of the group's tiles below it.
+    pub w: f64,
+}
+
+/// Every tile and title, and the height they take.
+#[derive(Debug, PartialEq)]
+pub struct Board<'a> {
+    /// The tiles.
+    pub tiles: Vec<Tile<'a>>,
+    /// The titles.
+    pub labels: Vec<Label>,
+    /// The height the board needs.
+    pub height: f64,
+    /// Whether tiles are compact, with no core grid.
+    pub compact: bool,
+    /// Whether full tiles show load and memory gauges.
+    pub gauges: bool,
+}
+
+/// How a node's cores and GPUs arrange: sockets stacked, each a grid of rows.
+struct Shape {
+    sockets: u32,
+    per_socket: u32,
+    cols: u32,
+    rows: u32,
+    gpus: u32,
+    gpus_per_row: u32,
+}
+
+impl Shape {
+    /// A grid about six times wider than tall for each socket, and GPUs four to a row.
+    fn of(node: &Node) -> Self {
+        let sockets = node.sockets.max(1);
+        let per_socket = node.cores.div_ceil(sockets).max(1);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small positive count"
+        )]
+        let cols = (f64::from(per_socket) * 6.0).sqrt().ceil() as u32;
+        let cols = cols.clamp(1, per_socket);
+        Self {
+            sockets,
+            per_socket,
+            cols,
+            rows: per_socket.div_ceil(cols),
+            gpus: node.gpus,
+            gpus_per_row: node.gpus.clamp(1, 4),
+        }
+    }
+}
+
+/// Lengths that follow from the core pitch, and whether tiles have gauges.
+struct Pitch {
+    gauges: bool,
+    step: f64,
+    gap: f64,
+    socket_gap: f64,
+    chip: f64,
+    chip_gap: f64,
+}
+
+impl Pitch {
+    fn new(pitch: u32, gauges: bool) -> Self {
+        let pitch = f64::from(pitch);
+        Self {
+            gauges,
+            step: pitch,
+            gap: if pitch >= 10.0 { 2.0 } else { 1.0 },
+            socket_gap: (pitch / 2.0).max(3.0),
+            chip: pitch * 2.0,
+            chip_gap: (pitch / 2.0).max(2.0),
+        }
+    }
+
+    fn grid(&self, shape: &Shape) -> (f64, f64) {
+        let socket_h = f64::from(shape.rows) * self.step - self.gap;
+        let w = f64::from(shape.cols) * self.step - self.gap;
+        let sockets = f64::from(shape.sockets);
+        (w, sockets * socket_h + (sockets - 1.0) * self.socket_gap)
+    }
+
+    fn chips(&self, shape: &Shape) -> (f64, f64) {
+        if shape.gpus == 0 {
+            return (0.0, 0.0);
+        }
+        let per_row = f64::from(shape.gpus_per_row);
+        let rows = f64::from(shape.gpus.div_ceil(shape.gpus_per_row));
+        (
+            per_row * self.chip + (per_row - 1.0) * self.chip_gap,
+            rows * self.chip + (rows - 1.0) * self.chip_gap,
+        )
+    }
+
+    /// The body's size: GPUs above the core grid.
+    fn body(&self, shape: &Shape) -> (f64, f64) {
+        let (grid_w, grid_h) = self.grid(shape);
+        let (chips_w, chips_h) = self.chips(shape);
+        let between = if shape.gpus > 0 { self.step } else { 0.0 };
+        (grid_w.max(chips_w), grid_h + chips_h + between)
+    }
+
+    fn tile(&self, node: &Node) -> (f64, f64) {
+        let (w, h) = self.body(&Shape::of(node));
+        let foot = if self.gauges { FOOT } else { BARE_FOOT };
+        ((w + 2.0 * PAD).max(MIN_TILE_W), HEAD + h + foot)
+    }
+}
+
+/// Lays out `groups` in a panel `width` wide, at the largest core pitch whose board fits `height`. Tiles
+/// keep their gauges while cores stay at least the smallest gauged pitch, and drop them after. Tiles go
+/// compact when nothing fits.
+pub fn board<'a>(groups: &[NodeGroup<'a>], width: f64, height: f64) -> Board<'a> {
+    let gauged = GAUGED_PITCHES.rev().map(|pitch| Pitch::new(pitch, true));
+    let bare = PITCHES.rev().map(|pitch| Pitch::new(pitch, false));
+    for pitch in gauged.chain(bare) {
+        let board = pack(groups, width, Some(&pitch));
+        if board.height <= height {
+            return board;
+        }
+    }
+    pack(groups, width, None)
+}
+
+/// Places each group's tiles in a grid under its title, and groups side by side while they fit the
+/// width. With no pitch, tiles are compact.
+fn pack<'a>(groups: &[NodeGroup<'a>], width: f64, pitch: Option<&Pitch>) -> Board<'a> {
+    let mut board = Board {
+        tiles: Vec::new(),
+        labels: Vec::new(),
+        height: 0.0,
+        compact: pitch.is_none(),
+        gauges: pitch.is_some_and(|pitch| pitch.gauges),
+    };
+    let (mut x, mut y, mut shelf) = (MARGIN, MARGIN, 0.0_f64);
+    for (index, group) in groups.iter().enumerate() {
+        let (tile_w, tile_h) = group
+            .nodes
+            .iter()
+            .map(|node| pitch.map_or((COMPACT_W, COMPACT_H), |pitch| pitch.tile(node)))
+            .fold((0.0_f64, 0.0_f64), |(w, h), (nw, nh)| {
+                (w.max(nw), h.max(nh))
+            });
+        let count = group.nodes.len().max(1);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small positive count"
+        )]
+        let fit = (((width - 2.0 * MARGIN + GAP) / (tile_w + GAP))
+            .floor()
+            .max(1.0)) as usize;
+        let cols = count.min(fit);
+        let rows = count.div_ceil(cols);
+        #[expect(clippy::cast_precision_loss, reason = "a small count")]
+        let (cols_f, rows_f) = (cols as f64, rows as f64);
+        let block_w = (cols_f * tile_w + (cols_f - 1.0) * GAP).max(title_width(group));
+        let block_h = LABEL + rows_f * tile_h + (rows_f - 1.0) * GAP;
+        if x > MARGIN && x + block_w > width - MARGIN {
+            x = MARGIN;
+            y += shelf + SHELF_GAP;
+            shelf = 0.0;
+        }
+        board.labels.push(Label {
+            group: index,
+            x,
+            y,
+            w: block_w,
+        });
+        for (i, node) in group.nodes.iter().enumerate() {
+            #[expect(clippy::cast_precision_loss, reason = "a small count")]
+            let (col, row) = ((i % cols) as f64, (i / cols) as f64);
+            let frame = Rect {
+                x: x + col * (tile_w + GAP),
+                y: y + LABEL + row * (tile_h + GAP),
+                w: tile_w,
+                h: tile_h,
+            };
+            board.tiles.push(place(node, frame, pitch));
+        }
+        x += block_w + GROUP_GAP;
+        shelf = shelf.max(block_h);
+    }
+    board.height = y + shelf + MARGIN;
+    board
+}
+
+/// The widest a group's title and note can be, with its held counts as wide as its totals.
+fn title_width(group: &NodeGroup) -> f64 {
+    let cores: u32 = group.nodes.iter().map(|node| node.cores).sum();
+    let gpus: u32 = group.nodes.iter().map(|node| node.gpus).sum();
+    let note = note(
+        group.nodes.len(),
+        (u64::from(cores), u64::from(cores)),
+        (u64::from(gpus), u64::from(gpus)),
+    );
+    #[expect(clippy::cast_precision_loss, reason = "a short text")]
+    let width = group.name.chars().count() as f64 * TITLE_CHAR
+        + 10.0
+        + note.chars().count() as f64 * NOTE_CHAR;
+    width
+}
+
+/// A group's note: its node count, and cores and GPUs as held and total.
+fn note(count: usize, (cores_held, cores): (u64, u64), (gpus_held, gpus): (u64, u64)) -> String {
+    let mut note = format!(
+        "{count} node{} · {}/{} cores",
+        if count == 1 { "" } else { "s" },
+        thousands(cores_held),
+        thousands(cores)
+    );
+    if gpus > 0 {
+        let _ = write!(note, " · {gpus_held}/{gpus} gpus");
+    }
+    note
+}
+
+/// A node's cores and GPUs inside `frame`, centered.
+fn place<'a>(node: &'a Node, frame: Rect, pitch: Option<&Pitch>) -> Tile<'a> {
+    let shape = Shape::of(node);
+    let Some(pitch) = pitch else {
+        let side = 7.0;
+        let gpus = (0..shape.gpus)
+            .map(|i| Rect {
+                x: frame.x + frame.w - PAD - f64::from(shape.gpus - i) * (side + 2.0) + 2.0,
+                y: frame.y + 5.0,
+                w: side,
+                h: side,
+            })
+            .collect();
+        return Tile {
+            node,
+            frame,
+            cores: Vec::new(),
+            gpus,
+        };
+    };
+    let (body_w, _) = pitch.body(&shape);
+    let (grid_w, _) = pitch.grid(&shape);
+    let (chips_w, chips_h) = pitch.chips(&shape);
+    let left = frame.x + (frame.w - body_w) / 2.0;
+    let top = frame.y + HEAD;
+    let gpus = (0..shape.gpus)
+        .map(|i| Rect {
+            x: left
+                + (body_w - chips_w) / 2.0
+                + f64::from(i % shape.gpus_per_row) * (pitch.chip + pitch.chip_gap),
+            y: top + f64::from(i / shape.gpus_per_row) * (pitch.chip + pitch.chip_gap),
+            w: pitch.chip,
+            h: pitch.chip,
+        })
+        .collect();
+    let grid_top = if shape.gpus > 0 {
+        top + chips_h + pitch.step
+    } else {
+        top
+    };
+    let grid_left = left + (body_w - grid_w) / 2.0;
+    let socket_h = f64::from(shape.rows) * pitch.step - pitch.gap + pitch.socket_gap;
+    let cores = (0..node.cores)
+        .map(|core| {
+            let socket = f64::from(core / shape.per_socket);
+            let k = core % shape.per_socket;
+            Rect {
+                x: grid_left + f64::from(k % shape.cols) * pitch.step,
+                y: grid_top + socket * socket_h + f64::from(k / shape.cols) * pitch.step,
+                w: pitch.step - pitch.gap,
+                h: pitch.step - pitch.gap,
+            }
+        })
+        .collect();
+    Tile {
+        node,
+        frame,
+        cores,
+        gpus,
+    }
+}
+
+/// The die panel.
+#[component]
+pub fn Die(group: Grouping) -> impl IntoView {
+    let state = expect_context::<State>();
+    let draw = move |context: &CanvasRenderingContext2d, width: f64, height: f64| {
+        let Some(theme) = state.theme.get() else {
+            return;
+        };
+        let highlight = state.highlight.get();
+        state.cluster.with(|cluster| {
+            state.occupancy.with(|occupancy| {
+                let groups = node_groups(cluster, group);
+                let board = board(&groups, width, height);
+                let ink = Ink {
+                    context,
+                    theme: &theme,
+                    cluster,
+                    occupancy,
+                    highlight: highlight.as_ref(),
+                };
+                ink.board(&groups, &board);
+            });
+        });
+    };
+    view! {
+        <section class="panel die">
+            <Surface draw=draw/>
+        </section>
+    }
+}
+
+/// What drawing needs at hand.
+struct Ink<'a> {
+    context: &'a CanvasRenderingContext2d,
+    theme: &'a Theme,
+    cluster: &'a Cluster,
+    occupancy: &'a Occupancies,
+    highlight: Option<&'a Login>,
+}
+
+impl Ink<'_> {
+    fn rgb(color: &rtviz_model::theme::Color) -> Rgb {
+        Rgb::of(color)
+    }
+
+    fn font(&self, weight: u32, size: f64, mono: bool) -> String {
+        let family = if mono {
+            &self.theme.fonts.mono
+        } else {
+            &self.theme.fonts.sans
+        };
+        let fallback = if mono { "monospace" } else { "sans-serif" };
+        format!("{weight} {size}px \"{family}\", {fallback}")
+    }
+
+    fn text(&self, text: &str, x: f64, y: f64, font: &str, color: Rgb) {
+        self.context.set_font(font);
+        self.context.set_fill_style_str(&color.css());
+        let _ = self.context.fill_text(text, x, y);
+    }
+
+    fn fill(&self, rect: Rect, radius: f64, color: Rgb) {
+        self.context.set_fill_style_str(&color.css());
+        self.context.begin_path();
+        let _ = self
+            .context
+            .round_rect_with_f64(rect.x, rect.y, rect.w, rect.h, radius);
+        self.context.fill();
+    }
+
+    fn board(&self, groups: &[NodeGroup], board: &Board) {
+        for label in &board.labels {
+            self.label(&groups[label.group], label);
+        }
+        for tile in &board.tiles {
+            if board.compact {
+                self.compact(tile);
+            } else {
+                self.tile(tile, board.gauges);
+            }
+        }
+    }
+
+    fn label(&self, group: &NodeGroup, label: &Label) {
+        let ui = &self.theme.ui;
+        let baseline = label.y + 15.0;
+        self.text(
+            &group.name.to_uppercase(),
+            label.x,
+            baseline,
+            &self.font(700, 12.0, false),
+            Self::rgb(&ui.text),
+        );
+        let title_w = self
+            .context
+            .measure_text(&group.name.to_uppercase())
+            .map_or(0.0, |metrics| metrics.width());
+        let cores = group.cores(self.occupancy);
+        let gpus = group.gpus(self.occupancy);
+        let note = note(
+            group.nodes.len(),
+            (cores.held, cores.total),
+            (gpus.held, gpus.total),
+        );
+        self.text(
+            &note,
+            label.x + title_w + 10.0,
+            baseline,
+            &self.font(500, 11.0, true),
+            Self::rgb(&ui.muted),
+        );
+    }
+
+    /// The color of a free cell on `node`: dimmed down or drain on a node that is out.
+    fn empty(&self, node: &Node) -> Rgb {
+        let free = Self::rgb(&self.theme.state.free);
+        out(self.theme, node).map_or(free, |color| color.fade(free, OUT))
+    }
+
+    /// The color of a cell held by `owner`, or `empty` when no one holds it.
+    fn cell(&self, owner: Option<Owner>, empty: Rgb) -> Rgb {
+        let free = Self::rgb(&self.theme.state.free);
+        let (color, login) = match owner {
+            None => return empty,
+            Some(Owner::Hidden) => (Self::rgb(&self.theme.ui.muted), None),
+            Some(Owner::Attempt(key)) => match self.cluster.running.get(&key) {
+                Some(running) => {
+                    let login = &running.attempt.login;
+                    (user_color(self.theme, self.cluster, login), Some(login))
+                }
+                None => (Self::rgb(&self.theme.ui.muted), None),
+            },
+        };
+        match self.highlight {
+            Some(highlight) if login != Some(highlight) => color.fade(free, FADED),
+            _ => color,
+        }
+    }
+
+    fn tile(&self, tile: &Tile, gauges: bool) {
+        let ui = &self.theme.ui;
+        let node = tile.node;
+        let frame = tile.frame;
+        self.fill(frame, 6.0, Self::rgb(&ui.surface));
+        self.context
+            .set_stroke_style_str(&Self::rgb(&ui.overlay).css());
+        self.context.begin_path();
+        let _ = self.context.round_rect_with_f64(
+            frame.x + 0.5,
+            frame.y + 0.5,
+            frame.w - 1.0,
+            frame.h - 1.0,
+            6.0,
+        );
+        self.context.stroke();
+        let head = frame.y + 14.0;
+        self.text(
+            &node.name.0,
+            frame.x + PAD,
+            head,
+            &self.font(600, 12.0, true),
+            Self::rgb(&ui.text),
+        );
+        if let (Some(word), Some(color)) = (node.trouble(), out(self.theme, node)) {
+            self.context.set_text_align("right");
+            self.text(
+                &word.to_uppercase(),
+                frame.x + frame.w - PAD,
+                head,
+                &self.font(700, 9.5, false),
+                color,
+            );
+            self.context.set_text_align("left");
+        }
+        let empty = self.empty(node);
+        let (cores, gpus) = self.cells(node);
+        let radius = tile
+            .cores
+            .first()
+            .map_or(1.0, |rect| if rect.w > 6.0 { 2.0 } else { 1.0 });
+        for (rect, owner) in tile.cores.iter().zip(cores) {
+            self.fill(*rect, radius, self.cell(*owner, empty));
+        }
+        for (rect, owner) in tile.gpus.iter().zip(gpus) {
+            self.fill(*rect, 3.0, self.cell(*owner, empty));
+            let inset = (rect.w / 4.0).max(2.0);
+            self.context.set_stroke_style_str(
+                &Self::rgb(&ui.base)
+                    .fade(self.cell(*owner, empty), 0.35)
+                    .css(),
+            );
+            self.context.stroke_rect(
+                rect.x + inset,
+                rect.y + inset,
+                rect.w - 2.0 * inset,
+                rect.h - 2.0 * inset,
+            );
+        }
+        if gauges {
+            self.gauges(node, frame);
+        }
+    }
+
+    /// Load against CPUs, and memory allocated with what the OS has in use as a tick.
+    fn gauges(&self, node: &Node, frame: Rect) {
+        let ui = &self.theme.ui;
+        let font = self.font(500, 10.0, true);
+        let label_w = 70.0;
+        let track_x = frame.x + PAD + label_w;
+        let track_w = frame.w - 2.0 * PAD - label_w;
+        let first = frame.y + frame.h - FOOT + 11.0;
+        let second = first + 13.0;
+        let cpus = f64::from(node.cpus.max(1));
+        let load_text = node.load.map_or_else(|| "-".to_owned(), load);
+        self.text(
+            &format!("load {load_text}"),
+            frame.x + PAD,
+            first,
+            &font,
+            Self::rgb(&ui.subtle),
+        );
+        self.track(
+            track_x,
+            first - 3.5,
+            track_w,
+            None,
+            node.load.map(|load| load / cpus),
+        );
+        let mem = node.mem_mb.max(1);
+        #[expect(clippy::cast_precision_loss, reason = "megabytes fit in an f64")]
+        let fraction = |mb: u64| mb as f64 / mem as f64;
+        self.text(
+            &format!(
+                "mem {}/{}",
+                gigabytes(node.mem_alloc_mb),
+                gigabytes(node.mem_mb)
+            ),
+            frame.x + PAD,
+            second,
+            &font,
+            Self::rgb(&ui.subtle),
+        );
+        let used = node
+            .mem_free_mb
+            .map(|free| fraction(node.mem_mb.saturating_sub(free)));
+        self.track(
+            track_x,
+            second - 3.5,
+            track_w,
+            Some(fraction(node.mem_alloc_mb)),
+            used,
+        );
+    }
+
+    /// A thin track with an optional band from its start and an optional tick, both as fractions.
+    fn track(&self, x: f64, y: f64, w: f64, band: Option<f64>, tick: Option<f64>) {
+        let ui = &self.theme.ui;
+        self.fill(Rect { x, y, w, h: 3.0 }, 1.5, Self::rgb(&ui.overlay));
+        if let Some(band) = band {
+            let band_w = w * band.clamp(0.0, 1.0);
+            self.fill(
+                Rect {
+                    x,
+                    y,
+                    w: band_w,
+                    h: 3.0,
+                },
+                1.5,
+                Self::rgb(&ui.muted),
+            );
+        }
+        if let Some(tick) = tick {
+            let at = x + w * tick.clamp(0.0, 1.0);
+            self.fill(
+                Rect {
+                    x: at - 1.0,
+                    y: y - 3.0,
+                    w: 2.0,
+                    h: 9.0,
+                },
+                1.0,
+                Self::rgb(&ui.text),
+            );
+        }
+    }
+
+    /// One line per node: its name and a bar of its cores by user, then its GPUs.
+    fn compact(&self, tile: &Tile) {
+        let ui = &self.theme.ui;
+        let node = tile.node;
+        let frame = tile.frame;
+        self.fill(frame, 4.0, Self::rgb(&ui.surface));
+        let name_color = out(self.theme, node).unwrap_or_else(|| Self::rgb(&ui.text));
+        self.text(
+            &node.name.0,
+            frame.x + PAD,
+            frame.y + 13.0,
+            &self.font(600, 10.5, true),
+            name_color,
+        );
+        let empty = self.empty(node);
+        let (cores, gpus) = self.cells(node);
+        let bar = Rect {
+            x: frame.x + PAD,
+            y: frame.y + 20.0,
+            w: frame.w - 2.0 * PAD,
+            h: 8.0,
+        };
+        self.fill(bar, 2.0, empty);
+        let mut runs: Vec<(Rgb, usize)> = Vec::new();
+        for owner in cores.iter().flatten() {
+            let color = self.cell(Some(*owner), empty);
+            match runs.iter_mut().find(|(run, _)| *run == color) {
+                Some((_, count)) => *count += 1,
+                None => runs.push((color, 1)),
+            }
+        }
+        runs.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        #[expect(clippy::cast_precision_loss, reason = "a small count")]
+        let per_core = bar.w / cores.len().max(1) as f64;
+        let mut x = bar.x;
+        for (color, count) in runs {
+            #[expect(clippy::cast_precision_loss, reason = "a small count")]
+            let w = per_core * count as f64;
+            self.fill(Rect { x, w, ..bar }, 0.0, color);
+            x += w;
+        }
+        for (rect, owner) in tile.gpus.iter().zip(gpus) {
+            self.fill(*rect, 1.5, self.cell(*owner, empty));
+        }
+    }
+
+    fn cells(&self, node: &Node) -> (&[Option<Owner>], &[Option<Owner>]) {
+        self.occupancy
+            .get(&node.name)
+            .map_or((&[][..], &[][..]), |cells| {
+                (cells.cores.as_slice(), cells.gpus.as_slice())
+            })
+    }
+}
+
+/// The color of a node that is out: down or draining. `None` for a node that takes jobs.
+fn out(theme: &Theme, node: &Node) -> Option<Rgb> {
+    match node.state {
+        _ if node.flags.contains(&NodeFlag::NotResponding) => Some(Rgb::of(&theme.state.down)),
+        NodeState::Down | NodeState::Unknown => Some(Rgb::of(&theme.state.down)),
+        NodeState::Draining | NodeState::Drained => Some(Rgb::of(&theme.state.drain)),
+        _ => None,
+    }
+}
+
+/// Megabytes as whole gigabytes with a `G`, or terabytes with one decimal and a `T`.
+fn gigabytes(mb: u64) -> String {
+    if mb >= 1_000_000 {
+        #[expect(clippy::cast_precision_loss, reason = "megabytes fit in an f64")]
+        let tb = mb as f64 / 1_048_576.0;
+        format!("{tb:.1}T")
+    } else {
+        format!("{}G", mb / 1_024)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rtviz_model::{NodeName, NodeState};
+
+    fn node(name: &str, cores: u32, gpus: u32) -> Node {
+        Node {
+            name: NodeName(name.into()),
+            partitions: Vec::new(),
+            state: NodeState::Idle,
+            flags: Vec::new(),
+            state_raw: "IDLE".into(),
+            reason: None,
+            cpus: cores * 2,
+            cpus_alloc: 0,
+            sockets: 2,
+            cores,
+            load: None,
+            mem_mb: 0,
+            mem_alloc_mb: 0,
+            mem_free_mb: None,
+            gpus,
+            gpus_used: 0,
+            gpu_model: None,
+            features: Vec::new(),
+        }
+    }
+
+    fn group<'a>(name: &str, nodes: &'a [Node]) -> NodeGroup<'a> {
+        NodeGroup {
+            name: name.into(),
+            nodes: nodes.iter().collect(),
+        }
+    }
+
+    #[test]
+    fn a_roomy_panel_gets_the_largest_cores() {
+        let nodes = [node("z1", 52, 0)];
+        let board = board(&[group("cpu", &nodes)], 1_000.0, 1_000.0);
+        assert!(!board.compact);
+        let core = board.tiles[0].cores[0];
+        assert_eq!(core.w, 16.0, "pitch 18 less a gap of 2");
+        assert_eq!(board.tiles[0].cores.len(), 52);
+    }
+
+    #[test]
+    fn cores_shrink_until_the_board_fits_then_go_compact() {
+        let nodes: Vec<Node> = (0..40).map(|i| node(&format!("z{i}"), 52, 0)).collect();
+        let groups = [group("cpu", &nodes)];
+        let roomy = board(&groups, 1_400.0, 2_000.0);
+        let tight = board(&groups, 1_400.0, 600.0);
+        assert!(tight.tiles[0].cores[0].w < roomy.tiles[0].cores[0].w);
+        assert!(tight.height <= 600.0);
+        let cramped = board(&groups, 1_400.0, 150.0);
+        assert!(cramped.compact);
+        assert_eq!(cramped.tiles[0].cores, []);
+    }
+
+    #[test]
+    fn sockets_stack_and_gpus_sit_above_the_cores() {
+        let nodes = [node("g1", 16, 4)];
+        let board = board(&[group("gpu", &nodes)], 600.0, 600.0);
+        let tile = &board.tiles[0];
+        let first_socket = tile.cores[0].y;
+        let second_socket = tile.cores[8].y;
+        assert!(second_socket > first_socket, "core 8 starts socket 1");
+        assert_eq!(tile.gpus.len(), 4);
+        assert!(tile.gpus.iter().all(|gpu| gpu.y < first_socket));
+        for rect in tile.cores.iter().chain(&tile.gpus) {
+            assert!(rect.x >= tile.frame.x && rect.x + rect.w <= tile.frame.x + tile.frame.w);
+        }
+    }
+
+    #[test]
+    fn small_groups_share_a_row_and_big_ones_wrap() {
+        let cpu: Vec<Node> = (0..3).map(|i| node(&format!("c{i}"), 16, 0)).collect();
+        let gpu = [node("g1", 16, 4)];
+        let board = board(&[group("cpu", &cpu), group("gpu", &gpu)], 2_000.0, 2_000.0);
+        assert_eq!(board.labels[0].y, board.labels[1].y, "side by side");
+        assert!(board.labels[1].x > board.labels[0].x + board.labels[0].w);
+        let narrow = super::board(&[group("cpu", &cpu), group("gpu", &gpu)], 300.0, 2_000.0);
+        assert!(narrow.labels[1].y > narrow.labels[0].y, "wrapped");
+    }
+
+    #[test]
+    fn a_one_node_group_leaves_room_for_its_title() {
+        let skylake = [node("z1054", 36, 0)];
+        let gpu = [node("g1", 16, 4)];
+        let board = board(
+            &[group("skylake", &skylake), group("gpu", &gpu)],
+            2_000.0,
+            2_000.0,
+        );
+        let first = &board.labels[0];
+        assert!(first.w >= title_width(&group("skylake", &skylake)));
+        assert!(
+            board.labels[1].x >= first.x + first.w,
+            "titles do not overlap"
+        );
+    }
+
+    /// zlurm's node shapes in 2026: 24, 14 and 1 CPU nodes, then 9 V100 nodes and 3 big GPU nodes.
+    fn zlurm() -> [Vec<Node>; 5] {
+        let many = |count: usize, cores, gpus| -> Vec<Node> {
+            (0..count)
+                .map(|i| node(&format!("n{i}"), cores, gpus))
+                .collect()
+        };
+        [
+            many(24, 52, 0),
+            many(14, 44, 0),
+            many(1, 36, 0),
+            many(9, 16, 4),
+            vec![
+                node("js029", 128, 8),
+                node("js031", 128, 8),
+                node("z028", 128, 6),
+            ],
+        ]
+    }
+
+    #[test]
+    fn zlurm_fits_full_tiles_in_a_tv_die_panel() {
+        let nodes = zlurm();
+        let groups: Vec<NodeGroup> = nodes.iter().map(|nodes| group("g", nodes)).collect();
+        let board = board(&groups, 1_330.0, 690.0);
+        assert!(!board.compact);
+        let with_gauges = super::board(&groups, 1_330.0, 2_000.0);
+        assert!(with_gauges.gauges, "gauges come back when there is room");
+    }
+
+    #[test]
+    fn memory_reads_in_gigabytes_or_terabytes() {
+        assert_eq!(gigabytes(64_000), "62G");
+        assert_eq!(gigabytes(2_000_000), "1.9T");
+    }
+}

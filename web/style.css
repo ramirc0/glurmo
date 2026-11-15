@@ -1,0 +1,274 @@
+/* Colors and fonts come from the theme as CSS variables, which /api/themes provides and the page sets. */
+
+:root {
+  --line: 20px;
+  --gap: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--base);
+  color: var(--text);
+  font: 13px/1.5 var(--sans);
+}
+
+main {
+  height: 100vh;
+  display: flex;
+  padding: var(--gap);
+}
+
+main.tv {
+  cursor: none;
+}
+
+.split {
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--gap);
+  min-width: 0;
+  min-height: 0;
+}
+
+.split.column {
+  flex-direction: column;
+}
+
+.slot {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.slot > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 6px 12px;
+  overflow: auto;
+}
+
+.panel.die {
+  background: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.panel h2 {
+  margin: 0 0 4px;
+  font: 700 11px/var(--line) var(--sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+.panel h2 small {
+  margin-left: 10px;
+  font: 500 11px var(--mono);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+}
+
+.surface {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.surface canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 12.5px/var(--line) var(--mono);
+}
+
+th {
+  font: italic 500 11px var(--mono);
+  color: var(--muted);
+  text-align: right;
+  padding: 0 0 0 10px;
+}
+
+td {
+  text-align: right;
+  padding: 0 0 0 10px;
+  white-space: nowrap;
+}
+
+th:first-child,
+td:first-child {
+  padding-left: 0;
+}
+
+th.name,
+td.name {
+  text-align: left;
+}
+
+td.why {
+  color: var(--subtle);
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--muted);
+  vertical-align: -1px;
+}
+
+tr.lit td {
+  background: var(--overlay);
+}
+
+tr.hidden td,
+tr.ended td {
+  color: var(--muted);
+}
+
+.you {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--drain);
+  color: var(--base);
+  font: 700 10px var(--sans);
+  text-transform: uppercase;
+}
+
+.bar {
+  display: inline-block;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--overlay);
+  vertical-align: middle;
+  overflow: hidden;
+}
+
+.bar .fill {
+  display: block;
+  height: 100%;
+}
+
+td.share {
+  width: 90px;
+}
+
+.header {
+  flex-direction: row;
+  align-items: center;
+  gap: 36px;
+  padding: 0 16px;
+  overflow: hidden;
+}
+
+.header .brand {
+  display: flex;
+  flex-direction: column;
+}
+
+.header .site {
+  font: 700 22px/1.1 var(--sans);
+}
+
+.header .when {
+  font: 500 12px var(--mono);
+  color: var(--subtle);
+}
+
+.header .stat {
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+}
+
+.header .caption {
+  font: 700 10px var(--sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.header .value {
+  font: 500 20px/1.2 var(--mono);
+}
+
+.header .value small {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.header .trouble {
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--down);
+  color: var(--base);
+  font: 600 13px var(--sans);
+}
+
+.counts {
+  margin: 0 0 4px;
+  font: 12.5px var(--mono);
+  color: var(--muted);
+}
+
+.counts b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.down,
+.counts b.down {
+  color: var(--down);
+}
+
+.drain {
+  color: var(--drain);
+}
+
+.note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.keys {
+  flex-direction: row;
+  align-items: center;
+  gap: 24px;
+  padding: 0 12px;
+  color: var(--muted);
+}
+
+kbd {
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--overlay);
+  color: var(--text);
+  font: 12px var(--mono);
+}
