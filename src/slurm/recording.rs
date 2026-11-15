@@ -192,7 +192,7 @@ impl Pseudonyms {
 pub struct Replay {
     answers: HashMap<Call, VecDeque<Exchange>>,
     now: UnixTime,
-    paced: bool,
+    speed: Option<u32>,
 }
 
 impl Replay {
@@ -220,14 +220,15 @@ impl Replay {
         Self {
             answers,
             now,
-            paced: false,
+            speed: None,
         }
     }
 
-    /// Makes the replay wait out the recorded time between ticks, so a browser sees it unfold live.
-    pub fn paced(self) -> Self {
+    /// Makes the replay wait out the recorded time between ticks, divided by `speed`, so a browser
+    /// sees it unfold.
+    pub fn paced(self, speed: u32) -> Self {
         Self {
-            paced: true,
+            speed: Some(speed.max(1)),
             ..self
         }
     }
@@ -239,9 +240,10 @@ impl Replay {
 
     /// Waits until `time`, at once unless paced.
     pub async fn sleep_until(&mut self, time: UnixTime) {
-        if self.paced {
+        if let Some(speed) = self.speed {
             let wait = u64::try_from(time.0 - self.now.0).unwrap_or(0);
-            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            let wait = std::time::Duration::from_secs(wait) / speed;
+            tokio::time::sleep(wait).await;
         }
         self.now = self.now.max(time);
     }
@@ -320,7 +322,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_paced_replay_waits_out_the_time_between_ticks() {
         let mut replay =
-            Replay::new(vec![exchange(100, Call::Jobs, Answer::Jobs(Vec::new()))]).paced();
+            Replay::new(vec![exchange(100, Call::Jobs, Answer::Jobs(Vec::new()))]).paced(1);
         let started = tokio::time::Instant::now();
         replay.sleep_until(UnixTime(130)).await;
         assert_eq!(started.elapsed(), std::time::Duration::from_secs(30));
@@ -330,6 +332,11 @@ mod tests {
             std::time::Duration::from_secs(30),
             "the past costs no time"
         );
+        let mut fast =
+            Replay::new(vec![exchange(100, Call::Jobs, Answer::Jobs(Vec::new()))]).paced(10);
+        let started = tokio::time::Instant::now();
+        fast.sleep_until(UnixTime(130)).await;
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(3));
     }
 
     #[test]

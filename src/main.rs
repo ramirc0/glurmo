@@ -54,6 +54,9 @@ enum Command {
         /// keep serving its last state once it runs out.
         #[arg(long, value_name = "FILE")]
         replay: Option<PathBuf>,
+        /// Play the recording this many times faster than it was recorded.
+        #[arg(long, default_value_t = 1, requires = "replay")]
+        speed: u32,
     },
     /// Show the cluster in the terminal, following a server or sampling in-process.
     Tui {
@@ -111,7 +114,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load(cli.config.as_deref())?;
     match cli.command {
-        Command::Serve { replay } => serve(&config, replay.as_deref()).await?,
+        Command::Serve { replay, speed } => serve(&config, replay.as_deref(), speed).await?,
         Command::Tui { server, embedded } => {
             let server = if embedded {
                 None
@@ -187,11 +190,12 @@ async fn main() -> Result<()> {
 
 /// Samples into the store and serves the stream, history, themes and layouts until the process ends.
 /// Theme and layout files are read from `$XDG_CONFIG_HOME/glurmo`. With `replay`, the samples come from a
-/// recording and the store is a temporary one.
-async fn serve(config: &Config, replay: Option<&Path>) -> Result<()> {
+/// recording, played `speed` times faster than it was recorded, and the store is a temporary one.
+async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()> {
     let scratch = tempfile::tempdir()?;
     let (slurm, path, store) = if let Some(recording) = replay {
-        let slurm = Slurm::connect(Source::Replay(Replay::open(recording)?.paced()), None).await?;
+        let slurm =
+            Slurm::connect(Source::Replay(Replay::open(recording)?.paced(speed)), None).await?;
         let path = scratch.path().join("replay.sqlite");
         let settings = Settings {
             backfill_days: 0,
