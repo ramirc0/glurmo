@@ -14,7 +14,6 @@ use rtviz_model::units::{load, thousands};
 use rtviz_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use web_sys::CanvasRenderingContext2d;
 
-
 use crate::paint::{Rgb, Surface, user_color};
 use crate::state::{Highlight, State};
 use crate::tip::Tip;
@@ -791,17 +790,26 @@ impl Ink<'_> {
         let font = self.font(500, 10.0, true);
         let first = frame.y + frame.h - FOOT + 11.0;
         let second = first + 13.0;
-        let load_label = format!(
-            "load {}",
-            node.load.map_or_else(|| "-".to_owned(), load)
-        );
+        let load_label = format!("load {}", node.load.map_or_else(|| "-".to_owned(), load));
         let mem_label = format!(
             "mem {}/{}",
             gigabytes(node.mem_alloc_mb),
             gigabytes(node.mem_mb)
         );
-        self.text(&load_label, frame.x + PAD, first, &font, Self::rgb(&ui.subtle));
-        self.text(&mem_label, frame.x + PAD, second, &font, Self::rgb(&ui.subtle));
+        self.text(
+            &load_label,
+            frame.x + PAD,
+            first,
+            &font,
+            Self::rgb(&ui.subtle),
+        );
+        self.text(
+            &mem_label,
+            frame.x + PAD,
+            second,
+            &font,
+            Self::rgb(&ui.subtle),
+        );
         let label_w = [&load_label, &mem_label]
             .iter()
             .filter_map(|label| self.context.measure_text(label).ok())
