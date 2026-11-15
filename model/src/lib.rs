@@ -1081,6 +1081,60 @@ impl Cluster {
         }
         nodes
     }
+
+    /// Sets each node's CPUs and GPUs allocated from who holds its cores and GPUs, and an up node's
+    /// state to idle, mixed or allocated to match. A node that is draining, drained, down or unknown keeps
+    /// its state.
+    ///
+    /// History keeps no allocation, so a cluster rebuilt from it needs this after every change. Hidden
+    /// jobs come from the allocation, so it is for clusters that hide no jobs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
+    /// #     "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
+    /// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
+    /// #     "nodes": ["z1001"], "reason": null, "name": "align"
+    /// # }"#;
+    /// # let node = r#"{
+    /// #     "name": "z1001", "partitions": ["5days"], "state": "idle", "flags": [], "state_raw": "IDLE",
+    /// #     "reason": null, "cpus": 8, "cpus_alloc": 0, "sockets": 1, "cores": 4, "load": null,
+    /// #     "mem_mb": 64000, "mem_alloc_mb": 0, "mem_free_mb": null, "gpus": 2, "gpus_used": 0,
+    /// #     "gpu_model": "V100", "features": []
+    /// # }"#;
+    /// use rtviz_model::{Cluster, Delta, Event, NodeState, UnixTime};
+    ///
+    /// let mut cluster = Cluster { nodes: vec![serde_json::from_str(node).unwrap()], ..Cluster::default() };
+    /// let attempt = serde_json::from_str(json).unwrap();
+    /// cluster.apply(&Delta { seq: 1, at: UnixTime(200), events: vec![Event::Started { attempt }] });
+    /// cluster.tally_allocation();
+    /// assert_eq!(cluster.nodes[0].state, NodeState::Allocated, "8 CPUs fill 4 cores");
+    /// assert_eq!((cluster.nodes[0].cpus_alloc, cluster.nodes[0].gpus_used), (8, 1));
+    /// ```
+    pub fn tally_allocation(&mut self) {
+        let occupancy = self.occupancy();
+        for node in &mut self.nodes {
+            let Some(cells) = occupancy.get(&node.name) else {
+                continue;
+            };
+            let cores = held(&cells.cores);
+            node.cpus_alloc = cores * node.cpus_per_core();
+            node.gpus_used = held(&cells.gpus);
+            if !matches!(
+                node.state,
+                NodeState::Idle | NodeState::Mixed | NodeState::Allocated
+            ) {
+                continue;
+            }
+            (node.state, node.state_raw) = match cores {
+                0 => (NodeState::Idle, "IDLE".to_owned()),
+                held if held >= node.cores => (NodeState::Allocated, "ALLOCATED".to_owned()),
+                _ => (NodeState::Mixed, "MIXED".to_owned()),
+            };
+        }
+    }
 }
 
 fn to_usize(count: u32) -> usize {
