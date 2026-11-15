@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use super::feed::Link;
 use super::units::{clock, percent, since, thousands};
 use super::view::Scene;
+use crate::model::UnixTime;
 
 /// Eighth blocks, from empty to full.
 const EIGHTHS: [&str; 9] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
@@ -72,12 +73,12 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
     let trouble = match (&scene.app.link, &cluster.outage) {
         (Link::Lost { since: at, error }, _) => Some(format!(
             "server unreachable for {}: {error}",
-            since(*at, now())
+            since(*at, UnixTime::now())
         )),
         (Link::Connecting, _) => Some("connecting".to_owned()),
         (Link::Live, Some(outage)) => Some(format!(
             "no answer from Slurm for {}: {}",
-            since(outage.since, now()),
+            since(outage.since, UnixTime::now()),
             outage.error
         )),
         (Link::Live, None) => None,
@@ -96,11 +97,6 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
             style,
         );
     }
-}
-
-/// The wall clock, for how long trouble has lasted.
-fn now() -> crate::model::UnixTime {
-    crate::model::UnixTime::now()
 }
 
 /// A bar `width` cells wide, filled to `part / whole` with eighth-cell precision.

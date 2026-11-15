@@ -69,7 +69,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             line(attempt, "R", time, nodes.join(","))
         })
         .collect();
-    let waiting = lines.len();
+    let running_count = lines.len();
     lines.extend(pending.map(|attempt| {
         line(
             attempt,
@@ -87,7 +87,10 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             .fg(palette.muted)
             .add_modifier(Modifier::ITALIC),
     ));
-    let note = format!("{waiting} running, {} pending", lines.len() - waiting);
+    let note = format!(
+        "{running_count} running, {} pending",
+        lines.len() - running_count
+    );
     scrolled(
         scene.block(&format!("mine · {}", me.0), &note, focus),
         Some(head),
