@@ -30,8 +30,8 @@ pub enum Pane {
     Users,
     /// Pending jobs.
     Queue {
-        /// How to group them.
-        group: Grouping,
+        /// How to sum them.
+        by: QueueBy,
     },
     /// Each partition's load and limits.
     Partitions,
@@ -78,6 +78,15 @@ pub enum Grouping {
     Hardware,
     /// By partition.
     Partition,
+}
+
+/// How the queue panel sums pending jobs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QueueBy {
+    /// One row per partition, with the most common reason to wait.
+    Partition,
+    /// One row per user.
+    Login,
 }
 
 /// A stretch of time back from now.

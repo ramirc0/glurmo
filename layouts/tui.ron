@@ -3,7 +3,7 @@ Layout(name: "tui", root:
         (Length(1), Header),
         (Fill(1), Split(Horizontal, [
             (Percentage(66), Die(group: Hardware)),
-            (Fill(1), Split(Vertical, [(Length(9), Users), (Length(10), Queue(group: Partition)), (Fill(1), Nodes)])),
+            (Fill(1), Split(Vertical, [(Length(9), Users), (Length(10), Queue(by: Partition)), (Fill(1), Nodes)])),
         ])),
         (Length(14), History(span: Hours(24))),
         (Length(1), Keys),

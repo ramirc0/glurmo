@@ -526,7 +526,7 @@ pub struct UsageQuery {
 }
 
 /// Usage summed over one step for one login or partition.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Step {
     /// The step's start.
     pub at: UnixTime,

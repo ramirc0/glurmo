@@ -1,0 +1,472 @@
+//! Lays a layout's panels out over the terminal and gives them what they draw from.
+
+use std::collections::BTreeMap;
+
+use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Direction as Axis, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
+
+use super::app::App;
+use super::palette::Palette;
+use super::{die, header, history, mine, nodes, partitions, queue, ticker, users};
+use crate::layout::{Direction, Pane, Size};
+use crate::model::{
+    Attempt, Cluster, Login, Node, NodeFlag, NodeName, NodeState, Occupancy, Owner, UnixTime,
+};
+
+/// What every panel draws from, worked out once per frame.
+pub struct Scene<'a> {
+    /// The state.
+    pub app: &'a App,
+    /// The theme's colors.
+    pub palette: Palette,
+    /// Who holds each core and GPU.
+    pub occupancy: BTreeMap<NodeName, Occupancy>,
+    /// The time of the last delta, which ages count from.
+    pub now: UnixTime,
+}
+
+/// Whether a panel takes scroll keys, and how far it is scrolled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Focus {
+    /// Whether it takes scroll keys.
+    pub focused: bool,
+    /// Lines scrolled.
+    pub scroll: u16,
+}
+
+impl<'a> Scene<'a> {
+    /// The scene for one frame of `app`.
+    pub fn new(app: &'a App) -> Self {
+        Self {
+            app,
+            palette: Palette::of(app.theme()),
+            occupancy: app.cluster.occupancy(),
+            now: app.cluster.at.unwrap_or_default(),
+        }
+    }
+
+    /// The cluster.
+    pub fn cluster(&self) -> &Cluster {
+        &self.app.cluster
+    }
+
+    /// The attempt that holds a cell, if it is visible.
+    pub fn attempt(&self, owner: Owner) -> Option<&Attempt> {
+        match owner {
+            Owner::Attempt(key) => self.cluster().running.get(&key).map(|r| &r.attempt),
+            Owner::Hidden => None,
+        }
+    }
+
+    /// The color of `login`, from the palette slot the sampler gave it.
+    pub fn color(&self, login: &Login) -> Color {
+        self.cluster()
+            .users
+            .get(login)
+            .map_or(self.palette.muted, |user| {
+                self.palette.user(user.color_slot)
+            })
+    }
+
+    /// How to show `login`: the full name when the server sends one.
+    pub fn name<'b>(&'b self, login: &'b Login) -> &'b str {
+        self.cluster()
+            .users
+            .get(login)
+            .and_then(|user| user.name.as_deref())
+            .unwrap_or(&login.0)
+    }
+
+    /// Whether any of `texts` contains the filter, or no filter is set.
+    pub fn shows(&self, texts: &[&str]) -> bool {
+        let Some(filter) = self.app.filter() else {
+            return true;
+        };
+        let filter = filter.to_lowercase();
+        texts
+            .iter()
+            .any(|text| text.to_lowercase().contains(&filter))
+    }
+
+    /// Whether the filter lets an attempt through: by login, name, partition or job name.
+    pub fn shows_attempt(&self, attempt: &Attempt) -> bool {
+        let mut texts = vec![
+            attempt.login.0.as_str(),
+            self.name(&attempt.login),
+            attempt.name.as_str(),
+        ];
+        texts.extend(attempt.partitions.iter().map(|p| p.0.as_str()));
+        self.shows(&texts)
+    }
+
+    /// The color of a core or GPU: its holder's, faded when the filter hides the holder, or `empty`.
+    pub fn cell(&self, owner: Option<Owner>, empty: Color) -> Color {
+        match owner {
+            None => empty,
+            Some(Owner::Hidden) => self.palette.muted,
+            Some(owner) => match self.attempt(owner) {
+                Some(attempt) if self.shows_attempt(attempt) => self.color(&attempt.login),
+                Some(attempt) => self.palette.fade(self.color(&attempt.login), 0.3),
+                None => self.palette.muted,
+            },
+        }
+    }
+
+    /// A panel's frame, with `title` in the top border and `note` in the bottom one.
+    pub fn block(&self, title: &str, note: &str, focus: Focus) -> Block<'static> {
+        let border = if focus.focused {
+            self.palette.subtle
+        } else {
+            self.palette.overlay
+        };
+        let mut block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(border))
+            .title(Line::from(Span::styled(
+                format!(" {title} "),
+                Style::new()
+                    .fg(self.palette.text)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        if !note.is_empty() {
+            block = block.title_bottom(
+                Line::from(Span::styled(format!(" {note} "), self.palette.muted)).right_aligned(),
+            );
+        }
+        block
+    }
+
+    /// Cores on nodes that can run jobs, and how many of them jobs hold.
+    pub fn cores(&self) -> (u64, u64) {
+        self.count(|occupancy| &occupancy.cores)
+    }
+
+    /// GPUs on nodes that can run jobs, and how many of them jobs hold.
+    pub fn gpus(&self) -> (u64, u64) {
+        self.count(|occupancy| &occupancy.gpus)
+    }
+
+    fn count(&self, cells: impl Fn(&Occupancy) -> &Vec<Option<Owner>>) -> (u64, u64) {
+        let mut total = 0;
+        let mut held = 0;
+        for node in self.cluster().nodes.iter().filter(|node| usable(node)) {
+            if let Some(occupancy) = self.occupancy.get(&node.name) {
+                let cells = cells(occupancy);
+                total += cells.len() as u64;
+                held += cells.iter().filter(|cell| cell.is_some()).count() as u64;
+            }
+        }
+        (total, held)
+    }
+}
+
+/// Whether a node can run jobs: up, responding, and not drained.
+pub fn usable(node: &Node) -> bool {
+    !matches!(
+        node.state,
+        NodeState::Down | NodeState::Drained | NodeState::Unknown
+    ) && !node.flags.contains(&NodeFlag::NotResponding)
+}
+
+/// A short word for a node that cannot take new jobs, or `None` for one that can.
+pub fn trouble(node: &Node) -> Option<&'static str> {
+    if node.flags.contains(&NodeFlag::NotResponding) {
+        return Some("no reply");
+    }
+    match node.state {
+        NodeState::Down => Some("down"),
+        NodeState::Drained => Some("drained"),
+        NodeState::Draining => Some("draining"),
+        NodeState::Unknown => Some("unknown"),
+        _ => None,
+    }
+}
+
+/// The panels of a layout, in the order focus visits them, splits left out.
+pub fn panels(root: &Pane) -> Vec<&Pane> {
+    match root {
+        Pane::Split(_, children) => children
+            .iter()
+            .flat_map(|(_, child)| panels(child))
+            .collect(),
+        pane => vec![pane],
+    }
+}
+
+/// Draws a frame of `app`. Returns how far each scrolling panel could scroll.
+pub fn draw(frame: &mut Frame, app: &App) -> Vec<u16> {
+    let scene = Scene::new(app);
+    let area = frame.area();
+    let buf = frame.buffer_mut();
+    buf.set_style(
+        area,
+        Style::new().bg(scene.palette.base).fg(scene.palette.text),
+    );
+    let mut limits = Vec::new();
+    walk(&scene, &app.layout().root, area, buf, &mut limits);
+    if app.filter.editing {
+        prompt(&scene, area, buf);
+    }
+    if app.help {
+        help(&scene, area, buf);
+    }
+    limits
+}
+
+fn walk(scene: &Scene, pane: &Pane, area: Rect, buf: &mut Buffer, limits: &mut Vec<u16>) {
+    let index = limits.len();
+    let focus = Focus {
+        focused: index == scene.app.focus,
+        scroll: scene.app.scroll_of(index),
+    };
+    let limit = match pane {
+        Pane::Split(direction, children) => {
+            let axis = match direction {
+                Direction::Vertical => Axis::Vertical,
+                Direction::Horizontal => Axis::Horizontal,
+            };
+            let constraints = children.iter().map(|(size, _)| constraint(*size));
+            let areas = ratatui::layout::Layout::new(axis, constraints).split(area);
+            for ((_, child), area) in children.iter().zip(areas.iter()) {
+                walk(scene, child, *area, buf, limits);
+            }
+            return;
+        }
+        Pane::Header => return header::header(scene, area, buf),
+        Pane::Keys => return header::keys(scene, area, buf),
+        Pane::History { span } => return history::draw(scene, *span, area, buf),
+        Pane::Die { group } => die::draw(scene, *group, area, buf, focus),
+        Pane::Users => users::draw(scene, area, buf, focus),
+        Pane::Queue { by } => queue::draw(scene, *by, area, buf, focus),
+        Pane::Partitions => partitions::draw(scene, area, buf, focus),
+        Pane::Nodes => nodes::draw(scene, area, buf, focus),
+        Pane::Mine => mine::draw(scene, area, buf, focus),
+        Pane::Ticker => ticker::draw(scene, area, buf, focus),
+    };
+    limits.push(limit);
+}
+
+fn constraint(size: Size) -> Constraint {
+    match size {
+        Size::Length(n) => Constraint::Length(n),
+        Size::Percentage(n) => Constraint::Percentage(n),
+        Size::Fill(n) => Constraint::Fill(n),
+        Size::Min(n) => Constraint::Min(n),
+    }
+}
+
+/// Draws `lines` under an optional `head` row inside `block`, scrolled by `focus`.
+/// Returns how far the lines could scroll.
+pub fn scrolled(
+    block: Block,
+    head: Option<Line>,
+    lines: Vec<Line>,
+    area: Rect,
+    buf: &mut Buffer,
+    focus: Focus,
+) -> u16 {
+    let inner = block.inner(area);
+    block.render(area, buf);
+    let mut body = inner;
+    if let Some(head) = head
+        && body.height > 0
+    {
+        buf.set_line(body.x, body.y, &head, body.width);
+        body.y += 1;
+        body.height -= 1;
+    }
+    let count = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let limit = count.saturating_sub(body.height);
+    Paragraph::new(lines)
+        .scroll((focus.scroll.min(limit), 0))
+        .render(body, buf);
+    limit
+}
+
+/// The filter being typed, over the bottom line.
+fn prompt(scene: &Scene, area: Rect, buf: &mut Buffer) {
+    let palette = &scene.palette;
+    let line = Line::from(vec![
+        Span::styled(" filter ", Style::new().fg(palette.base).bg(palette.drain)),
+        Span::styled(format!(" {}▏", scene.app.filter.text), palette.text),
+        Span::styled("   enter keeps it, esc clears it", palette.muted),
+    ]);
+    let bottom = Rect::new(
+        area.x,
+        area.bottom().saturating_sub(1),
+        area.width,
+        1.min(area.height),
+    );
+    buf.set_style(bottom, Style::new().bg(palette.base));
+    buf.set_line(bottom.x, bottom.y, &line, bottom.width);
+}
+
+/// What each key does, over the middle of the screen.
+fn help(scene: &Scene, area: Rect, buf: &mut Buffer) {
+    let keys = [
+        ("q", "quit"),
+        ("tab", "focus the next panel"),
+        ("↑ ↓ j k", "scroll the focused panel"),
+        ("/", "filter by user, partition or job name"),
+        ("m", "show only your jobs, or everyone again"),
+        ("esc", "clear the filter"),
+        ("l", "next layout"),
+        ("t", "next theme"),
+        ("?", "this help"),
+    ];
+    let palette = &scene.palette;
+    let lines: Vec<Line> = keys
+        .iter()
+        .map(|(key, what)| {
+            Line::from(vec![
+                Span::styled(format!("{key:>8}  "), palette.drain),
+                Span::styled(*what, palette.text),
+            ])
+        })
+        .collect();
+    let width = 52.min(area.width);
+    let height = (u16::try_from(lines.len()).unwrap_or(0) + 2).min(area.height);
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    Clear.render(popup, buf);
+    buf.set_style(popup, Style::new().bg(palette.base));
+    let block = scene.block(
+        "keys",
+        "any key closes",
+        Focus {
+            focused: true,
+            scroll: 0,
+        },
+    );
+    Paragraph::new(lines).block(block).render(popup, buf);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use jiff::tz::TimeZone;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::config::{Tui, from_ron};
+    use crate::hub::Message;
+    use crate::library::Library;
+    use crate::model::UnixTime;
+    use crate::store::Step;
+    use crate::tui::feed::{Link, Update, Usage};
+
+    /// The busy quarter hour as a view sees it after following every delta, seen by the user with
+    /// the most running jobs, over a made-up day of usage by the four busiest users.
+    async fn busy_app() -> App {
+        let hub = crate::fixture::busy_hub().await;
+        let mut app = App::new(
+            Library::load(Path::new("/nonexistent")),
+            &Tui::default(),
+            Login(String::new()),
+            TimeZone::UTC,
+        );
+        app.site = Some(hub.snapshot().site);
+        for delta in hub.deltas() {
+            app.update(Update::Message(Message::Delta(delta)));
+        }
+        app.update(Update::Link(Link::Live));
+        let mut jobs: BTreeMap<&Login, usize> = BTreeMap::new();
+        for running in app.cluster.running.values() {
+            *jobs.entry(&running.attempt.login).or_default() += 1;
+        }
+        let mut busiest: Vec<(&Login, usize)> = jobs.into_iter().collect();
+        busiest.sort_by_key(|(login, jobs)| (std::cmp::Reverse(*jobs), (*login).clone()));
+        let logins: Vec<Login> = busiest
+            .iter()
+            .take(4)
+            .map(|(login, _)| (*login).clone())
+            .collect();
+        app.me = logins[0].clone();
+        let to = app.cluster.at.unwrap();
+        let from = UnixTime(to.0 - 86_400);
+        let mut steps = Vec::new();
+        for i in 0..288_u64 {
+            for (rank, login) in (0_u64..).zip(&logins) {
+                let cores = (200 + 150 * ((i / 24 + rank) % 4)) / (rank + 1);
+                steps.push(Step {
+                    at: UnixTime(from.0 / 300 * 300 + i.cast_signed() * 300),
+                    key: login.0.clone(),
+                    core_s: cores * 300,
+                    gpu_s: 0,
+                    wait_s: (i % 48) * 3_000 * (rank + 1),
+                    started: 0,
+                    ended: 0,
+                    failed: None,
+                });
+            }
+        }
+        app.update(Update::Usage(Ok(Usage {
+            from,
+            to,
+            step_s: 300,
+            steps,
+        })));
+        app
+    }
+
+    fn render(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| app.limits = draw(frame, app))
+            .unwrap();
+        terminal
+    }
+
+    #[tokio::test]
+    async fn the_tui_layout_at_160_by_50() {
+        let mut app = busy_app().await;
+        insta::assert_snapshot!(render(&mut app, 160, 50).backend());
+    }
+
+    #[tokio::test]
+    async fn the_tui_layout_at_100_by_30() {
+        let mut app = busy_app().await;
+        insta::assert_snapshot!(render(&mut app, 100, 30).backend());
+    }
+
+    #[tokio::test]
+    async fn every_other_panel_with_a_filter_and_help() {
+        let mut app = busy_app().await;
+        let layout = from_ron(
+            r#"Layout(name: "rest", root: Split(Horizontal, [
+                (Fill(1), Split(Vertical, [
+                    (Fill(1), Die(group: Partition)),
+                    (Length(8), Mine),
+                ])),
+                (Length(64), Split(Vertical, [
+                    (Length(12), Partitions),
+                    (Length(8), Queue(by: Login)),
+                    (Fill(1), Ticker),
+                    (Length(1), Keys),
+                ])),
+            ]))"#,
+        )
+        .unwrap();
+        app.library.layouts.insert("rest".into(), layout);
+        app.layout = "rest".into();
+        app.filter.text = "4hours".into();
+        let mut terminal = render(&mut app, 160, 50);
+        insta::assert_snapshot!("rest_filtered", terminal.backend());
+        app.help = true;
+        terminal
+            .draw(|frame| app.limits = draw(frame, &app))
+            .unwrap();
+        insta::assert_snapshot!("rest_help", terminal.backend());
+        assert_eq!(app.limits.len(), 5, "die, mine, partitions, queue, ticker");
+    }
+}

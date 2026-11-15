@@ -15,6 +15,7 @@ mod server;
 mod slurm;
 mod store;
 mod theme;
+mod tui;
 mod xdg;
 
 use std::fs::File;
@@ -50,6 +51,15 @@ struct Cli {
 enum Command {
     /// Sample the cluster, keep its history and serve both over HTTP.
     Serve,
+    /// Show the cluster in the terminal, following a server or sampling in-process.
+    Tui {
+        /// The server to follow, such as `http://js029:8765`. It overrides the config's.
+        #[arg(long, value_name = "URL", conflicts_with = "embedded")]
+        server: Option<String>,
+        /// Sample the cluster in-process, even when the config names a server.
+        #[arg(long)]
+        embedded: bool,
+    },
     /// Print site facts, capabilities, each command's cost, and suggested intervals.
     Probe,
     /// Sample the cluster and print each tick's changes as a line of JSON.
@@ -90,6 +100,14 @@ async fn main() -> Result<()> {
     let config = Config::load(cli.config.as_deref())?;
     match cli.command {
         Command::Serve => serve(&config).await?,
+        Command::Tui { server, embedded } => {
+            let server = if embedded {
+                None
+            } else {
+                server.or_else(|| config.tui.server.clone())
+            };
+            tui::run(&config, server.as_deref()).await?;
+        }
         Command::Probe => {
             let mut slurm = Slurm::connect(Source::Live).await?;
             print!("{}", slurm::probe::probe(&mut slurm).await?);

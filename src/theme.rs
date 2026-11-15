@@ -22,6 +22,14 @@ impl TryFrom<String> for Color {
     }
 }
 
+impl Color {
+    /// The red, green and blue channels.
+    pub fn rgb(&self) -> (u8, u8, u8) {
+        let channel = |at: usize| u8::from_str_radix(&self.0[at..at + 2], 16).unwrap_or_default();
+        (channel(1), channel(3), channel(5))
+    }
+}
+
 impl From<Color> for String {
     fn from(color: Color) -> Self {
         color.0
@@ -140,6 +148,12 @@ mod tests {
         for bad in ["1f1d2e", "#1f1d2", "#1f1d2g", "red"] {
             assert!(Color::try_from(bad.to_owned()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn colors_split_into_channels() {
+        let color = Color::try_from("#1f1D2e".to_owned()).unwrap();
+        assert_eq!(color.rgb(), (0x1f, 0x1d, 0x2e));
     }
 
     #[test]
