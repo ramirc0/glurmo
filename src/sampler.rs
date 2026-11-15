@@ -1,19 +1,19 @@
 //! The tick loop. It runs the commands that are due, diffs their output, looks up placements and
 //! publishes each tick's changes to the [`Hub`].
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::config::Names;
+use crate::config::{Config, Names};
 use crate::diff::{Known, placed};
 use crate::hub::Hub;
-use crate::model::{Attempt, Event, Login, Outage, UnixTime, User};
+use crate::model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
 use crate::passwd;
 use crate::slurm::source::Exhausted;
-use crate::slurm::{Intervals, Lookup, Slurm};
+use crate::slurm::{Lookup, Slurm};
 use crate::store::Store;
 
 /// A call slower than this counts against its command, like a failure.
@@ -43,6 +43,19 @@ fn next_span(span_s: i64, worked: bool, took: Duration) -> i64 {
         span_s
     };
     span_s.clamp(*BACKFILL_SPAN_S.start(), *BACKFILL_SPAN_S.end())
+}
+
+/// Names the GPU model of each GPU node whose GRES names none, from the first of its partitions that
+/// `models` lists.
+fn name_gpus(nodes: &mut [Node], models: &BTreeMap<String, String>) {
+    for node in nodes {
+        if node.gpus > 0 && node.gpu_model.is_none() {
+            node.gpu_model = node
+                .partitions
+                .iter()
+                .find_map(|partition| models.get(&partition.0).cloned());
+        }
+    }
 }
 
 /// How one command has fared since the sampler started.
@@ -189,21 +202,18 @@ pub struct Sampler {
     hub: Hub,
     store: Option<Store>,
     names: Names,
+    /// GPU models by partition, for nodes whose GRES names no type.
+    gpu_models: BTreeMap<String, String>,
     /// How much accounting the next backfill reads.
     backfill_span_s: i64,
 }
 
 impl Sampler {
-    /// A sampler that runs each command at its interval, publishes to `hub`, keeps history in `store` if
-    /// there is one, and names users as `names` says.
+    /// A sampler that runs each command at the config's interval, publishes to `hub` and keeps history in
+    /// `store` if there is one. It names users and GPU models as the config says.
     /// The jobs interval stays at most `MinJobAge / 2` under backoff, so no ended job leaves squeue unseen.
-    pub fn new(
-        slurm: Slurm,
-        intervals: Intervals,
-        store: Option<Store>,
-        hub: Hub,
-        names: Names,
-    ) -> Self {
+    pub fn new(slurm: Slurm, config: &Config, store: Option<Store>, hub: Hub) -> Self {
+        let intervals = config.sample;
         let jobs_most_s = (slurm.site().min_job_age_s / 2).max(intervals.jobs_s);
         Self {
             slurm,
@@ -222,7 +232,8 @@ impl Sampler {
             in_outage: false,
             hub,
             store,
-            names,
+            names: config.names,
+            gpu_models: config.gpu_models.clone(),
             backfill_span_s: 21_600,
         }
     }
@@ -298,7 +309,9 @@ impl Sampler {
     /// so a job counts as gone only after a squeue that worked.
     async fn tick(&mut self, now: UnixTime) -> Result<Vec<Event>> {
         let nodes = if self.nodes.is_due(now) {
-            Some(self.nodes.time(now, self.slurm.nodes()).await?)
+            let mut nodes = self.nodes.time(now, self.slurm.nodes()).await?;
+            name_gpus(&mut nodes, &self.gpu_models);
+            Some(nodes)
         } else {
             None
         };
@@ -477,7 +490,7 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use super::*;
-    use crate::fixture::{busy_hub, busy_quarter_hour, busy_quarter_hour_with};
+    use crate::fixture::{busy_hub, busy_quarter_hour, busy_quarter_hour_with, zlurm_config};
     use crate::model::{AttemptKey, Cluster, Delta, Owner};
     use crate::store::Settings;
 
@@ -586,13 +599,7 @@ mod tests {
         };
         let store = Store::open(&path, settings).unwrap();
         let hub = Hub::new(slurm.site().clone());
-        let mut sampler = Sampler::new(
-            slurm,
-            Intervals::default(),
-            Some(store),
-            hub.clone(),
-            Names::Login,
-        );
+        let mut sampler = Sampler::new(slurm, &zlurm_config(), Some(store), hub.clone());
         sampler.run(None).await;
 
         let mut cluster = Cluster::default();
@@ -714,6 +721,22 @@ mod tests {
         assert_eq!(next_span(21_600, true, secs(9)), 10_800);
         assert_eq!(next_span(21_600, false, secs(15)), 10_800);
         assert_eq!(next_span(900, false, secs(15)), 900);
+    }
+
+    #[tokio::test]
+    async fn gpu_models_come_from_the_config_when_gres_names_none() {
+        let hub = busy_hub().await;
+        let models: BTreeMap<String, Option<String>> = hub.read(|cluster| {
+            cluster
+                .nodes
+                .iter()
+                .filter(|node| node.gpus > 0)
+                .map(|node| (node.name.0.clone(), node.gpu_model.clone()))
+                .collect()
+        });
+        assert_eq!(models["z018"].as_deref(), Some("V100"));
+        assert_eq!(models["z028"].as_deref(), Some("H200"));
+        assert_eq!(models["js029"], None, "its partition is not in the config");
     }
 
     #[test]

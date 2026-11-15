@@ -153,7 +153,7 @@ async fn serve(config: &Config) -> Result<()> {
     let dir = xdg::config_home()?.join("rtviz");
     let (library, _) = watch::channel(Library::load(&dir));
     let router = server::router(hub.clone(), History::open(&path), library.subscribe());
-    let mut sampler = Sampler::new(slurm, config.sample, Some(store), hub, config.names);
+    let mut sampler = Sampler::new(slurm, config, Some(store), hub);
     eprintln!(
         "serving on http://{} with history in {}",
         config.server.listen,
@@ -202,7 +202,7 @@ async fn stream(
         ..Cluster::default()
     };
     let hub = Hub::new(slurm.site().clone());
-    let mut sampler = Sampler::new(slurm, config.sample, store, hub.clone(), config.names);
+    let mut sampler = Sampler::new(slurm, config, store, hub.clone());
     let mut deltas = hub.subscribe();
     let sampling = async move { sampler.run(until).await };
     let printing = async {

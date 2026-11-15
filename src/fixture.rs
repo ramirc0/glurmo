@@ -2,11 +2,16 @@
 
 use std::io::Write;
 
-use crate::config::Names;
+use crate::config::{Config, from_ron};
 use crate::hub::Hub;
 use crate::sampler::Sampler;
+use crate::slurm::Slurm;
 use crate::slurm::source::{Exchange, Replay, Source};
-use crate::slurm::{Intervals, Slurm};
+
+/// The defaults, with zlurm's GPU models.
+pub fn zlurm_config() -> Config {
+    from_ron(r#"(gpu_models: {"gpu": "V100", "gpuh200": "H200"})"#).unwrap()
+}
 
 /// Connects to a replay of a pseudonymized busy quarter hour on zlurm.
 pub async fn busy_quarter_hour() -> Slurm {
@@ -34,7 +39,7 @@ pub async fn busy_quarter_hour_with(mut edit: impl FnMut(&mut Exchange)) -> Slur
 pub async fn busy_hub() -> Hub {
     let slurm = busy_quarter_hour().await;
     let hub = Hub::new(slurm.site().clone());
-    let mut sampler = Sampler::new(slurm, Intervals::default(), None, hub.clone(), Names::Login);
+    let mut sampler = Sampler::new(slurm, &zlurm_config(), None, hub.clone());
     sampler.run(None).await;
     hub
 }

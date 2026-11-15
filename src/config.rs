@@ -1,5 +1,6 @@
 //! `config.ron`: how often to sample, where history lives, where the server listens, and how to name people.
 
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,10 @@ pub struct Config {
     pub server: Server,
     /// How to show people.
     pub names: Names,
+    /// The terminal view.
+    pub tui: Tui,
+    /// GPU models by partition, for nodes whose GRES names no type.
+    pub gpu_models: BTreeMap<String, String>,
 }
 
 /// Where history lives and how long it stays.
@@ -70,6 +75,28 @@ impl Default for Server {
     fn default() -> Self {
         Self {
             listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 8765)),
+        }
+    }
+}
+
+/// The terminal view.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tui {
+    /// The server to follow, such as `http://js029:8765`. `None` samples the cluster in-process.
+    pub server: Option<String>,
+    /// The layout to start with.
+    pub layout: String,
+    /// The theme to start with.
+    pub theme: String,
+}
+
+impl Default for Tui {
+    fn default() -> Self {
+        Self {
+            server: None,
+            layout: "tui".to_owned(),
+            theme: "rose-pine".to_owned(),
         }
     }
 }
@@ -170,6 +197,8 @@ mod tests {
                 store: (path: "/scratch/otter/rtviz/zlurm.sqlite", keep: Days(365), backfill: Days(7)),
                 server: (listen: "0.0.0.0:8765"),
                 names: FullName,
+                tui: (server: "http://js029:8765", layout: "wide", theme: "rose-pine-dawn"),
+                gpu_models: {"gpu": "V100", "gpuh200": "H200"},
             )"#,
         )
         .unwrap();
@@ -193,6 +222,9 @@ mod tests {
         );
         assert_eq!(config.server.listen.to_string(), "0.0.0.0:8765");
         assert_eq!(config.names, Names::FullName);
+        assert_eq!(config.tui.server.as_deref(), Some("http://js029:8765"));
+        assert_eq!(config.tui.layout, "wide");
+        assert_eq!(config.gpu_models["gpuh200"], "H200");
     }
 
     #[test]
@@ -201,6 +233,7 @@ mod tests {
         assert_eq!(config.sample.jobs_s, 20);
         assert_eq!(config.sample.nodes_s, 30);
         assert_eq!(config.store, Storage::default());
+        assert_eq!(config.tui, Tui::default());
     }
 
     #[test]
