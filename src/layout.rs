@@ -97,3 +97,13 @@ pub enum Span {
     /// Days.
     Days(u32),
 }
+
+impl Span {
+    /// The span in seconds.
+    pub fn seconds(self) -> i64 {
+        match self {
+            Self::Hours(hours) => i64::from(hours) * 3_600,
+            Self::Days(days) => i64::from(days) * 86_400,
+        }
+    }
+}

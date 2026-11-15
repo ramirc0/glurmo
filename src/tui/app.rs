@@ -9,7 +9,7 @@ use super::feed::{Link, Update, Usage};
 use super::view;
 use crate::config::Tui;
 use crate::hub::Message;
-use crate::layout::{Layout, Span};
+use crate::layout::{Layout, Pane};
 use crate::library::Library;
 use crate::model::{Attempt, Cluster, Delta, Event, Login, PartitionName, UnixTime};
 use crate::slurm::Site;
@@ -141,10 +141,7 @@ impl App {
         view::panels(&self.layout().root)
             .into_iter()
             .filter_map(|pane| match pane {
-                crate::layout::Pane::History { span } => Some(match *span {
-                    Span::Hours(hours) => i64::from(hours) * 3_600,
-                    Span::Days(days) => i64::from(days) * 86_400,
-                }),
+                Pane::History { span } => Some(span.seconds()),
                 _ => None,
             })
             .max()

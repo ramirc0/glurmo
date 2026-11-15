@@ -32,9 +32,10 @@ struct Column<'a> {
 
 /// Draws the stacked cores, the queue line and the time axis over `span`.
 pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
-    let (span_s, label) = match span {
-        Span::Hours(hours) => (i64::from(hours) * 3_600, format!("{hours} h")),
-        Span::Days(days) => (i64::from(days) * 86_400, format!("{days} d")),
+    let span_s = span.seconds();
+    let label = match span {
+        Span::Hours(hours) => format!("{hours} h"),
+        Span::Days(days) => format!("{days} d"),
     };
     let block = scene.block(
         "cores in use",
