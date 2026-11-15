@@ -184,8 +184,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use crate::fixture::{busy_store, store_path};
-    use crate::store::History;
+    use crate::fixture::busy_store;
     use glurmo_model::{AttemptKey, Occupancies};
 
     /// Cores held on each node, by count.
@@ -198,7 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_node_that_stopped_answering_shows_no_reply_in_the_past() {
-        let (_dir, hub) = busy_store().await;
+        let (_home, hub, _) = busy_store().await;
         let frame = hub.read(Frame::of);
         let name = frame.nodes[0].name.clone();
         let health = [NodeHealth {
@@ -215,8 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_past_plus_its_changes_is_the_later_past() {
-        let (dir, hub) = busy_store().await;
-        let history = History::open(&store_path(&dir));
+        let (_home, hub, history) = busy_store().await;
         let frame = hub.read(Frame::of);
         let ticks: Vec<UnixTime> = hub.deltas().iter().map(|delta| delta.at).collect();
         let (first, last) = (ticks[0], *ticks.last().unwrap());
@@ -266,8 +264,7 @@ mod tests {
     /// nodes and on completing nodes.
     #[tokio::test]
     async fn the_past_holds_the_cores_and_memory_the_stream_showed() {
-        let (dir, hub) = busy_store().await;
-        let history = History::open(&store_path(&dir));
+        let (_home, hub, history) = busy_store().await;
         let frame = hub.read(Frame::of);
         let times: HashMap<AttemptKey, (Option<UnixTime>, Option<UnixTime>)> = history
             .touched(UnixTime(0), UnixTime(i64::MAX))

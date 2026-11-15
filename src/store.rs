@@ -1,6 +1,7 @@
 //! History on disk: every attempt, five-minute usage bins, node health changes and user colors.
 
-mod connection;
+pub mod connection;
+pub mod timescale;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -8,24 +9,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rusqlite::OpenFlags;
 use serde::Deserialize;
 
 use crate::rollup::{BIN_S, Span, bin_of, rollup};
-use connection::{Connection, Value, params};
+use connection::{Connection, Location, Value, params};
 use glurmo_model::usage::Step;
 use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeFlag,
     NodeName, NodeState, PartitionName, Placement, UnixTime, User,
 };
+use timescale::Timescale;
 
 const DAY_S: i64 = 86_400;
 
 /// How long after a bin closes the live path rolls it up, so ends reported a tick late still land in it.
 const GRACE_S: i64 = 30;
 
-/// Schema changes, applied in order. `PRAGMA user_version` counts how many have run.
-const MIGRATIONS: [&str; 3] = [
+/// SQLite's schema changes, applied in order. `PRAGMA user_version` counts how many have run.
+/// A change to the schema goes into both this list and [`TIMESCALE_MIGRATIONS`].
+const SQLITE_MIGRATIONS: [&str; 3] = [
     "
     CREATE TABLE attempts (
         job INTEGER NOT NULL,
@@ -85,6 +87,76 @@ const MIGRATIONS: [&str; 3] = [
 ",
 ];
 
+/// TimescaleDB's schema changes, applied in order. The `schema` key in `meta` counts how many have run.
+/// The tables are SQLite's, with `attempts` and `usage` as hypertables in 30-day chunks.
+const TIMESCALE_MIGRATIONS: [&str; 1] = [r#"
+    CREATE EXTENSION IF NOT EXISTS timescaledb;
+    CREATE TABLE attempts (
+        job BIGINT NOT NULL,
+        submit BIGINT NOT NULL,
+        array_job BIGINT,
+        task_range TEXT,
+        tasks BIGINT NOT NULL,
+        login TEXT NOT NULL,
+        partition TEXT NOT NULL,
+        cpus BIGINT NOT NULL,
+        cores BIGINT,
+        gpus BIGINT NOT NULL,
+        mem_mb BIGINT,
+        start BIGINT,
+        "end" BIGINT,
+        state TEXT,
+        nodes TEXT NOT NULL,
+        placement TEXT,
+        exact BIGINT,
+        origin TEXT NOT NULL,
+        PRIMARY KEY (job, submit)
+    );
+    SELECT create_hypertable('attempts', by_range('submit', 2592000),
+                             create_default_indexes => false);
+    CREATE INDEX attempts_by_end ON attempts ("end");
+    CREATE INDEX open_attempts ON attempts (submit) WHERE "end" IS NULL;
+    CREATE INDEX attempts_by_start ON attempts (start);
+    CREATE INDEX attempts_by_submit ON attempts (submit);
+    CREATE TABLE usage (
+        bin BIGINT NOT NULL,
+        login TEXT NOT NULL,
+        partition TEXT NOT NULL,
+        core_s BIGINT NOT NULL,
+        gpu_s BIGINT NOT NULL,
+        wait_s BIGINT NOT NULL,
+        started BIGINT NOT NULL,
+        ended BIGINT NOT NULL,
+        failed BIGINT NOT NULL,
+        PRIMARY KEY (bin, login, partition)
+    );
+    SELECT create_hypertable('usage', by_range('bin', 2592000), create_default_indexes => false);
+    CREATE TABLE node_states (
+        node TEXT NOT NULL,
+        at BIGINT NOT NULL,
+        state TEXT NOT NULL,
+        reason TEXT,
+        PRIMARY KEY (node, at)
+    );
+    CREATE TABLE users (login TEXT PRIMARY KEY, full_name TEXT, color_slot BIGINT NOT NULL);
+    CREATE FUNCTION unix_now() RETURNS BIGINT LANGUAGE SQL STABLE
+        AS 'SELECT extract(epoch FROM now())::bigint';
+    SELECT set_integer_now_func('attempts', 'unix_now');
+    SELECT set_integer_now_func('usage', 'unix_now');
+"#];
+
+/// Compresses chunks once they are 7 days old. It runs with the first TimescaleDB migration, on a
+/// server whose license allows compression. The columns to segment by are named, because
+/// TimescaleDB's own choice for `attempts` would be `job`, one segment per attempt.
+const TIMESCALE_COMPRESSION: &str = "
+    ALTER TABLE attempts SET (timescaledb.compress, timescaledb.compress_segmentby = '',
+                              timescaledb.compress_orderby = 'submit, job');
+    SELECT add_compression_policy('attempts', compress_after => 604800);
+    ALTER TABLE usage SET (timescaledb.compress, timescaledb.compress_segmentby = 'login, partition',
+                           timescaledb.compress_orderby = 'bin');
+    SELECT add_compression_policy('usage', compress_after => 604800);
+";
+
 /// How much history to fetch and keep.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -92,7 +164,8 @@ pub struct Settings {
     pub backfill_days: u32,
     /// Days of history to keep, or `None` to keep it forever.
     pub keep_days: Option<u32>,
-    /// Where the nightly copy goes. It belongs on a disk that is backed up.
+    /// Where the nightly copy of a SQLite store goes. It belongs on a disk that is backed up.
+    /// A store on TimescaleDB makes no copy, and leaves backups to the server.
     pub backup: PathBuf,
 }
 
@@ -128,10 +201,10 @@ enum Coverage {
     },
 }
 
-/// The SQLite store. Only one process should write to it.
+/// The store, in a SQLite file or on a TimescaleDB server. Only one process should write to it.
 pub struct Store {
     db: Connection,
-    path: PathBuf,
+    location: Location,
     settings: Settings,
     /// Each node's CPUs per core, from the last node listing.
     cpus_per_core: HashMap<NodeName, u32>,
@@ -167,8 +240,30 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         // The store runs more statements than the default 16, and each one is prepared once and kept.
         db.set_prepared_statement_cache_capacity(64);
-        migrate(&mut db)?;
-        let db = Connection::Sqlite(db);
+        migrate_sqlite(&mut db)?;
+        Self::resume(
+            Connection::Sqlite(db),
+            Location::Sqlite(path.to_owned()),
+            settings,
+        )
+    }
+
+    /// Connects to the store on the TimescaleDB server that `url` names, creating its tables in an
+    /// empty database, brings its schema up to date, and rolls up again the bins of attempts a
+    /// migration repaired.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `url` does not parse, the server cannot be reached, or a migration or rollup fails.
+    pub fn connect(url: &str, settings: Settings) -> Result<Self> {
+        let config = timescale::parse(url)?;
+        let mut db = Connection::Timescale(Timescale::connect(&config)?);
+        migrate_timescale(&mut db)?;
+        Self::resume(db, Location::Timescale(Box::new(config)), settings)
+    }
+
+    /// Picks up the history in `db` where the last run left it.
+    fn resume(db: Connection, location: Location, settings: Settings) -> Result<Self> {
         let health = db
             .query_map(
                 "SELECT node, state, reason FROM node_states AS latest
@@ -180,7 +275,7 @@ impl Store {
             .collect();
         let mut store = Self {
             db,
-            path: path.to_owned(),
+            location,
             settings,
             cpus_per_core: HashMap::new(),
             health,
@@ -504,7 +599,7 @@ impl Store {
         self.set_meta("rolled_to", to)
     }
 
-    /// Prunes history past the retention and starts a backup, once a day.
+    /// Prunes history past the retention and starts a backup of a SQLite store, once a day.
     ///
     /// # Errors
     ///
@@ -520,12 +615,14 @@ impl Store {
         if let Some(days) = self.settings.keep_days {
             self.prune(UnixTime(now.0 - i64::from(days) * DAY_S))?;
         }
-        let (source, dest) = (self.path.clone(), self.settings.backup.clone());
-        std::thread::spawn(move || {
-            if let Err(error) = backup(&source, &dest) {
-                eprintln!("backup to {} failed: {error:#}", dest.display());
-            }
-        });
+        if let Location::Sqlite(source) = &self.location {
+            let (source, dest) = (source.clone(), self.settings.backup.clone());
+            std::thread::spawn(move || {
+                if let Err(error) = backup(&source, &dest) {
+                    eprintln!("backup to {} failed: {error:#}", dest.display());
+                }
+            });
+        }
         Ok(())
     }
 
@@ -590,6 +687,18 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Reads this store's history on connections of its own.
+    pub fn history(&self) -> History {
+        History {
+            location: self.location.clone(),
+        }
+    }
+
+    /// Where the store's data lives, for a log line.
+    pub fn location(&self) -> &Location {
+        &self.location
     }
 
     fn meta(&self, key: &str) -> Result<Option<UnixTime>> {
@@ -661,19 +770,13 @@ pub struct NodeHealth {
     pub reason: Option<String>,
 }
 
-/// Reads history on a connection of its own, so a server can query while the sampler writes.
+/// Reads a store's history, so a server can query while the sampler writes. Each query runs on a
+/// connection of its own. [`Store::history`] makes one.
 pub struct History {
-    path: PathBuf,
+    location: Location,
 }
 
 impl History {
-    /// History in the store at `path`. Nothing is opened until a query runs.
-    pub fn open(path: &Path) -> Self {
-        Self {
-            path: path.to_owned(),
-        }
-    }
-
     /// Core and wait seconds summed per step, by login or partition, in time then key order. Steps with
     /// neither are left out. Bins the sampler has rolled
     /// up come from the usage table. Later bins are rolled up from the attempts, counting up to the
@@ -683,7 +786,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn usage(&self, query: &UsageQuery, now: UnixTime) -> Result<Vec<Step>> {
-        let db = self.connect()?;
+        let db = self.location.read()?;
         let Some(rolled_to) = meta(&db, "rolled_to")? else {
             return Ok(Vec::new());
         };
@@ -749,7 +852,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn starts(&self) -> Result<Option<UnixTime>> {
-        meta(&self.connect()?, "history_from")
+        meta(&self.location.read()?, "history_from")
     }
 
     /// Attempts submitted by `at` that had not ended by then: those running at `at` and those waiting.
@@ -758,7 +861,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn alive(&self, at: UnixTime) -> Result<Vec<Stored>> {
-        let db = self.connect()?;
+        let db = self.location.read()?;
         let by_end = ends_are_fewer(&db, at, at)?;
         stored(&db, &overlapping(STORED, "<= ?1", by_end), params![at.0])
     }
@@ -770,7 +873,7 @@ impl History {
     /// Fails when the store cannot be opened or read.
     pub fn touched(&self, from: UnixTime, to: UnixTime) -> Result<Vec<Stored>> {
         stored(
-            &self.connect()?,
+            &self.location.read()?,
             &format!(
                 r#"SELECT {STORED} FROM attempts WHERE submit > ?1 AND submit <= ?2
                    UNION
@@ -788,7 +891,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn node_health(&self, to: UnixTime) -> Result<Vec<NodeHealth>> {
-        self.connect()?.query_map(
+        self.location.read()?.query_map(
             "SELECT node, at, state, reason FROM node_states WHERE at <= ?1 ORDER BY at, node",
             params![to.0],
             |row| {
@@ -804,12 +907,6 @@ impl History {
             },
         )
     }
-
-    fn connect(&self) -> Result<Connection> {
-        rusqlite::Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map(Connection::Sqlite)
-            .with_context(|| format!("cannot open {}", self.path.display()))
-    }
 }
 
 fn meta(db: &Connection, key: &str) -> Result<Option<UnixTime>> {
@@ -821,22 +918,74 @@ fn meta(db: &Connection, key: &str) -> Result<Option<UnixTime>> {
     Ok(values.first().copied())
 }
 
-fn migrate(db: &mut rusqlite::Connection) -> Result<()> {
+fn migrate_sqlite(db: &mut rusqlite::Connection) -> Result<()> {
     let done: usize = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if done > MIGRATIONS.len() {
+    if done > SQLITE_MIGRATIONS.len() {
         bail!(
             "the store has schema version {done}, newer than this glurmo's {}",
-            MIGRATIONS.len()
+            SQLITE_MIGRATIONS.len()
         );
     }
     let tx = db.transaction()?;
-    for (version, migration) in MIGRATIONS.iter().enumerate().skip(done) {
+    for (version, migration) in SQLITE_MIGRATIONS.iter().enumerate().skip(done) {
         tx.execute_batch(migration)
             .with_context(|| format!("migration {}", version + 1))?;
         tx.pragma_update(None, "user_version", version + 1)?;
     }
     tx.commit()?;
     Ok(())
+}
+
+fn migrate_timescale(db: &mut Connection) -> Result<()> {
+    let tx = db.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BIGINT NOT NULL)",
+    )?;
+    let done = tx
+        .query_map(
+            "SELECT value FROM meta WHERE key = 'schema'",
+            params![],
+            |row| row.get::<usize>(0),
+        )?
+        .first()
+        .copied()
+        .unwrap_or(0);
+    if done > TIMESCALE_MIGRATIONS.len() {
+        bail!(
+            "the store has schema version {done}, newer than this glurmo's {}",
+            TIMESCALE_MIGRATIONS.len()
+        );
+    }
+    for (version, migration) in TIMESCALE_MIGRATIONS.iter().enumerate().skip(done) {
+        tx.execute_batch(migration)
+            .with_context(|| format!("migration {}", version + 1))?;
+        if version == 0 {
+            compress_old_chunks(&tx)?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO meta VALUES ('schema', ?1)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        params![i64::try_from(TIMESCALE_MIGRATIONS.len())?],
+    )?;
+    tx.commit()
+}
+
+/// Turns compression on where the server's license covers it. The Apache-licensed build has none.
+fn compress_old_chunks(db: &Connection) -> Result<()> {
+    let license: String = db.query_row(
+        "SELECT current_setting('timescaledb.license')",
+        params![],
+        |row| row.get(0),
+    )?;
+    if license == "timescale" {
+        db.execute_batch(TIMESCALE_COMPRESSION)
+    } else {
+        eprintln!(
+            "warning: this TimescaleDB build has the {license} license, so history stays uncompressed"
+        );
+        Ok(())
+    }
 }
 
 /// The start and end to store. A pending attempt's start is only an estimate, and a running one's end
@@ -1170,21 +1319,10 @@ fn mount_kind<'a>(path: &Path, mounts: &'a str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::{StoreHome, busy_store_in};
     use glurmo_model::NodeCells;
 
     const T0: i64 = 1_794_614_400;
-
-    fn settings(dir: &Path) -> Settings {
-        Settings {
-            backfill_days: 2,
-            keep_days: None,
-            backup: dir.join("backup/glurmo.sqlite"),
-        }
-    }
-
-    fn open(dir: &tempfile::TempDir) -> Store {
-        Store::open(&dir.path().join("glurmo.sqlite"), settings(dir.path())).unwrap()
-    }
 
     fn key(id: u32) -> AttemptKey {
         AttemptKey {
@@ -1279,8 +1417,8 @@ mod tests {
 
     #[test]
     fn events_build_up_each_attempt() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let mut range = attempt(1, JobState::Pending, Some(T0 + 900), None);
         range.nodes.clear();
         range.array = Some(ArrayTasks {
@@ -1361,8 +1499,8 @@ mod tests {
 
     #[test]
     fn new_users_come_out_once_and_everyone_comes_out_after_a_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let heron = Attempt {
             login: Login("heron".into()),
             ..running(2)
@@ -1396,15 +1534,15 @@ mod tests {
             .unwrap();
         drop(store);
         assert_eq!(
-            open(&dir).new_users().unwrap(),
+            home.open(2).new_users().unwrap(),
             [user("otter", None, 0), user("heron", Some("Grey Heron"), 1)]
         );
     }
 
     #[test]
     fn node_health_is_written_on_change_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         for (at, state) in [
             (0, NodeState::Idle),
             (1, NodeState::Mixed),
@@ -1415,7 +1553,7 @@ mod tests {
                 .unwrap();
         }
         drop(store);
-        let mut store = open(&dir);
+        let mut store = home.open(2);
         store
             .record(
                 UnixTime(3),
@@ -1445,7 +1583,7 @@ mod tests {
                 (4, "draining*".into())
             ]
         );
-        let history = History::open(&dir.path().join("glurmo.sqlite"));
+        let history = store.history();
         let silent: Vec<_> = history
             .node_health(UnixTime(4))
             .unwrap()
@@ -1465,16 +1603,20 @@ mod tests {
     /// Makes every write to `store` fail, or work again.
     fn refuse_writes(store: &Store, refuse: bool) {
         let switch = if refuse { "ON" } else { "OFF" };
+        let setting = match store.db {
+            Connection::Sqlite(_) => "PRAGMA query_only",
+            Connection::Timescale(_) => "SET default_transaction_read_only",
+        };
         store
             .db
-            .execute_batch(&format!("PRAGMA query_only = {switch}"))
+            .execute_batch(&format!("{setting} = {switch}"))
             .unwrap();
     }
 
     #[test]
     fn a_failed_write_opens_a_gap() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         assert!(!store.sampled(UnixTime(T0), 300).unwrap());
         refuse_writes(&store, true);
         let started = [Event::Started {
@@ -1496,8 +1638,8 @@ mod tests {
 
     #[test]
     fn a_node_health_change_rolled_back_with_its_tick_is_written_by_the_next() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let listing = |state| Event::Nodes(vec![node(state)]);
         store
             .record(UnixTime(T0), &[listing(NodeState::Idle)])
@@ -1529,8 +1671,8 @@ mod tests {
 
     #[test]
     fn cores_are_counted_by_the_first_node_listing_that_is_written() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let started = [Event::Started {
             attempt: running(1),
         }];
@@ -1546,8 +1688,8 @@ mod tests {
 
     #[test]
     fn a_new_store_backfills_a_stretch_at_a_time_to_the_horizon() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let now = UnixTime(T0);
         assert_eq!(store.next_backfill(now, 300, DAY_S).unwrap(), None);
         store.sampled(now, 300).unwrap();
@@ -1561,8 +1703,8 @@ mod tests {
 
     #[test]
     fn a_restart_closes_vanished_attempts_until_accounting_gives_their_ends() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         store
             .record(
                 UnixTime(T0),
@@ -1589,7 +1731,7 @@ mod tests {
         drop(store);
 
         let restart = UnixTime(T0 + 900);
-        let mut store = open(&dir);
+        let mut store = home.open(2);
         store
             .record(
                 restart,
@@ -1656,8 +1798,8 @@ mod tests {
 
     #[test]
     fn a_controller_outage_longer_than_min_job_age_reopens_the_gap() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         store
             .record(
                 UnixTime(T0),
@@ -1701,8 +1843,8 @@ mod tests {
 
     #[test]
     fn a_gap_window_applied_after_min_job_age_still_closes_the_gap() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         store.sampled(UnixTime(T0), 300).unwrap();
         while let Some(window) = store.next_backfill(UnixTime(T0), 300, DAY_S).unwrap() {
             store
@@ -1728,8 +1870,8 @@ mod tests {
 
     #[test]
     fn a_window_toward_the_horizon_applied_after_a_gap_opens_moves_only_the_horizon() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         store.sampled(UnixTime(T0), 300).unwrap();
         store.sampled(UnixTime(T0 + 290), 300).unwrap();
         let past = store
@@ -1764,8 +1906,8 @@ mod tests {
 
     #[test]
     fn bins_roll_up_after_the_grace_and_hold_every_core_second() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let ended = attempt(
             1,
             JobState::Ended(EndState::Completed),
@@ -1799,8 +1941,8 @@ mod tests {
 
     #[test]
     fn usage_sums_closed_bins_by_step_and_rolls_up_open_ones_on_the_spot() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let failed = Attempt {
             login: Login("heron".into()),
             partitions: vec![PartitionName("long".into())],
@@ -1826,7 +1968,7 @@ mod tests {
         store.sampled(UnixTime(T0), 300).unwrap();
         store.roll(UnixTime(T0 + 900 + GRACE_S)).unwrap();
 
-        let history = History::open(&dir.path().join("glurmo.sqlite"));
+        let history = store.history();
         let usage = |by| {
             let query = UsageQuery {
                 from: UnixTime(T0),
@@ -1862,8 +2004,8 @@ mod tests {
 
     #[test]
     fn usage_counts_open_bins_up_to_the_end_asked_for() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         store
             .record(
                 UnixTime(T0),
@@ -1882,7 +2024,8 @@ mod tests {
             step_s: 300,
             by: By::Login,
         };
-        let core_s: Vec<(i64, u64)> = History::open(&dir.path().join("glurmo.sqlite"))
+        let core_s: Vec<(i64, u64)> = store
+            .history()
             .usage(&query, UnixTime(T0 + 1_000))
             .unwrap()
             .into_iter()
@@ -1893,8 +2036,8 @@ mod tests {
 
     #[test]
     fn overlapping_attempts_come_through_the_index_named() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::sqlite();
+        let mut store = home.open(2);
         let plan = |by_end| -> String {
             let sql = format!("EXPLAIN QUERY PLAN {}", overlapping("job", "< ?2", by_end));
             let details = store
@@ -1955,8 +2098,8 @@ mod tests {
 
     #[test]
     fn the_index_follows_where_attempts_are_dense() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let ended = |id: u32, submit: i64| Attempt {
             key: AttemptKey {
                 job: JobId(id),
@@ -1991,8 +2134,8 @@ mod tests {
 
     #[test]
     fn prune_keeps_open_attempts_and_recent_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let old = attempt(
             1,
             JobState::Ended(EndState::Completed),
@@ -2020,8 +2163,8 @@ mod tests {
 
     #[test]
     fn opening_an_old_store_clears_starts_without_nodes_and_rolls_their_bins_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::sqlite();
+        let mut store = home.open(2);
         store.sampled(UnixTime(T0), 300).unwrap();
         let cancelled = Attempt {
             key: AttemptKey {
@@ -2060,7 +2203,7 @@ mod tests {
         store.db.execute_batch("PRAGMA user_version = 2").unwrap();
         drop(store);
 
-        let store = open(&dir);
+        let store = home.open(2);
         assert_eq!(row(&store, 5).0, None);
         assert_eq!(wait_s(&store), 300);
         assert_eq!(store.meta("stale_from").unwrap(), None);
@@ -2068,20 +2211,19 @@ mod tests {
 
     #[test]
     fn a_store_from_a_newer_glurmo_does_not_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("glurmo.sqlite");
-        rusqlite::Connection::open(&path)
+        let home = StoreHome::sqlite();
+        rusqlite::Connection::open(home.path())
             .unwrap()
             .pragma_update(None, "user_version", 99)
             .unwrap();
-        let error = Store::open(&path, settings(dir.path())).err().unwrap();
+        let error = Store::open(&home.path(), home.settings(2)).err().unwrap();
         assert!(format!("{error:#}").contains("99"), "{error:#}");
     }
 
     #[test]
     fn prune_keeps_the_health_each_node_had_at_the_cutoff() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let named = |name: &str, state| Node {
             name: NodeName(name.into()),
             ..node(state)
@@ -2111,8 +2253,8 @@ mod tests {
 
     #[test]
     fn backup_is_a_readable_copy() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open(&dir);
+        let home = StoreHome::sqlite();
+        let mut store = home.open(2);
         store
             .record(
                 UnixTime(T0),
@@ -2121,14 +2263,223 @@ mod tests {
                 }],
             )
             .unwrap();
-        let dest = dir.path().join("backup/copy.sqlite");
-        backup(&store.path, &dest).unwrap();
-        backup(&store.path, &dest).unwrap();
+        let dest = home.dir().join("backup/copy.sqlite");
+        backup(&home.path(), &dest).unwrap();
+        backup(&home.path(), &dest).unwrap();
         let copied: u32 = rusqlite::Connection::open(&dest)
             .unwrap()
             .query_row("SELECT count(*) FROM attempts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(copied, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    async fn timescale_reads_back_what_sqlite_does_after_the_busy_quarter_hour() {
+        let (_sqlite_home, hub, sqlite) = busy_store_in(StoreHome::sqlite()).await;
+        let (_timescale_home, _, timescale) = busy_store_in(StoreHome::timescale()).await;
+        let ticks: Vec<UnixTime> = hub.deltas().iter().map(|delta| delta.at).collect();
+        let (first, last) = (ticks[0], *ticks.last().unwrap());
+        let by_key = |mut attempts: Vec<Stored>| {
+            attempts.sort_by_key(|stored| (stored.attempt.key.job.0, stored.attempt.key.submit.0));
+            attempts
+        };
+        let by_time = |mut changes: Vec<NodeHealth>| {
+            changes.sort_by_key(|health| (health.at, health.node.0.clone()));
+            changes
+        };
+
+        assert_eq!(timescale.starts().unwrap(), sqlite.starts().unwrap());
+        for by in [By::Login, By::Partition] {
+            for step_s in [300, 900] {
+                let query = UsageQuery {
+                    from: UnixTime(first.0 - 600),
+                    to: UnixTime(last.0 + 600),
+                    step_s,
+                    by,
+                };
+                let usage = sqlite.usage(&query, last).unwrap();
+                assert_ne!(usage, []);
+                assert_eq!(timescale.usage(&query, last).unwrap(), usage);
+            }
+        }
+        for at in [first, UnixTime(first.0.midpoint(last.0)), last] {
+            let alive = by_key(sqlite.alive(at).unwrap());
+            assert!(alive.len() > 100, "{} alive", alive.len());
+            assert_eq!(by_key(timescale.alive(at).unwrap()), alive);
+        }
+        let touched = by_key(sqlite.touched(first, last).unwrap());
+        assert!(touched.len() > 100, "{} touched", touched.len());
+        assert_eq!(by_key(timescale.touched(first, last).unwrap()), touched);
+        let health = by_time(sqlite.node_health(last).unwrap());
+        assert_ne!(health, []);
+        assert_eq!(by_time(timescale.node_health(last).unwrap()), health);
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn timescale_keeps_30_day_chunks_and_its_policies_compress_the_old_ones() {
+        let home = StoreHome::timescale();
+        let mut store = home.open(2);
+        let chunks: Vec<(String, i64, String)> = store
+            .db
+            .query_map(
+                "SELECT hypertable_name::text, integer_interval, integer_now_func::text
+                 FROM timescaledb_information.dimensions
+                 WHERE hypertable_schema = current_schema() ORDER BY hypertable_name",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            chunks,
+            [
+                ("attempts".into(), 30 * DAY_S, "unix_now".into()),
+                ("usage".into(), 30 * DAY_S, "unix_now".into())
+            ]
+        );
+
+        let long_ago = T0 - 60 * DAY_S;
+        let old = Attempt {
+            key: AttemptKey {
+                job: JobId(1),
+                submit: UnixTime(long_ago),
+            },
+            ..attempt(
+                1,
+                JobState::Ended(EndState::Completed),
+                Some(long_ago + 60),
+                Some(long_ago + 600),
+            )
+        };
+        let window = Window {
+            from: UnixTime(long_ago),
+            to: UnixTime(long_ago + 900),
+            gap: false,
+        };
+        store
+            .record(UnixTime(T0), &[Event::Nodes(vec![node(NodeState::Mixed)])])
+            .unwrap();
+        store.sampled(UnixTime(T0), 300).unwrap();
+        store
+            .backfill(window, &[old], &HashSet::new(), UnixTime(T0))
+            .unwrap();
+        assert_eq!(core_s(&store), 4 * 540);
+
+        let policies: Vec<i64> = store
+            .db
+            .query_map(
+                "SELECT job_id::bigint FROM timescaledb_information.jobs
+                 WHERE hypertable_schema = current_schema() AND proc_name = 'policy_compression'",
+                params![],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(policies.len(), 2);
+        // The server also runs a new policy by itself, and whichever run loses the race to a chunk fails.
+        for policy in policies {
+            let _ = store.db.execute_batch(&format!("CALL run_job({policy})"));
+        }
+        let old_chunks: Vec<(String, bool)> = store
+            .db
+            .query_map(
+                "SELECT hypertable_name::text, is_compressed FROM timescaledb_information.chunks
+                 WHERE hypertable_schema = current_schema() AND range_end_integer < ?1
+                 ORDER BY hypertable_name",
+                params![T0 - 8 * DAY_S],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            old_chunks,
+            [("attempts".into(), true), ("usage".into(), true)]
+        );
+        assert_eq!(core_s(&store), 4 * 540);
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn timescale_writes_reach_compressed_chunks() {
+        let home = StoreHome::timescale();
+        let mut store = home.open(2);
+        let ended = attempt(
+            3,
+            JobState::Ended(EndState::Completed),
+            Some(T0 - 300),
+            Some(T0 - 100),
+        );
+        store
+            .record(
+                UnixTime(T0),
+                &[
+                    Event::Nodes(vec![node(NodeState::Mixed)]),
+                    Event::Started {
+                        attempt: running(1),
+                    },
+                    Event::Started {
+                        attempt: running(2),
+                    },
+                    Event::Started { attempt: ended },
+                ],
+            )
+            .unwrap();
+        store.sampled(UnixTime(T0), 300).unwrap();
+        store.roll(UnixTime(T0 + 300 + GRACE_S)).unwrap();
+        let compressed: usize = store
+            .db
+            .query_row(
+                "SELECT count(compress_chunk(chunk)) FROM (
+                     SELECT show_chunks('attempts') UNION ALL SELECT show_chunks('usage')
+                 ) AS chunks (chunk)",
+                params![],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(compressed, 2);
+        assert_eq!(core_s(&store), 4 * (300 + 300));
+
+        let end = [Event::Ended {
+            key: key(1),
+            at: UnixTime(T0 + 400),
+            state: Some(EndState::Completed),
+        }];
+        store.record(UnixTime(T0 + 400), &end).unwrap();
+        assert_eq!(row(&store, 1).1, Some(T0 + 400), "an update");
+        let timeout = attempt(
+            2,
+            JobState::Ended(EndState::Timeout),
+            Some(T0 - 300),
+            Some(T0 + 100),
+        );
+        let window = Window {
+            from: UnixTime(T0),
+            to: UnixTime(T0 + 600),
+            gap: false,
+        };
+        store
+            .backfill(window, &[timeout], &HashSet::new(), UnixTime(T0 + 600))
+            .unwrap();
+        assert_eq!(row(&store, 2).2.as_deref(), Some("timeout"), "an upsert");
+        assert_eq!(core_s(&store), 4 * (300 + 100), "a rollup");
+        store.prune(UnixTime(T0)).unwrap();
+        let left: Vec<u32> = store
+            .db
+            .query_map("SELECT job FROM attempts ORDER BY job", params![], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, [1, 2], "a delete");
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn a_timescale_store_from_a_newer_glurmo_does_not_open() {
+        let home = StoreHome::timescale();
+        home.open(2).set_meta("schema", UnixTime(99)).unwrap();
+        let error = Store::connect(&home.server().unwrap(), home.settings(2))
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("99"), "{error:#}");
     }
 
     #[test]

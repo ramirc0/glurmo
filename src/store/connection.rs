@@ -1,7 +1,12 @@
 //! One way to run the store's SQL, whichever database holds it.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
+use rusqlite::OpenFlags;
 use rusqlite::types::{ToSqlOutput, ValueRef};
+
+use super::timescale::{self, Timescale};
 
 /// A value bound to a statement or read from a row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +147,8 @@ impl<T: FromValue> FromValue for Option<T> {
 pub enum Row<'a> {
     /// A row from SQLite.
     Sqlite(&'a rusqlite::Row<'a>),
+    /// A row from TimescaleDB.
+    Timescale(&'a postgres::Row),
 }
 
 impl Row<'_> {
@@ -158,6 +165,7 @@ impl Row<'_> {
                 ValueRef::Text(text) => Value::Text(std::str::from_utf8(text)?.to_owned()),
                 other => bail!("column {index} holds a {}", other.data_type()),
             },
+            Self::Timescale(row) => timescale::value(row, index)?,
         };
         T::from_value(value).with_context(|| format!("column {index}"))
     }
@@ -168,6 +176,8 @@ impl Row<'_> {
 pub enum Connection {
     /// A SQLite file.
     Sqlite(rusqlite::Connection),
+    /// A TimescaleDB server.
+    Timescale(Timescale),
 }
 
 impl Connection {
@@ -181,6 +191,7 @@ impl Connection {
             Self::Sqlite(db) => Ok(db
                 .prepare_cached(sql)?
                 .execute(rusqlite::params_from_iter(params))?),
+            Self::Timescale(db) => db.execute(sql, params),
         }
     }
 
@@ -192,6 +203,7 @@ impl Connection {
     pub fn execute_batch(&self, sql: &str) -> Result<()> {
         match self {
             Self::Sqlite(db) => Ok(db.execute_batch(sql)?),
+            Self::Timescale(db) => db.execute_batch(sql),
         }
     }
 
@@ -216,6 +228,11 @@ impl Connection {
                 }
                 Ok(read_rows)
             }
+            Self::Timescale(db) => db
+                .query(sql, params)?
+                .iter()
+                .map(|row| read(&Row::Timescale(row)))
+                .collect(),
         }
     }
 
@@ -247,7 +264,10 @@ impl Connection {
     ///
     /// Fails when the database cannot start one.
     pub fn transaction(&mut self) -> Result<Transaction<'_>> {
-        self.execute_batch("BEGIN")?;
+        match self {
+            Self::Sqlite(db) => db.execute_batch("BEGIN")?,
+            Self::Timescale(db) => db.begin()?,
+        }
         Ok(Transaction {
             db: self,
             open: true,
@@ -268,9 +288,18 @@ impl Transaction<'_> {
     ///
     /// Fails when the database cannot commit. The changes are then rolled back.
     pub fn commit(mut self) -> Result<()> {
-        self.db.execute_batch("COMMIT")?;
+        self.end(true)?;
         self.open = false;
         Ok(())
+    }
+
+    fn end(&self, commit: bool) -> Result<()> {
+        match self.db {
+            Connection::Sqlite(db) => {
+                Ok(db.execute_batch(if commit { "COMMIT" } else { "ROLLBACK" })?)
+            }
+            Connection::Timescale(db) => db.end(commit),
+        }
     }
 }
 
@@ -285,33 +314,50 @@ impl std::ops::Deref for Transaction<'_> {
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
         if self.open {
-            let _ = self.db.execute_batch("ROLLBACK");
+            let _ = self.end(false);
         }
     }
 }
 
-/// Rewrites SQLite's `?1` parameters as PostgreSQL's `$1`. Quoted text and names are left alone.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the TimescaleDB backend will call it")
-)]
-pub fn dollar_numbered(sql: &str) -> String {
-    let mut quote = None;
-    let mut rewritten = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-    while let Some(c) = chars.next() {
-        match quote {
-            Some(open) if c == open => quote = None,
-            None if c == '\'' || c == '"' => quote = Some(c),
-            None if c == '?' && chars.peek().is_some_and(char::is_ascii_digit) => {
-                rewritten.push('$');
-                continue;
+/// Where a store's data lives.
+#[derive(Clone, Debug)]
+pub enum Location {
+    /// A SQLite file.
+    Sqlite(PathBuf),
+    /// A TimescaleDB server.
+    Timescale(Box<postgres::Config>),
+}
+
+impl Location {
+    /// Opens a connection that reads.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be opened or the server cannot be reached.
+    pub fn read(&self) -> Result<Connection> {
+        match self {
+            Self::Sqlite(path) => {
+                rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .map(Connection::Sqlite)
+                    .with_context(|| format!("cannot open {}", path.display()))
             }
-            Some(_) | None => {}
+            Self::Timescale(config) => Timescale::connect(config).map(Connection::Timescale),
         }
-        rewritten.push(c);
     }
-    rewritten
+}
+
+/// The file's path, or the server's database name. A connection string can hold a password, so it is
+/// not shown.
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite(path) => write!(f, "{}", path.display()),
+            Self::Timescale(config) => match config.get_dbname() {
+                Some(database) => write!(f, "the TimescaleDB database {database}"),
+                None => f.write_str("TimescaleDB"),
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -320,20 +366,6 @@ mod tests {
 
     fn memory() -> Connection {
         Connection::Sqlite(rusqlite::Connection::open_in_memory().unwrap())
-    }
-
-    #[test]
-    fn numbered_parameters_become_dollars_outside_quotes() {
-        assert_eq!(
-            dollar_numbered(r#"UPDATE t SET "end" = ?3 WHERE job = ?1 AND submit = ?12"#),
-            r#"UPDATE t SET "end" = $3 WHERE job = $1 AND submit = $12"#
-        );
-        assert_eq!(
-            dollar_numbered(r#"SELECT '?1', 'it''s ?2', "?3", ?4 FROM t"#),
-            r#"SELECT '?1', 'it''s ?2', "?3", $4 FROM t"#
-        );
-        assert_eq!(dollar_numbered("SELECT 'a\"b', ?1"), "SELECT 'a\"b', $1");
-        assert_eq!(dollar_numbered("SELECT '?' || ?1"), "SELECT '?' || $1");
     }
 
     #[test]

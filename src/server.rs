@@ -460,14 +460,12 @@ mod tests {
             keep_days: None,
             backup: dir.path().join("backup.sqlite"),
         };
-        Store::open(&path, settings)
-            .unwrap()
-            .sampled(UnixTime::now(), 300)
-            .unwrap();
+        let mut store = Store::open(&path, settings).unwrap();
+        store.sampled(UnixTime::now(), 300).unwrap();
         let hub = Hub::new(Site::zlurm());
         hub.publish(UnixTime::now(), vec![Event::Outage(None)]);
         let library = watch::channel(Library::load(dir.path())).1;
-        (router(hub.clone(), History::open(&path), library), hub)
+        (router(hub.clone(), store.history(), library), hub)
     }
 
     async fn send(router: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {
@@ -570,9 +568,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_past_comes_as_a_snapshot_and_deltas_and_stays_within_history() {
-        let (dir, hub) = crate::fixture::busy_store().await;
-        let history = History::open(&crate::fixture::store_path(&dir));
-        let library = watch::channel(Library::load(dir.path())).1;
+        let (home, hub, history) = crate::fixture::busy_store().await;
+        let library = watch::channel(Library::load(home.dir())).1;
         let router = router(hub.clone(), history, library);
         let ticks: Vec<i64> = hub.deltas().iter().map(|delta| delta.at.0).collect();
         let (first, last) = (ticks[0], *ticks.last().unwrap());

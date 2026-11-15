@@ -113,12 +113,13 @@ impl Feed {
             backup: dir.path().join("backup.sqlite"),
         };
         let store = Store::open(&path, settings)?;
+        let history = Arc::new(store.history());
         let hub = Hub::new(slurm.site().clone());
         let mut sampler = Sampler::new(slurm, config, Some(store), hub.clone());
         tokio::spawn(async move { sampler.run(None).await });
         Ok(Self::Embedded {
             hub,
-            history: Arc::new(History::open(&path)),
+            history,
             _dir: Arc::new(dir),
         })
     }
@@ -336,11 +337,11 @@ mod tests {
             keep_days: None,
             backup: dir.path().join("backup.sqlite"),
         };
-        Store::open(&path, settings).unwrap();
+        let history = Store::open(&path, settings).unwrap().history();
         let hub = Hub::new(Site::zlurm());
         publish(&hub);
         let library = watch::channel(Library::load(dir.path())).1;
-        let router = crate::server::router(hub.clone(), History::open(&path), library);
+        let router = crate::server::router(hub.clone(), history, library);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

@@ -563,9 +563,11 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use super::*;
-    use crate::fixture::{busy_hub, busy_quarter_hour, busy_quarter_hour_with, zlurm_config};
+    use crate::fixture::{
+        StoreHome, busy_hub, busy_quarter_hour, busy_quarter_hour_with, zlurm_config,
+    };
     use crate::slurm::recording::Call;
-    use crate::store::Settings;
+    use crate::store::connection::params;
     use glurmo_model::{AttemptKey, Cluster, Delta, Owner};
 
     /// One line per delta: its time, how many events of each kind it holds, and how the cluster looks after it.
@@ -630,12 +632,11 @@ mod tests {
     }
 
     /// When the store's coverage ends, in seconds since the epoch.
-    fn complete_to(dir: &tempfile::TempDir) -> i64 {
-        rusqlite::Connection::open(dir.path().join("glurmo.sqlite"))
-            .unwrap()
+    fn complete_to(home: &StoreHome) -> i64 {
+        home.read()
             .query_row(
                 "SELECT value FROM meta WHERE key = 'complete_to'",
-                [],
+                params![],
                 |row| row.get(0),
             )
             .unwrap()
@@ -667,7 +668,7 @@ mod tests {
     #[tokio::test]
     async fn store_agrees_with_the_deltas_after_a_controller_outage() {
         let slurm = busy_quarter_hour_with_an_outage().await;
-        let (dir, deltas) = assert_store_agrees_with_the_deltas(slurm, 0, None).await;
+        let (home, deltas) = assert_store_agrees_with_the_deltas(slurm, 0, None).await;
         let outages: Vec<Option<&str>> = deltas
             .iter()
             .flat_map(|delta| &delta.events)
@@ -681,7 +682,7 @@ mod tests {
         assert_eq!(outages[1], None);
         let last = deltas.last().unwrap().at;
         assert!(
-            last.0 - complete_to(&dir) > 300,
+            last.0 - complete_to(&home) > 300,
             "the store waits at the outage for accounting, which this replay lacks"
         );
     }
@@ -689,10 +690,10 @@ mod tests {
     #[tokio::test]
     async fn accounting_read_on_its_own_task_closes_an_outage_gap() {
         let slurm = busy_quarter_hour_with_an_outage().await;
-        let (dir, deltas) =
+        let (home, deltas) =
             assert_store_agrees_with_the_deltas(slurm, 0, Some(empty_accounting())).await;
         let last = deltas.last().unwrap().at;
-        assert!(last.0 - complete_to(&dir) <= 30, "the gap closed");
+        assert!(last.0 - complete_to(&home) <= 30, "the gap closed");
     }
 
     #[tokio::test]
@@ -716,20 +717,14 @@ mod tests {
 
     /// Samples `slurm` into a new store that backfills `backfill_days` through `historian`, then checks
     /// the store against the deltas: open attempts that started are the running ones, every end landed,
-    /// and open pending attempts hold the queue's tasks. Returns the store's directory and the deltas.
+    /// and open pending attempts hold the queue's tasks. Returns the store's home and the deltas.
     async fn assert_store_agrees_with_the_deltas(
         slurm: Slurm,
         backfill_days: u32,
         historian: Option<Historian>,
-    ) -> (tempfile::TempDir, Vec<std::sync::Arc<Delta>>) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("glurmo.sqlite");
-        let settings = Settings {
-            backfill_days,
-            keep_days: None,
-            backup: dir.path().join("backup.sqlite"),
-        };
-        let store = Store::open(&path, settings).unwrap();
+    ) -> (StoreHome, Vec<std::sync::Arc<Delta>>) {
+        let home = StoreHome::new();
+        let store = home.open(backfill_days);
         let hub = Hub::new(slurm.site().clone());
         let mut sampler = Sampler::new(slurm, &zlurm_config(), Some(store), hub.clone());
         sampler.historian = historian;
@@ -757,56 +752,49 @@ mod tests {
             .map(|attempt| attempt.array.as_ref().map_or(1, |array| array.count))
             .sum();
 
-        let db = rusqlite::Connection::open(&path).unwrap();
+        let db = home.read();
         let keys = |sql: &str| -> HashSet<(u32, i64)> {
-            db.prepare(sql)
+            db.query_map(sql, params![], |row| Ok((row.get(0)?, row.get(1)?)))
                 .unwrap()
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .unwrap()
-                .collect::<rusqlite::Result<_>>()
-                .unwrap()
+                .into_iter()
+                .collect()
         };
         assert_eq!(
-            keys("SELECT job, submit FROM attempts WHERE start IS NOT NULL AND end IS NULL"),
+            keys(r#"SELECT job, submit FROM attempts WHERE start IS NOT NULL AND "end" IS NULL"#),
             running
         );
         assert!(ended.is_subset(&keys(
-            "SELECT job, submit FROM attempts WHERE end IS NOT NULL"
+            r#"SELECT job, submit FROM attempts WHERE "end" IS NOT NULL"#
         )));
         let waiting: u32 = db
             .query_row(
-                "SELECT sum(tasks) FROM attempts WHERE start IS NULL AND end IS NULL",
-                [],
+                r#"SELECT CAST(sum(tasks) AS BIGINT) FROM attempts
+                   WHERE start IS NULL AND "end" IS NULL"#,
+                params![],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(waiting, pending);
         let bins: u32 = db
-            .query_row("SELECT count(DISTINCT bin) FROM usage", [], |row| {
+            .query_row("SELECT count(DISTINCT bin) FROM usage", params![], |row| {
                 row.get(0)
             })
             .unwrap();
         assert!(bins >= 2, "{bins} bins rolled up");
-        let users: u32 = db
-            .query_row("SELECT count(*) FROM users", [], |row| row.get(0))
+        let users: usize = db
+            .query_row("SELECT count(*) FROM users", params![], |row| row.get(0))
             .unwrap();
-        assert_eq!(usize::try_from(users).unwrap(), cluster.users.len());
+        assert_eq!(users, cluster.users.len());
         drop(db);
-        (dir, deltas)
+        (home, deltas)
     }
 
     #[tokio::test]
     async fn a_second_run_on_a_store_names_every_user_without_accounting() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("glurmo.sqlite");
+        let home = StoreHome::new();
         let mut hub = None;
         for _ in 0..2 {
-            let settings = Settings {
-                backfill_days: 0,
-                keep_days: None,
-                backup: dir.path().join("backup.sqlite"),
-            };
-            let store = Store::open(&path, settings).unwrap();
+            let store = home.open(0);
             let slurm = busy_quarter_hour().await;
             let run = Hub::new(slurm.site().clone());
             Sampler::new(slurm, &zlurm_config(), Some(store), run.clone())
@@ -814,9 +802,9 @@ mod tests {
                 .await;
             hub = Some(run);
         }
-        let stored: usize = rusqlite::Connection::open(&path)
-            .unwrap()
-            .query_row("SELECT count(*) FROM users", [], |row| row.get(0))
+        let stored: usize = home
+            .read()
+            .query_row("SELECT count(*) FROM users", params![], |row| row.get(0))
             .unwrap();
         assert!(stored > 0);
         assert_eq!(hub.unwrap().read(|cluster| cluster.users.len()), stored);
@@ -824,13 +812,13 @@ mod tests {
 
     #[tokio::test]
     async fn attempts_stored_before_the_first_node_listing_get_their_cores_counted_again() {
-        let core_s_by_bin = |dir: &tempfile::TempDir| -> BTreeMap<i64, i64> {
-            let db = rusqlite::Connection::open(dir.path().join("glurmo.sqlite")).unwrap();
+        let core_s_by_bin = |home: &StoreHome| -> BTreeMap<i64, i64> {
+            let db = home.read();
             let miscounted: u32 = db
                 .query_row(
                     "SELECT count(*) FROM attempts
                      WHERE nodes != '[]' AND coalesce(cores, 0) != (cpus + 1) / 2",
-                    [],
+                    params![],
                     |row| row.get(0),
                 )
                 .unwrap();
@@ -838,12 +826,14 @@ mod tests {
                 miscounted, 0,
                 "every node in the fixture runs 2 threads per core"
             );
-            db.prepare("SELECT bin, sum(core_s) FROM usage GROUP BY bin")
-                .unwrap()
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .unwrap()
-                .collect::<rusqlite::Result<_>>()
-                .unwrap()
+            db.query_map(
+                "SELECT bin, CAST(sum(core_s) AS BIGINT) FROM usage GROUP BY bin",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+            .into_iter()
+            .collect()
         };
         let (clean, _) =
             assert_store_agrees_with_the_deltas(busy_quarter_hour().await, 0, None).await;
