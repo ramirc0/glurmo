@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::Deserialize;
 
@@ -736,6 +736,12 @@ fn meta(db: &Connection, key: &str) -> Result<Option<UnixTime>> {
 
 fn migrate(db: &mut Connection) -> Result<()> {
     let done: usize = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if done > MIGRATIONS.len() {
+        bail!(
+            "the store has schema version {done}, newer than this glurmo's {}",
+            MIGRATIONS.len()
+        );
+    }
     let tx = db.transaction()?;
     for (version, migration) in MIGRATIONS.iter().enumerate().skip(done) {
         tx.execute_batch(migration)
@@ -1683,6 +1689,18 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(left, [2]);
+    }
+
+    #[test]
+    fn a_store_from_a_newer_glurmo_does_not_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("glurmo.sqlite");
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", 99)
+            .unwrap();
+        let error = Store::open(&path, settings(dir.path())).err().unwrap();
+        assert!(format!("{error:#}").contains("99"), "{error:#}");
     }
 
     #[test]
