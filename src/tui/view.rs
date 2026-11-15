@@ -159,7 +159,16 @@ pub fn panels(root: &Pane) -> Vec<&Pane> {
     }
 }
 
-/// Draws a frame of `app`. Returns how far each scrolling panel could scroll.
+/// The panels that take focus, in the order `tab` visits them.
+fn focusable(root: &Pane) -> Vec<&Pane> {
+    panels(root)
+        .into_iter()
+        .filter(|pane| !matches!(pane, Pane::Header | Pane::Keys | Pane::History { .. }))
+        .collect()
+}
+
+/// Draws a frame of `app`: the layout, or the focused panel alone when it fills the screen. Returns how
+/// far each scrolling panel could scroll. A panel hidden behind a filled one keeps its last limit.
 pub fn draw(frame: &mut Frame, app: &App) -> Vec<u16> {
     let scene = Scene::new(app);
     let area = frame.area();
@@ -168,8 +177,20 @@ pub fn draw(frame: &mut Frame, app: &App) -> Vec<u16> {
         area,
         Style::new().bg(scene.palette.base).fg(scene.palette.text),
     );
+    let root = &app.layout().root;
+    let filled = app
+        .filled
+        .then(|| focusable(root).get(app.focus).copied())
+        .flatten();
     let mut limits = Vec::new();
-    walk(&scene, &app.layout().root, area, buf, &mut limits);
+    match filled {
+        Some(pane) => {
+            limits.extend(app.limits.iter().take(app.focus));
+            walk(&scene, pane, area, buf, &mut limits);
+            limits.extend(app.limits.iter().skip(app.focus + 1));
+        }
+        None => walk(&scene, root, area, buf, &mut limits),
+    }
     if app.filter.editing {
         prompt(&scene, area, buf);
     }
@@ -275,7 +296,8 @@ fn help(scene: &Scene, area: Rect, buf: &mut Buffer) {
         ("↑ ↓ j k", "scroll the focused panel"),
         ("/", "filter by user, partition or job name"),
         ("m", "show only your jobs, or everyone again"),
-        ("esc", "clear the filter"),
+        ("f", "fill the screen with the focused panel"),
+        ("esc", "clear the filter, then the fill"),
         ("l", "next layout"),
         ("t", "next theme"),
         ("?", "this help"),
@@ -319,6 +341,8 @@ mod tests {
     use jiff::tz::TimeZone;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    use crossterm::event::{KeyCode, KeyEvent};
 
     use super::*;
     use crate::config::{Tui, from_ron};
@@ -432,5 +456,26 @@ mod tests {
             .unwrap();
         insta::assert_snapshot!("rest_help", terminal.backend());
         assert_eq!(app.limits.len(), 5, "die, mine, partitions, queue, ticker");
+    }
+
+    #[tokio::test]
+    async fn the_focused_panel_fills_the_screen_until_f_or_esc() {
+        let mut app = busy_app().await;
+        let layout = render(&mut app, 100, 30).backend().to_string();
+        let panels = app.limits.len();
+        app.key(KeyEvent::from(KeyCode::Tab));
+        app.key(KeyEvent::from(KeyCode::Char('f')));
+        insta::assert_snapshot!("filled_users", render(&mut app, 100, 30).backend());
+        assert_eq!(app.limits.len(), panels, "hidden panels keep their limits");
+        app.key(KeyEvent::from(KeyCode::Tab));
+        let next = render(&mut app, 100, 30).backend().to_string();
+        assert!(
+            next.contains("queue"),
+            "tab moves the fill to the next panel"
+        );
+        app.key(KeyEvent::from(KeyCode::Esc));
+        assert!(!app.quit);
+        app.key(KeyEvent::from(KeyCode::BackTab));
+        assert_eq!(render(&mut app, 100, 30).backend().to_string(), layout);
     }
 }

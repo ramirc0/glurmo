@@ -157,6 +157,7 @@ pub fn keys(scene: &Scene, area: Rect, buf: &mut Buffer) {
         ("l", "layout"),
         ("t", "theme"),
         ("?", "help"),
+        ("f", "fill"),
     ] {
         let chip = format!(" {key} ");
         let label = format!(" {what}  ");

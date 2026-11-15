@@ -1,6 +1,5 @@
 ---
 source: src/tui/view.rs
-assertion_line: 406
 expression: "render(&mut app, 160, 50).backend()"
 ---
 " rtviz  zlurm  Sat 14 Nov 23:00:31   cores ███████          883/1,988 44%   gpus ▋        4/44   running 182   pending 5                                        "
@@ -52,4 +51,4 @@ expression: "render(&mut app, 160, 50).backend()"
 "│queue  ▁▁▁▁▁▂▂▂▃▃▃▄▄▄▅▅▅▆▆▆▇▇▇▇█ ▁▁▁▁▂▂▂▃▃▃▄▄▄▅▅▅▆▆▆▆▇▇▇█ ▁▁▁▁▂▂▂▃▃▃▄▄▄▅▅▅▅▆▆▆▇▇▇█ ▁▁▁▁▂▂▂▃▃▃▄▄▄▄▅▅▅▆▆▆▇▇▇██▁▁▁▁▂▂▂▃▃▃▃▄▄▄▅▅▅▆▆▆▇▇▇██▁▁▁▁▂▂▂▂▃▃▃▄▄▄▅▅▅▆▆▆▇▇▇██│"
 "│           00:00       02:00        04:00       06:00        08:00        10:00       12:00        14:00       16:00        18:00        20:00       22:00    │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 24 h, stacked by user · queue in tasks ╯"
-" q  quit   tab  focus   /  filter   m  mine   l  layout   t  theme   ?  help                                                                    tui · Rosé Pine "
+" q  quit   tab  focus   /  filter   m  mine   l  layout   t  theme   ?  help   f  fill                                                          tui · Rosé Pine "

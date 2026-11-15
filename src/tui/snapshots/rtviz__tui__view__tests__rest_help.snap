@@ -1,6 +1,5 @@
 ---
 source: src/tui/view.rs
-assertion_line: 440
 expression: terminal.backend()
 ---
 "╭ cores ───────────────────────────────────────────────────────────────────────────────────────╮╭ partitions ──────────────────────────────────────────────────╮"
@@ -28,12 +27,12 @@ expression: terminal.backend()
 "│z1028 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀       z1029 ▀▀▀▀▀▀▀▀▀▀▀▀│ ↑ ↓ j k  scroll the focused panel                │■ end   heron          8 cpu  4hours                 │"
 "│z1055 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1056 ▀▀▀▀▀▀▀▀▀▀▀▀│       /  filter by user, partition or job name   │▶ start heron          8 cpu  4hours                 │"
 "│z1057 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1058 ▀▀▀▀▀▀▀▀▀▀▀▀│       m  show only your jobs, or everyone again  │■ end   heron          8 cpu  4hours                 │"
-"│z1059 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1060 ▀▀▀▀▀▀▀▀▀▀▀▀│     esc  clear the filter                        │▶ start heron          8 cpu  4hours                 │"
-"│z1061 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1062 ▀▀▀▀▀▀▀▀▀▀▀▀│       l  next layout                             │▶ start heron          8 cpu  4hours                 │"
-"│z1072 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1073 ▀▀▀▀▀▀▀▀▀▀▀▀│       t  next theme                              │■ end   heron          8 cpu  4hours                 │"
-"│z1074 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1076 ▀▀▀▀▀▀▀▀▀▀▀▀│       ?  this help                               │■ end   heron          8 cpu  4hours                 │"
-"│z1079 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1080 ▀▀▀▀▀▀▀▀▀▀▀▀╰────────────────────────────────── any key closes ╯▶ start heron          8 cpu  4hours                 │"
-"│5days  19 nodes  422/940 cores held                                                           ││23:00:13 ▶ start heron          8 cpu  4hours                 │"
+"│z1059 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1060 ▀▀▀▀▀▀▀▀▀▀▀▀│       f  fill the screen with the focused panel  │▶ start heron          8 cpu  4hours                 │"
+"│z1061 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1062 ▀▀▀▀▀▀▀▀▀▀▀▀│     esc  clear the filter, then the fill         │▶ start heron          8 cpu  4hours                 │"
+"│z1072 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1073 ▀▀▀▀▀▀▀▀▀▀▀▀│       l  next layout                             │■ end   heron          8 cpu  4hours                 │"
+"│z1074 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1076 ▀▀▀▀▀▀▀▀▀▀▀▀│       t  next theme                              │■ end   heron          8 cpu  4hours                 │"
+"│z1079 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   z1080 ▀▀▀▀▀▀▀▀▀▀▀▀│       ?  this help                               │▶ start heron          8 cpu  4hours                 │"
+"│5days  19 nodes  422/940 cores held                  ╰────────────────────────────────── any key closes ╯▶ start heron          8 cpu  4hours                 │"
 "│z1014 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀       z1016 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                               ││23:00:13 ■ end   heron          8 cpu  4hours                 │"
 "│z1017 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀       z1018 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                               ││23:00:13 ■ end   heron          8 cpu  4hours                 │"
 "│z1019 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀       z1020 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                               ││23:00:12 ▶ start heron          8 cpu  4hours                 │"

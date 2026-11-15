@@ -77,7 +77,8 @@ The terminal view takes these keys:
 | `↑` `↓` `j` `k` | Scroll the focused panel |
 | `/` | Filter by user, partition, or job name |
 | `m` | Show only your jobs, or everyone again |
-| `esc` | Clear the filter |
+| `f` | Fill the screen with the focused panel, or show the layout again |
+| `esc` | Clear the filter, then the fill |
 | `l` | Next layout |
 | `t` | Next theme |
 | `?` | Help |

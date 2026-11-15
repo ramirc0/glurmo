@@ -46,6 +46,8 @@ pub struct App {
     pub help: bool,
     /// The panel that takes scroll keys, counted in layout order.
     pub focus: usize,
+    /// Whether the focused panel fills the screen in place of the layout.
+    pub filled: bool,
     /// How far each panel is scrolled.
     pub scrolls: Vec<u16>,
     /// How far each panel could scroll, as of the last frame.
@@ -75,6 +77,7 @@ impl App {
             filter: Filter::default(),
             help: false,
             focus: 0,
+            filled: false,
             scrolls: Vec::new(),
             limits: Vec::new(),
             link: Link::Connecting,
@@ -162,6 +165,7 @@ impl App {
         let panels = self.limits.len().max(1);
         match key.code {
             KeyCode::Esc if self.filter().is_some() => self.filter = Filter::default(),
+            KeyCode::Esc if self.filled => self.filled = false,
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
             KeyCode::Tab => self.focus = (self.focus + 1) % panels,
@@ -171,6 +175,7 @@ impl App {
             KeyCode::PageDown => self.scroll(10),
             KeyCode::PageUp => self.scroll(-10),
             KeyCode::Home | KeyCode::Char('g') => self.scroll(i32::from(i16::MIN)),
+            KeyCode::Char('f') => self.filled = !self.filled,
             KeyCode::Char('/') => self.filter.editing = true,
             KeyCode::Char('m') => {
                 self.filter.text = if self.filter.text == self.me.0 {
@@ -182,6 +187,7 @@ impl App {
             KeyCode::Char('l') => {
                 self.layout = next(&self.library.layouts, &self.layout);
                 self.focus = 0;
+                self.filled = false;
                 self.scrolls.clear();
             }
             KeyCode::Char('t') => self.theme = next(&self.library.themes, &self.theme),
