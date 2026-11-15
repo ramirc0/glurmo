@@ -63,7 +63,7 @@ This project is licensed under the GNU General Public License, version 2 or late
 
 ## Acknowledgments
 
-* The name comes from Glurmo, the foreman of the Slurm factory in *Futurama*.
+* The name comes from [Glurmo](https://theinfosphere.org/Glurmo), the foreman of the Slurm factory in [*Futurama*](https://en.wikipedia.org/wiki/Futurama).
 * The node and job listing rules follow [pestat](https://github.com/OleHolmNielsen/Slurm_tools/tree/master/pestat).
 * The wire format follows the source of [Slurm](https://github.com/SchedMD/slurm), [MUNGE](https://github.com/dun/munge) and [SSSD](https://github.com/SSSD/sssd).
 * The default colors come from [Rosé Pine](https://rosepinetheme.com). The other themes come from [Tinted Theming](https://github.com/tinted-theming)'s base16 schemes.
