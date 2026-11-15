@@ -10,7 +10,8 @@ use web_sys::CanvasRenderingContext2d;
 use crate::paint::{Rgb, Surface, clock, user_color};
 use crate::state::State;
 
-/// Width of the axis labels on the left, and of one column of the graph.
+/// Width of the axis labels on the left, and of one column of the graph. Columns are drawn a pixel wider,
+/// so the next one paints over the overlap and fractional device pixels leave no seams.
 const LABELS: f64 = 52.0;
 const COLUMN: f64 = 3.0;
 /// Height of the queue strip and of the time axis under the graph.
@@ -73,7 +74,7 @@ pub fn History(span: Span) -> impl IntoView {
                     let h = graph_h * *cores as f64 / scale as f64;
                     let color = user_color(&theme, cluster, &Login((*login).to_owned()));
                     context.set_fill_style_str(&color.css());
-                    context.fill_rect(x, y - h, COLUMN, h);
+                    context.fill_rect(x, y - h, COLUMN + 1.0, h);
                     y -= h;
                 }
             }
@@ -119,7 +120,7 @@ fn queue(context: &CanvasRenderingContext2d, columns: &[Column], top: f64, color
             LABELS + i as f64 * COLUMN,
             (QUEUE - 8.0) * column.waiting as f64 / deepest as f64,
         );
-        context.fill_rect(x, floor - h.max(1.0), COLUMN, h.max(1.0));
+        context.fill_rect(x, floor - h.max(1.0), COLUMN + 1.0, h.max(1.0));
     }
 }
 
