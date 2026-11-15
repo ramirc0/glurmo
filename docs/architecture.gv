@@ -1,0 +1,52 @@
+digraph glurmo {
+  label = "glurmo"
+
+  subgraph cluster_cluster {
+    label = "Cluster"
+    sssd [class = data, label = "/etc/passwd\nSSSD"]
+    munge [class = data, label = "munged"]
+    daemons [class = data, label = "slurmctld\nslurmdbd"]
+    conf [class = data, label = "slurm.conf"]
+  }
+
+  subgraph cluster_read {
+    label = "Read"
+    backend [class = decision, label = "Protocol\nbackend?"]
+    wire [class = step, label = "Speak Slurm RPC\nwire"]
+    cli  [class = step, label = "Run commands\nsqueue · sinfo · sacct"]
+    recording [class = data, label = "recording.jsonl"]
+  }
+
+  subgraph cluster_sample {
+    label = "Sample"
+    sampler [class = step, label = "Diff each tick\nsampler"]
+    hub [class = step, label = "Publish deltas\nhub"]
+    store [class = data, label = "cluster.sqlite"]
+  }
+
+  subgraph cluster_serve {
+    label = "Serve"
+    events [class = step, label = "Stream deltas\n/api/events"]
+    history [class = step, label = "Answer history\n/api/history"]
+  }
+
+  web [class = result, label = "web view\nLeptos · wasm"]
+  tui [class = result, label = "terminal view\nratatui"]
+
+  backend -> wire [label = "yes"]
+  backend -> cli [label = "no"]
+  sssd -> wire
+  munge -> wire
+  daemons -> wire
+  daemons -> cli
+  conf -> backend
+  recording -> sampler:n
+  cli -> sampler:n
+  wire -> sampler:n
+  sampler -> hub -> events
+  sampler -> store -> history
+  events -> web
+  history -> web
+  events -> tui
+  history -> tui
+}
