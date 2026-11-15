@@ -52,7 +52,11 @@ impl Rgb {
 /// The color of `login`, from the palette slot the server gave it, or the muted color for someone
 /// not seen yet.
 pub fn user_color(theme: &Theme, cluster: &Cluster, login: &Login) -> Rgb {
-    let slot = cluster.users.get(login).map(|user| user.color_slot);
+    slot_color(theme, cluster.users.get(login).map(|user| user.color_slot))
+}
+
+/// The color of palette slot `slot`, or the muted color for none.
+pub fn slot_color(theme: &Theme, slot: Option<u32>) -> Rgb {
     slot.and_then(|slot| {
         let index = usize::try_from(slot).ok()? % theme.users.len().max(1);
         theme.users.get(index)

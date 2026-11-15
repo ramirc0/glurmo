@@ -5,14 +5,14 @@
 
 use std::collections::HashMap;
 
+use glurmo_model::UnixTime;
 use glurmo_model::layout::Span;
 use glurmo_model::units::thousands;
 use glurmo_model::usage::{Column, Usage};
-use glurmo_model::{Login, UnixTime};
 use leptos::prelude::*;
 use web_sys::CanvasRenderingContext2d;
 
-use crate::paint::{Rgb, Surface, clock, user_color};
+use crate::paint::{Rgb, Surface, clock, slot_color};
 use crate::replay::{self, SPEEDS};
 use crate::state::{State, Timeline};
 
@@ -52,6 +52,25 @@ pub fn History(span: Span) -> impl IntoView {
             .with(|timeline| timeline.span_s)
             .unwrap_or(span.seconds())
     };
+    // Every node's cores, up or not, so the scale holds still as nodes fail and between live and replay.
+    let installed = Memo::new(move |_| {
+        state.cluster.with(|cluster| {
+            cluster
+                .nodes
+                .iter()
+                .map(|node| u64::from(node.cores))
+                .sum::<u64>()
+        })
+    });
+    let slots = Memo::new(move |_| {
+        state.cluster.with(|cluster| {
+            cluster
+                .users
+                .iter()
+                .map(|(login, user)| (login.0.clone(), user.color_slot))
+                .collect::<HashMap<String, u32>>()
+        })
+    });
     let draw = move |context: &CanvasRenderingContext2d, width: f64, height: f64| {
         let Some(theme) = state.theme.get() else {
             return;
@@ -79,15 +98,11 @@ pub fn History(span: Span) -> impl IntoView {
             )]
             let count = (graph_w / COLUMN).floor() as u16;
             let columns = usage.columns(from, span_s, count);
-            // Every node's cores, up or not, so the scale holds still as nodes fail and between live and replay.
-            let installed: u64 = state
-                .cluster
-                .with(|cluster| cluster.nodes.iter().map(|node| u64::from(node.cores)).sum());
             let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
             let peak = columns.iter().map(total).max().unwrap_or(0);
-            let scale = installed.max(peak).max(1);
+            let scale = installed.get().max(peak).max(1);
             let mut colors: HashMap<&str, String> = HashMap::new();
-            state.cluster.with(|cluster| {
+            slots.with(|slots| {
                 for (i, column) in columns.iter().enumerate() {
                     #[expect(clippy::cast_precision_loss, reason = "a small count")]
                     let x = LABELS + i as f64 * COLUMN;
@@ -95,9 +110,9 @@ pub fn History(span: Span) -> impl IntoView {
                     for &(login, cores) in column.cores.iter().filter(|(_, cores)| *cores > 0) {
                         #[expect(clippy::cast_precision_loss, reason = "core counts fit in an f64")]
                         let h = graph_h * cores as f64 / scale as f64;
-                        let color = colors.entry(login).or_insert_with(|| {
-                            user_color(&theme, cluster, &Login(login.to_owned())).css()
-                        });
+                        let color = colors
+                            .entry(login)
+                            .or_insert_with(|| slot_color(&theme, slots.get(login).copied()).css());
                         context.set_fill_style_str(color);
                         context.fill_rect(x, y - h, COLUMN + 1.0, h);
                         y -= h;
