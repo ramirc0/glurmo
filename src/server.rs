@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::sse::{self, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use tokio_stream::Stream;
@@ -62,6 +63,7 @@ pub fn router(hub: Hub, history: History, library: watch::Receiver<Library>) -> 
         .route("/api/layouts/{name}", get(layout))
         .route("/api/ron", post(ron))
         .route("/api/health", get(health))
+        .fallback(asset)
         .with_state(app)
 }
 
@@ -294,6 +296,40 @@ async fn health(State(app): State<App>) -> Json<Status> {
     })
 }
 
+/// The web view as trunk builds it. A build without it serves the API alone.
+#[derive(RustEmbed)]
+#[folder = "web/dist"]
+#[allow_missing = true]
+struct Assets;
+
+/// A file of the web view, with `/` as `index.html`.
+async fn asset(uri: Uri) -> Response {
+    let path = match uri.path().trim_start_matches('/') {
+        "" => "index.html",
+        path => path,
+    };
+    let Some(file) = Assets::get(path) else {
+        return not_found("file", path).into_response();
+    };
+    let headers = [
+        (header::CONTENT_TYPE, content_type(path)),
+        (header::CACHE_CONTROL, "no-cache"),
+    ];
+    (headers, file.data).into_response()
+}
+
+/// The content type of a file trunk writes, by its extension.
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit_once('.').map_or("", |(_, extension)| extension) {
+        "html" => "text/html; charset=utf-8",
+        "js" => "text/javascript",
+        "wasm" => "application/wasm",
+        "css" => "text/css",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +468,18 @@ mod tests {
 
         let (status, _, _) = get(&router, "/api/themes/neon").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn files_the_web_view_lacks_are_not_found_and_routes_still_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (router, _) = app(&dir);
+        let (status, _, _) = get(&router, "/no-such-file.js").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, _) = get(&router, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type("rtviz-web-1a2b_bg.wasm"), "application/wasm");
+        assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
     }
 
     #[tokio::test]

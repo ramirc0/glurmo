@@ -25,3 +25,6 @@ rustc-ice-*.txt
 
 # rtviz: raw Slurm recordings hold real user and job names
 /recordings
+
+# trunk output, embedded by rtviz serve
+/web/dist
