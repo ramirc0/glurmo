@@ -230,6 +230,10 @@ td.name {
   text-align: left;
 }
 
+.ticker td:last-child {
+  width: 100%;
+}
+
 td.why {
   color: var(--subtle);
   max-width: 18ch;
