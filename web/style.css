@@ -615,7 +615,6 @@ aside.editor a {
 }
 
 .controls input,
-.controls select,
 .controls button {
   height: 16px;
   padding: 0 6px;
@@ -627,7 +626,8 @@ aside.editor a {
 }
 
 .controls input {
-  width: 6ch;
+  width: 5ch;
+  text-align: center;
 }
 
 .controls button {

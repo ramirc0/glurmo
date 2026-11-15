@@ -120,7 +120,7 @@ pub fn History(span: Span) -> impl IntoView {
         <section class="panel history">
             <h2>
                 "cores in use"
-                <small>{move || describe(state, span_s())}</small>
+                <small>{move || describe(state)}</small>
                 <SpanPicker span_s=Signal::derive(span_s)/>
                 <Controls/>
             </h2>
@@ -303,63 +303,59 @@ fn follow_now(end: i64) -> Option<UnixTime> {
     (end < crate::paint::now().0).then_some(UnixTime(end))
 }
 
-/// The span, and where the timeline ends when it does not follow now.
-fn describe(state: State, span_s: i64) -> String {
+/// Where the timeline ends, when it does not follow now. The span picker shows the span.
+fn describe(state: State) -> String {
     let end = state.timeline.with(|timeline| timeline.end);
     let to = end.map_or_else(String::new, |end| format!(" · to {}", clock(end, true)));
-    format!("{}{to}, stacked by user · queue in tasks", length(span_s))
+    format!("stacked by user · queue in tasks{to}")
 }
 
-/// A span in its largest whole unit.
+/// A span in its largest whole unit, such as `6h` or `3d`.
 fn length(span_s: i64) -> String {
     if span_s % 86_400 == 0 {
-        format!("{} d", span_s / 86_400)
+        format!("{}d", span_s / 86_400)
     } else {
-        format!("{} h", span_s / 3_600)
+        format!("{}h", span_s / 3_600)
     }
 }
 
-/// Picks the timeline's span as a count of hours or days, and brings the timeline back to now.
+/// A span typed as a count of hours or days, such as `6h` or `3 d`.
+fn parse_span(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (count, unit) = text.split_at(text.find(|c: char| !c.is_ascii_digit())?);
+    let unit = match unit.trim() {
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => return None,
+    };
+    Some(count.parse::<i64>().ok()? * unit)
+}
+
+/// The timeline's span as text to edit, and a button back to now once the timeline is panned away.
 #[component]
 fn SpanPicker(span_s: Signal<i64>) -> impl IntoView {
     let state = expect_context::<State>();
-    let unit = Memo::new(move |_| {
-        if span_s.get() % 86_400 == 0 {
-            86_400
-        } else {
-            3_600
+    let typed = move |event: web_sys::Event| {
+        if let Some(span) = parse_span(&event_target_value(&event)) {
+            state.timeline.update(|timeline| {
+                timeline.span_s = Some(span.clamp(SPANS_S.0, SPANS_S.1));
+            });
         }
-    });
-    let count = Memo::new(move |_| (span_s.get() / unit.get()).max(1));
-    let pick = move |count: i64, unit: i64| {
-        let span = (count.max(1) * unit).clamp(SPANS_S.0, SPANS_S.1);
-        state
-            .timeline
-            .update(|timeline| timeline.span_s = Some(span));
+        // Text that names no span, or the span already shown, leaves the signal unchanged, so the
+        // binding would not rewrite the field.
+        let field: web_sys::HtmlInputElement = event_target(&event);
+        field.set_value(&length(span_s.get_untracked()));
     };
     view! {
         <span class="controls">
             <input
-                type="number"
-                min="1"
-                prop:value=move || count.get().to_string()
-                on:change=move |event| {
-                    if let Ok(count) = event_target_value(&event).parse() {
-                        pick(count, unit.get_untracked());
-                    }
-                }
+                class="span"
+                type="text"
+                spellcheck="false"
+                title="span, such as 6h or 3d"
+                prop:value=move || length(span_s.get())
+                on:change=typed
             />
-            <select
-                prop:value=move || unit.get().to_string()
-                on:change=move |event| {
-                    if let Ok(unit) = event_target_value(&event).parse() {
-                        pick(count.get_untracked(), unit);
-                    }
-                }
-            >
-                <option value="3600">"hours"</option>
-                <option value="86400">"days"</option>
-            </select>
             {move || {
                 state
                     .timeline
@@ -485,5 +481,26 @@ fn axis(
             let _ = context.fill_text(&text, x, height - 4.0);
         }
         at += every;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spans_read_back_as_written() {
+        assert_eq!(parse_span("6h"), Some(21_600));
+        assert_eq!(parse_span(" 3 d "), Some(259_200));
+        assert_eq!(parse_span("90d").map(length).as_deref(), Some("90d"));
+        assert_eq!(parse_span("36h").map(length).as_deref(), Some("36h"));
+        assert_eq!(parse_span("48h").map(length).as_deref(), Some("2d"));
+    }
+
+    #[test]
+    fn spans_need_a_count_and_a_unit() {
+        for text in ["", "6", "h", "6m", "6 hours", "-6h"] {
+            assert_eq!(parse_span(text), None, "{text:?}");
+        }
     }
 }
