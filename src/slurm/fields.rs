@@ -211,9 +211,17 @@ fn gres_entry(entry: &str) -> Result<Gres<'_>> {
     };
     let mut parts: Vec<&str> = spec.split(':').collect();
     let name = parts.remove(0);
-    let count = match parts.pop() {
-        Some(count) => gres_count(count)?,
-        None => 1,
+    // A GRES held without a device bitmap prints as `name:type(CNT:n)`, with no count before it.
+    let counted = parts
+        .last()
+        .is_some_and(|last| last.starts_with(|c: char| c.is_ascii_digit()));
+    let count = match (
+        counted,
+        detail.and_then(|detail| detail.strip_prefix("CNT:")),
+    ) {
+        (true, _) => gres_count(parts.pop().unwrap_or_default())?,
+        (false, Some(count)) => integer(count)?,
+        (false, None) => 1,
     };
     let kind = parts
         .into_iter()
@@ -227,14 +235,19 @@ fn gres_entry(entry: &str) -> Result<Gres<'_>> {
 }
 
 fn gres_count(count: &str) -> Result<u64> {
-    let digits = count.trim_end_matches(['K', 'M', 'G']);
-    let scale = match &count[digits.len()..] {
+    let digits = count.trim_end_matches(['K', 'M', 'G', 'T', 'P']);
+    let scale: u64 = match &count[digits.len()..] {
+        "" => 1,
         "K" => 1 << 10,
         "M" => 1 << 20,
         "G" => 1 << 30,
-        _ => 1,
+        "T" => 1 << 40,
+        "P" => 1 << 50,
+        suffix => bail!("unknown suffix {suffix:?} in GRES count {count:?}"),
     };
-    Ok(integer::<u64>(digits)? * scale)
+    integer::<u64>(digits)?
+        .checked_mul(scale)
+        .with_context(|| format!("GRES count {count:?} overflows"))
 }
 
 /// Sums the GPUs in a parsed GRES list.
@@ -422,9 +435,19 @@ mod tests {
     }
 
     #[test]
+    fn gres_counted_in_detail_and_large_suffixes() {
+        let typed = gres("gpu:v100(CNT:2)").unwrap();
+        assert_eq!((typed[0].kind, typed[0].count), (Some("v100"), 2));
+        let untyped = gres("craynetwork(CNT:1)").unwrap();
+        assert_eq!((untyped[0].kind, untyped[0].count), (None, 1));
+        assert_eq!(gres("scratch:no_consume:4T").unwrap()[0].count, 4 << 40);
+        assert_eq!(gres("bb:2P").unwrap()[0].count, 2 << 50);
+    }
+
+    #[test]
     fn bad_gres_fails() {
         assert!(gres("gpu:4(IDX:0-3").is_err());
-        assert!(gres("gpu:four").is_err());
+        assert!(gres("gpu:4x").is_err());
         assert!(gres("gpu:4(IDX:0)x").is_err());
     }
 
