@@ -12,6 +12,11 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - `record --pseudonymize` and `pseudonymize` also rewrite free-text reasons of jobs and nodes as `reason1`, `reason2` and so on, and every error's text as a fixed string. Reasons that are one word, as Slurm's own are, stay. Before, a job's reason could quote `user=` from an association message, a node's reason kept what an operator typed, and an error could quote raw squeue or scontrol output.
 - Every TUI panel reads the filter as the jobs panel does. Each word must appear in a login, full name, partition, node, job ID, job name or reason. Before, the other panels looked for the whole text in one field, so `otter long` or a job ID showed nothing there.
+- A node listing that names the same nodes sends only the nodes that changed. The full list goes out only when nodes join, leave or move. Before, any change sent every node. On zlurm's 15-minute fixture, node events shrink from 227 KB to 67 KB, and the whole stream from 994 KB to 834 KB.
+
+### Removed
+
+- The sampler no longer asks slurmctld for scheduler stats every minute, and the stream no longer carries them. No view showed them. `glurmo probe` still reads them. A config that sets `sample: (stats: ...)` must drop that key, or it fails to load.
 
 ### Fixed
 
@@ -19,16 +24,6 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - The command backend sets aside a job that scontrol prints unreadably, logs it, and saves it once to `unparsed.jsonl`. That covers a job on a node sinfo did not list, and a job whose name holds ` UserId=` or starts a line with `JobId=`. Before, one such job failed the whole placement listing, and a name holding ` UserId=` could set the job's start or CPU count.
 - The command backend logs what a command that succeeds prints on stderr, once per text, and reads its output. Before, any stderr failed the call, so a host whose Slurm logs a warning on every command failed every call.
 - The TUI wraps a node wider than its cores panel onto more lines, its GPUs and gauges lined up under its cores. Before, the panel cut it, and the `jobs` layout showed 7 of js029's 8 GPUs.
-### Changed
-
-- A node listing that names the same nodes sends only the nodes that changed. The full list goes out only when nodes join, leave or move. Before, any change sent every node. On zlurm's 15-minute fixture, node events shrink from 227 KB to 67 KB, and the whole stream from 994 KB to 834 KB.
-
-### Removed
-
-- The sampler no longer asks slurmctld for scheduler stats every minute, and the stream no longer carries them. No view showed them. `glurmo probe` still reads them. A config that sets `sample: (stats: ...)` MUST drop that key, or it fails to load.
-
-### Fixed
-
 - A partition's free cores and GPUs leave out draining nodes, which take no new jobs. sinfo counts their idle CPUs as other. Before, they counted as free.
 - Memory under a gigabyte reads in megabytes, as `512M`. Before, it read `0G`.
 - A running job that is suspended or resumed, or whose time limit changes, updates in both views. A suspended job reads `S` or `susp` among your jobs, and `suspended` in the job list and its tip, with no countdown. Before, it kept the state and time limit it started with.
