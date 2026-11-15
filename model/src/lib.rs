@@ -289,6 +289,31 @@ impl Attempt {
     pub fn tasks(&self) -> u32 {
         self.array.as_ref().map_or(1, |array| array.count)
     }
+
+    /// The job ID as the scheduler prints it: `JOB_TASKS` for an array, else the job ID.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "key": {"job": 4250, "submit": 1700000000}, "array": {"job": 4242, "spec": "8", "count": 1},
+    /// #     "login": "otter", "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
+    /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": null, "end": null,
+    /// #     "nodes": [], "reason": null, "name": "align"
+    /// # }"#;
+    /// use rtviz_model::Attempt;
+    ///
+    /// let mut attempt: Attempt = serde_json::from_str(json).unwrap();
+    /// assert_eq!(attempt.printed_id(), "4242_8");
+    /// attempt.array = None;
+    /// assert_eq!(attempt.printed_id(), "4250");
+    /// ```
+    pub fn printed_id(&self) -> String {
+        match &self.array {
+            Some(array) => format!("{}_{}", array.job.0, array.spec),
+            None => self.key.job.0.to_string(),
+        }
+    }
 }
 
 /// A node's state, neutral across schedulers.

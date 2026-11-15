@@ -110,12 +110,8 @@ pub fn jobs_argv() -> Vec<String> {
 ///
 /// An array task is looked up as `ID_TASK`, because its ID may be the array's base ID, which returns every task.
 pub fn lookup_argv(attempt: &Attempt) -> Vec<String> {
-    let id = match &attempt.array {
-        Some(array) => format!("{}_{}", array.job.0, array.spec),
-        None => attempt.key.job.0.to_string(),
-    };
     let mut argv = jobs_argv();
-    argv.push(id);
+    argv.push(attempt.printed_id());
     argv
 }
 

@@ -29,10 +29,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
         .values()
         .filter(|attempt| attempt.login == *me && scene.shows_attempt(attempt));
     let line = |attempt: &Attempt, state: &str, time: String, place: String| {
-        let id = match &attempt.array {
-            Some(array) => format!("{}_{}", array.job.0, array.spec),
-            None => attempt.key.job.0.to_string(),
-        };
+        let id = attempt.printed_id();
         let limit = attempt.time_limit_s.map_or_else(String::new, |limit| {
             format!("/{}", span(limit.cast_signed()))
         });

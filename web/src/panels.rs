@@ -550,10 +550,7 @@ pub fn Ticker() -> impl IntoView {
 pub fn Mine() -> impl IntoView {
     let state = expect_context::<State>();
     let line = |attempt: &Attempt, state_word: &'static str, time: String, place: String| {
-        let id = match &attempt.array {
-            Some(array) => format!("{}_{}", array.job.0, array.spec),
-            None => attempt.key.job.0.to_string(),
-        };
+        let id = attempt.printed_id();
         let limit = attempt.time_limit_s.map_or_else(String::new, |limit| {
             format!("/{}", span(limit.cast_signed()))
         });
