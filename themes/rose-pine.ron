@@ -1,0 +1,7 @@
+Theme(
+    name: "Rosé Pine",
+    ui: (base: "#191724", surface: "#1f1d2e", overlay: "#26233a", muted: "#6e6a86", subtle: "#908caa", text: "#e0def4"),
+    state: (free: "#26233a", down: "#eb6f92", drain: "#f6c177"),
+    users: ["#9ccfd8", "#c4a7e7", "#ebbcba", "#f6c177", "#31748f", "#eb6f92"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

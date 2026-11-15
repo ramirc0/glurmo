@@ -1,0 +1,7 @@
+Theme(
+    name: "Rosé Pine Dawn",
+    ui: (base: "#faf4ed", surface: "#fffaf3", overlay: "#f2e9e1", muted: "#9893a5", subtle: "#797593", text: "#575279"),
+    state: (free: "#f2e9e1", down: "#b4637a", drain: "#ea9d34"),
+    users: ["#56949f", "#907aa9", "#d7827e", "#ea9d34", "#286983", "#b4637a"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

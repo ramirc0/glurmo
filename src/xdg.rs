@@ -22,6 +22,15 @@ pub fn data_home() -> Result<PathBuf> {
     base("XDG_DATA_HOME", ".local/share")
 }
 
+/// `$XDG_CONFIG_HOME`, or `~/.config`.
+///
+/// # Errors
+///
+/// Fails when neither variable is set.
+pub fn config_home() -> Result<PathBuf> {
+    base("XDG_CONFIG_HOME", ".config")
+}
+
 fn base(variable: &str, under_home: &str) -> Result<PathBuf> {
     std::env::var_os(variable)
         .map(PathBuf::from)

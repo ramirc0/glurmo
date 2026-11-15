@@ -1,17 +1,18 @@
 //! History on disk: every attempt, five-minute usage bins, node health changes and user colors.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 
 use crate::model::{
     Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeName, NodeState,
-    PartitionName, UnixTime,
+    PartitionName, UnixTime, User,
 };
-use crate::rollup::{BIN_S, Span, bin_of, rollup};
+use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
 
 const DAY_S: i64 = 86_400;
 
@@ -114,6 +115,8 @@ pub struct Store {
     /// Each node's last recorded health and reason.
     health: HashMap<NodeName, (String, Option<String>)>,
     coverage: Coverage,
+    /// Color slots below this have come out of [`Store::new_users`].
+    users_seen: u32,
 }
 
 impl Store {
@@ -156,6 +159,7 @@ impl Store {
             cpus_per_core: HashMap::new(),
             health,
             coverage: Coverage::Unchecked,
+            users_seen: 0,
         })
     }
 
@@ -215,8 +219,55 @@ impl Store {
                         }
                     }
                 }
-                Event::Dequeued(_) | Event::Partitions(_) | Event::Stats(_) => {}
+                Event::Dequeued(_)
+                | Event::Partitions(_)
+                | Event::Stats(_)
+                | Event::Users(_)
+                | Event::Outage(_) => {}
             }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Users first seen since the last call, in slot order. The first call after opening returns everyone.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a read fails.
+    pub fn new_users(&mut self) -> Result<Vec<User>> {
+        let users: Vec<User> = self
+            .db
+            .prepare(
+                "SELECT login, full_name, color_slot FROM users WHERE color_slot >= ?1
+                 ORDER BY color_slot",
+            )?
+            .query_map([self.users_seen], |row| {
+                Ok(User {
+                    login: Login(row.get(0)?),
+                    name: row.get(1)?,
+                    color_slot: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        if let Some(last) = users.last() {
+            self.users_seen = last.color_slot + 1;
+        }
+        Ok(users)
+    }
+
+    /// Stores users' full names.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a write fails.
+    pub fn name_users(&mut self, names: &HashMap<Login, String>) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for (login, name) in names {
+            tx.execute(
+                "UPDATE users SET full_name = ?2 WHERE login = ?1",
+                params![login.0, name],
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -439,12 +490,7 @@ impl Store {
     }
 
     fn meta(&self, key: &str) -> Result<Option<UnixTime>> {
-        Ok(self
-            .db
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
-                row.get(0).map(UnixTime)
-            })
-            .optional()?)
+        meta(&self.db, key)
     }
 
     fn set_meta(&self, key: &str, value: UnixTime) -> Result<()> {
@@ -454,6 +500,144 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+/// What to sum usage by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum By {
+    /// Each login.
+    Login,
+    /// Each partition.
+    Partition,
+}
+
+/// A stretch of usage to sum, step by step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsageQuery {
+    /// The start, rounded down to a bin.
+    pub from: UnixTime,
+    /// The end. Bins that start at or after it are left out.
+    pub to: UnixTime,
+    /// The step, rounded up to whole bins.
+    pub step_s: i64,
+    /// What to sum by.
+    pub by: By,
+}
+
+/// Usage summed over one step for one login or partition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Step {
+    /// The step's start.
+    pub at: UnixTime,
+    /// The login or partition.
+    pub key: String,
+    /// Core-seconds held.
+    pub core_s: u64,
+    /// GPU-seconds held.
+    pub gpu_s: u64,
+    /// Task-seconds spent pending.
+    pub wait_s: u64,
+    /// Attempts that took their cores.
+    pub started: u32,
+    /// Attempts that freed their cores.
+    pub ended: u32,
+    /// Ended attempts that failed. Counted per partition only, never per person.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<u32>,
+}
+
+/// Reads history on a connection of its own, so a server can query while the sampler writes.
+pub struct History {
+    path: PathBuf,
+}
+
+impl History {
+    /// History in the store at `path`. Nothing is opened until a query runs.
+    pub fn open(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+        }
+    }
+
+    /// Usage summed per step, by login or partition, in time then key order. Bins the sampler has rolled
+    /// up come from the usage table. Later bins are rolled up from the attempts, counting up to `now`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be opened or read.
+    pub fn usage(&self, query: &UsageQuery, now: UnixTime) -> Result<Vec<Step>> {
+        let db = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("cannot open {}", self.path.display()))?;
+        let Some(rolled_to) = meta(&db, "rolled_to")? else {
+            return Ok(Vec::new());
+        };
+        let step_s = (query.step_s.max(1) + BIN_S - 1) / BIN_S * BIN_S;
+        let from = bin_of(query.from);
+        let to = query.to.min(now);
+        let step_of = |bin: UnixTime| from.0 + (bin.0 - from.0) / step_s * step_s;
+        let column = match query.by {
+            By::Login => "login",
+            By::Partition => "partition",
+        };
+        let mut sums: BTreeMap<(i64, String), Usage> = BTreeMap::new();
+
+        let mut closed = db.prepare(&format!(
+            "SELECT ?1 + (bin - ?1) / ?3 * ?3 AS at, {column}, sum(core_s), sum(gpu_s), sum(wait_s),
+                    sum(started), sum(ended), sum(failed)
+             FROM usage WHERE bin >= ?1 AND bin < ?2 GROUP BY at, {column}"
+        ))?;
+        let rows = closed.query_map([from.0, to.0.min(rolled_to.0), step_s], |row| {
+            let usage = Usage {
+                core_s: row.get(2)?,
+                gpu_s: row.get(3)?,
+                wait_s: row.get(4)?,
+                started: row.get(5)?,
+                ended: row.get(6)?,
+                failed: row.get(7)?,
+            };
+            Ok(((row.get(0)?, row.get(1)?), usage))
+        })?;
+        for row in rows {
+            let (key, usage) = row?;
+            *sums.entry(key).or_default() += &usage;
+        }
+
+        let mut bin = from.max(rolled_to);
+        let spans = spans(&db, bin, to)?;
+        while bin < to {
+            for ((login, partition), usage) in rollup(bin, &spans, now) {
+                let key = match query.by {
+                    By::Login => login.0,
+                    By::Partition => partition.0,
+                };
+                *sums.entry((step_of(bin), key)).or_default() += &usage;
+            }
+            bin = UnixTime(bin.0 + BIN_S);
+        }
+
+        Ok(sums
+            .into_iter()
+            .map(|((at, key), usage)| Step {
+                at: UnixTime(at),
+                key,
+                core_s: usage.core_s,
+                gpu_s: usage.gpu_s,
+                wait_s: usage.wait_s,
+                started: usage.started,
+                ended: usage.ended,
+                failed: (query.by == By::Partition).then_some(usage.failed),
+            })
+            .collect())
+    }
+}
+
+fn meta(db: &Connection, key: &str) -> Result<Option<UnixTime>> {
+    Ok(db
+        .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+            row.get(0).map(UnixTime)
+        })
+        .optional()?)
 }
 
 fn migrate(db: &mut Connection) -> Result<()> {
@@ -557,8 +741,8 @@ fn usual(cpus_per_core: &HashMap<NodeName, u32>) -> u32 {
 }
 
 /// Attempts that waited or ran at some point from `from` up to `to`.
-fn spans(tx: &Transaction, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
-    let mut query = tx.prepare(
+fn spans(db: &Connection, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
+    let mut query = db.prepare(
         "SELECT login, partition, tasks, coalesce(cores, 0), gpus, submit, start, end, state
          FROM attempts WHERE submit < ?2 AND (end IS NULL OR end > ?1)",
     )?;
@@ -841,6 +1025,48 @@ mod tests {
     }
 
     #[test]
+    fn new_users_come_out_once_and_everyone_comes_out_after_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        let heron = Attempt {
+            login: Login("heron".into()),
+            ..running(2)
+        };
+        store
+            .record(
+                UnixTime(T0),
+                &[
+                    Event::Started {
+                        attempt: running(1),
+                    },
+                    Event::Started { attempt: heron },
+                ],
+            )
+            .unwrap();
+        let user = |login: &str, name: Option<&str>, color_slot| User {
+            login: Login(login.into()),
+            name: name.map(str::to_owned),
+            color_slot,
+        };
+        assert_eq!(
+            store.new_users().unwrap(),
+            [user("otter", None, 0), user("heron", None, 1)]
+        );
+        assert_eq!(store.new_users().unwrap(), []);
+        store
+            .name_users(&HashMap::from([(
+                Login("heron".into()),
+                "Grey Heron".to_owned(),
+            )]))
+            .unwrap();
+        drop(store);
+        assert_eq!(
+            open(&dir).new_users().unwrap(),
+            [user("otter", None, 0), user("heron", Some("Grey Heron"), 1)]
+        );
+    }
+
+    #[test]
     fn node_health_is_written_on_change_only() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open(&dir);
@@ -1065,6 +1291,79 @@ mod tests {
             })
             .unwrap();
         assert_eq!(starts_and_ends, 2);
+    }
+
+    #[test]
+    fn usage_sums_closed_bins_by_step_and_rolls_up_open_ones_on_the_spot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        let failed = Attempt {
+            login: Login("heron".into()),
+            partitions: vec![PartitionName("long".into())],
+            ..attempt(
+                2,
+                JobState::Ended(EndState::Failed),
+                Some(T0),
+                Some(T0 + 600),
+            )
+        };
+        store
+            .record(
+                UnixTime(T0),
+                &[
+                    Event::Nodes(vec![node(NodeState::Mixed)]),
+                    Event::Started {
+                        attempt: running(1),
+                    },
+                    Event::Started { attempt: failed },
+                ],
+            )
+            .unwrap();
+        store.sampled(UnixTime(T0), 300).unwrap();
+        store.roll(UnixTime(T0 + 900 + GRACE_S)).unwrap();
+
+        let history = History::open(&dir.path().join("rtviz.sqlite"));
+        let usage = |by| {
+            let query = UsageQuery {
+                from: UnixTime(T0),
+                to: UnixTime(T0 + 1_200),
+                step_s: 600,
+                by,
+            };
+            history
+                .usage(&query, UnixTime(T0 + 1_000))
+                .unwrap()
+                .into_iter()
+                .map(|step| {
+                    (
+                        step.at.0 - T0,
+                        step.key,
+                        step.core_s,
+                        step.ended,
+                        step.failed,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            usage(By::Login),
+            [
+                (0, "heron".into(), 2_400, 0, None),
+                (0, "otter".into(), 2_400, 0, None),
+                (600, "heron".into(), 0, 1, None),
+                (600, "otter".into(), 1_600, 0, None),
+            ],
+            "otter's last 100 s come from the open bin"
+        );
+        assert_eq!(
+            usage(By::Partition),
+            [
+                (0, "4hours".into(), 2_400, 0, Some(0)),
+                (0, "long".into(), 2_400, 0, Some(0)),
+                (600, "4hours".into(), 1_600, 0, Some(0)),
+                (600, "long".into(), 0, 1, Some(1)),
+            ]
+        );
     }
 
     #[test]

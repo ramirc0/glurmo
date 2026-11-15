@@ -52,6 +52,17 @@ pub struct Usage {
     pub failed: u32,
 }
 
+impl std::ops::AddAssign<&Usage> for Usage {
+    fn add_assign(&mut self, other: &Usage) {
+        self.core_s += other.core_s;
+        self.gpu_s += other.gpu_s;
+        self.wait_s += other.wait_s;
+        self.started += other.started;
+        self.ended += other.ended;
+        self.failed += other.failed;
+    }
+}
+
 /// Sums `spans` over the bin that starts at `bin`. An attempt still pending or running counts up to `now`.
 /// Logins and partitions with nothing in the bin are left out.
 pub fn rollup(
@@ -84,12 +95,7 @@ pub fn rollup(
         let total = usage
             .entry((span.login.clone(), span.partition.clone()))
             .or_default();
-        total.core_s += row.core_s;
-        total.gpu_s += row.gpu_s;
-        total.wait_s += row.wait_s;
-        total.started += row.started;
-        total.ended += row.ended;
-        total.failed += row.failed;
+        *total += &row;
     }
     usage
 }

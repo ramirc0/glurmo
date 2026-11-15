@@ -1,0 +1,10 @@
+Layout(name: "web", root:
+    Split(Vertical, [
+        (Length(2), Header),
+        (Fill(1), Split(Horizontal, [
+            (Percentage(70), Die(group: Hardware)),
+            (Fill(1), Split(Vertical, [(Length(12), Users), (Length(12), Queue(group: Partition)), (Fill(1), Ticker)])),
+        ])),
+        (Length(16), History(span: Hours(24))),
+    ]),
+)

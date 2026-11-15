@@ -1,0 +1,7 @@
+Theme(
+    name: "Rosé Pine Moon",
+    ui: (base: "#232136", surface: "#2a273f", overlay: "#393552", muted: "#6e6a86", subtle: "#908caa", text: "#e0def4"),
+    state: (free: "#393552", down: "#eb6f92", drain: "#f6c177"),
+    users: ["#9ccfd8", "#c4a7e7", "#ea9a97", "#f6c177", "#3e8fb0", "#eb6f92"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

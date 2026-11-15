@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 /// A job ID unique to each array task, as sacct's `JobIDRaw` prints it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -311,6 +311,26 @@ pub struct RpcCount {
     pub total_us: u64,
 }
 
+/// Someone who has held cores or waited in the queue.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct User {
+    /// The login.
+    pub login: Login,
+    /// The full name, when the config asks for full names and the system knows one.
+    pub name: Option<String>,
+    /// A palette slot, assigned in order of first sight and kept for good.
+    pub color_slot: u32,
+}
+
+/// A stretch of failed ticks, which leaves the view stale. It usually means the controller is down.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Outage {
+    /// When the first failed tick started.
+    pub since: UnixTime,
+    /// Why that tick failed.
+    pub error: String,
+}
+
 /// One change the sampler saw in a tick.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -358,6 +378,10 @@ pub enum Event {
     Partitions(Vec<Partition>),
     /// Scheduler counters.
     Stats(Stats),
+    /// Users seen for the first time.
+    Users(Vec<User>),
+    /// Ticks started failing, or work again when `None`.
+    Outage(Option<Outage>),
 }
 
 /// The changes from one tick.
@@ -372,7 +396,7 @@ pub struct Delta {
 }
 
 /// A running attempt and, once known, where it runs.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Running {
     /// The attempt as the queue listed it when it started.
     pub attempt: Attempt,
@@ -381,7 +405,7 @@ pub struct Running {
 }
 
 /// The cluster as a stream of deltas builds it up.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Cluster {
     /// When the last delta was sampled.
     pub at: Option<UnixTime>,
@@ -390,13 +414,27 @@ pub struct Cluster {
     /// Every partition.
     pub partitions: Vec<Partition>,
     /// Attempts that hold cores.
+    #[serde(serialize_with = "values")]
     pub running: BTreeMap<AttemptKey, Running>,
     /// Pending jobs.
+    #[serde(serialize_with = "values")]
     pub queue: BTreeMap<AttemptKey, Attempt>,
     /// Scheduler counters.
     pub stats: Option<Stats>,
     /// Whether the scheduler hides other users' jobs, so cores that no visible job explains belong to someone hidden.
     pub hides_jobs: bool,
+    /// Everyone seen so far.
+    pub users: BTreeMap<Login, User>,
+    /// Whether ticks are failing, and since when.
+    pub outage: Option<Outage>,
+}
+
+/// Writes a map keyed by attempt as a list of its values, because JSON keys must be strings.
+fn values<V: Serialize, S: Serializer>(
+    map: &BTreeMap<AttemptKey, V>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(map.values())
 }
 
 /// Who holds a core or GPU.
@@ -455,6 +493,12 @@ impl Cluster {
                 Event::Nodes(nodes) => self.nodes.clone_from(nodes),
                 Event::Partitions(partitions) => self.partitions.clone_from(partitions),
                 Event::Stats(stats) => self.stats = Some(stats.clone()),
+                Event::Users(users) => {
+                    for user in users {
+                        self.users.insert(user.login.clone(), user.clone());
+                    }
+                }
+                Event::Outage(outage) => self.outage.clone_from(outage),
             }
         }
     }

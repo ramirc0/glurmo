@@ -1,37 +1,53 @@
 //! `rtviz` shows who holds which cores and GPUs on a batch-scheduler cluster.
 
+mod config;
 mod diff;
+mod hub;
+mod layout;
+mod library;
 mod model;
+mod passwd;
 mod rollup;
 mod sampler;
+mod server;
 mod slurm;
 mod store;
+mod theme;
 mod xdg;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 
+use config::{Config, Keep, Storage};
+use hub::Hub;
+use library::Library;
 use model::{Cluster, JobState, Owner};
 use sampler::Sampler;
 use slurm::source::{Exchange, Recorder, Replay, Source};
-use slurm::{Intervals, Sample, Slurm};
-use store::{Settings, Store};
+use slurm::{Sample, Slurm};
+use store::{History, Settings, Store};
 
 /// Live view of who holds which cores and GPUs on a cluster.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
+    /// The config file. Without it, `$XDG_CONFIG_HOME/rtviz/config.ron` is read if it exists.
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sample the cluster, keep its history and serve both over HTTP.
+    Serve,
     /// Print site facts, capabilities, each command's cost, and suggested intervals.
     Probe,
     /// Sample the cluster and print each tick's changes as a line of JSON.
@@ -42,15 +58,9 @@ enum Command {
         /// Answer from a recording instead of the cluster.
         #[arg(long, value_name = "FILE")]
         replay: Option<PathBuf>,
-        /// Keep history in this SQLite file, which must be on a local disk.
-        #[arg(long, value_name = "FILE")]
-        store: Option<PathBuf>,
-        /// Days of accounting to backfill into a new store.
-        #[arg(long, default_value_t = 30)]
-        backfill_days: u32,
-        /// Days of history to keep. Without it, history is kept forever.
+        /// Keep history in the store the config names.
         #[arg(long)]
-        keep_days: Option<u32>,
+        store: bool,
     },
     /// Sample the cluster and save every command's output as JSON lines.
     Record {
@@ -72,9 +82,12 @@ enum Command {
     },
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let config = Config::load(cli.config.as_deref())?;
+    match cli.command {
+        Command::Serve => serve(&config).await?,
         Command::Probe => {
             let mut slurm = Slurm::connect(Source::Live).await?;
             print!("{}", slurm::probe::probe(&mut slurm).await?);
@@ -83,8 +96,6 @@ async fn main() -> Result<()> {
             once,
             replay,
             store,
-            backfill_days,
-            keep_days,
         } => {
             let source = match replay {
                 Some(path) => Source::Replay(Replay::open(&path)?),
@@ -96,11 +107,13 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string(&sample)?);
                 summarize(&sample);
             } else {
-                let store = match store {
-                    Some(path) => Some(open_store(&path, backfill_days, keep_days)?),
-                    None => None,
+                let store = if store {
+                    let path = store_path(&config.store, &slurm.site().cluster)?;
+                    Some(open_store(&config.store, &path)?)
+                } else {
+                    None
                 };
-                stream(slurm, store, None).await?;
+                stream(slurm, &config, store, None).await?;
             }
         }
         Command::Record {
@@ -111,7 +124,7 @@ async fn main() -> Result<()> {
             let slurm =
                 Slurm::connect(Source::Record(Recorder::create(&out, pseudonymize)?)).await?;
             let until = model::UnixTime(slurm.now().0 + minutes * 60);
-            stream(slurm, None, Some(until)).await?;
+            stream(slurm, &config, None, Some(until)).await?;
             eprintln!("recorded to {}", out.display());
         }
         Command::Pseudonymize { raw, out } => {
@@ -128,25 +141,67 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Opens the store at `path`, with its nightly backup under `$XDG_DATA_HOME/rtviz`.
-fn open_store(path: &std::path::Path, backfill_days: u32, keep_days: Option<u32>) -> Result<Store> {
+/// Samples into the store and serves the stream, history, themes and layouts until the process ends.
+/// Theme and layout files are read from `$XDG_CONFIG_HOME/rtviz`.
+async fn serve(config: &Config) -> Result<()> {
+    let slurm = Slurm::connect(Source::Live).await?;
+    let path = store_path(&config.store, &slurm.site().cluster)?;
+    let store = open_store(&config.store, &path)?;
+    let hub = Hub::new(slurm.site().clone());
+    let dir = xdg::config_home()?.join("rtviz");
+    let (library, _) = watch::channel(Library::load(&dir));
+    let router = server::router(hub.clone(), History::open(&path), library.subscribe());
+    let mut sampler = Sampler::new(slurm, config.sample, Some(store), hub, config.names);
+    eprintln!(
+        "serving on http://{} with history in {}",
+        config.server.listen,
+        path.display()
+    );
+    tokio::select! {
+        () = sampler.run(None) => Ok(()),
+        () = library::keep_current(&dir, &library) => Ok(()),
+        served = server::serve(config.server.listen, router) => served,
+    }
+}
+
+/// Where the config puts the store, by default `$XDG_STATE_HOME/rtviz/<cluster>.sqlite`.
+fn store_path(storage: &Storage, cluster: &str) -> Result<PathBuf> {
+    Ok(match &storage.path {
+        Some(path) => path.clone(),
+        None => xdg::state_home()?
+            .join("rtviz")
+            .join(format!("{cluster}.sqlite")),
+    })
+}
+
+/// Opens the store at `path`. Its nightly backup goes to `$XDG_DATA_HOME/rtviz` under the same file name.
+fn open_store(storage: &Storage, path: &Path) -> Result<Store> {
     let name = path.file_name().context("the store path names no file")?;
     let settings = Settings {
-        backfill_days,
-        keep_days,
+        backfill_days: storage.backfill.0,
+        keep_days: match storage.keep {
+            Keep::Forever => None,
+            Keep::Days(days) => Some(days),
+        },
         backup: xdg::data_home()?.join("rtviz").join(name),
     };
     Store::open(path, settings)
 }
 
 /// Samples until `until`, printing each delta on stdout and a summary of the cluster after it on stderr.
-async fn stream(slurm: Slurm, store: Option<Store>, until: Option<model::UnixTime>) -> Result<()> {
+async fn stream(
+    slurm: Slurm,
+    config: &Config,
+    store: Option<Store>,
+    until: Option<model::UnixTime>,
+) -> Result<()> {
     let mut cluster = Cluster {
         hides_jobs: slurm.site().hides_jobs(),
         ..Cluster::default()
     };
-    let mut sampler = Sampler::new(slurm, Intervals::default(), store);
-    let mut deltas = sampler.subscribe();
+    let hub = Hub::new(slurm.site().clone());
+    let mut sampler = Sampler::new(slurm, config.sample, store, hub.clone(), config.names);
+    let mut deltas = hub.subscribe();
     let sampling = async move { sampler.run(until).await };
     let printing = async {
         loop {

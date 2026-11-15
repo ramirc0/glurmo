@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
 use sacct::Outcome;
@@ -87,6 +87,18 @@ pub struct Site {
 }
 
 impl Site {
+    /// zlurm's facts, for tests.
+    #[cfg(test)]
+    pub fn zlurm() -> Self {
+        Self {
+            cluster: "zlurm".into(),
+            version: Version(23, 11, 4),
+            min_job_age_s: 300,
+            private_data: Vec::new(),
+            rate_limit: None,
+        }
+    }
+
     /// Whether squeue hides other users' jobs.
     pub fn hides_jobs(&self) -> bool {
         self.private_data.iter().any(|data| data == "jobs")
@@ -94,15 +106,21 @@ impl Site {
 }
 
 /// How often to run each command, and how many placement lookups to make per jobs tick.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// In the config, intervals read like `jobs: "10s"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Intervals {
     /// squeue.
+    #[serde(rename = "jobs", with = "crate::config::seconds")]
     pub jobs_s: u64,
     /// sinfo.
+    #[serde(rename = "nodes", with = "crate::config::seconds")]
     pub nodes_s: u64,
     /// scontrol show partition.
+    #[serde(rename = "partitions", with = "crate::config::seconds")]
     pub partitions_s: u64,
     /// sdiag.
+    #[serde(rename = "stats", with = "crate::config::seconds")]
     pub stats_s: u64,
     /// Placement lookups per jobs tick.
     pub lookups: u64,
