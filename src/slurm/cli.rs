@@ -13,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+use super::fields::Read;
 use super::recording::{Answer, Call};
 use super::scontrol::CpuMap;
 use super::{Lookup, Version, sacct, scontrol, sdiag, sinfo, squeue};
@@ -41,7 +42,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 pub struct Cli {
     version: Option<Version>,
     nodes: Vec<Node>,
-    /// sacct lines already reported as unreadable, so a job asked about every tick is saved once.
+    /// Records already reported as unreadable, so a job listed every tick is saved once.
     reported: HashSet<String>,
     /// Kinds of call whose unparsed output this run has saved, so a listing that fails every tick is
     /// saved once.
@@ -137,13 +138,13 @@ impl Cli {
 }
 
 impl Cli {
-    /// The records of a sacct read. Lines that did not parse are logged and kept for a fixture, once
+    /// The records of a read. Records that did not parse are logged and kept for a fixture, once
     /// each, so one cannot block the rest.
-    fn readable<T>(&mut self, exchange: &Exchange, read: sacct::Read<T>) -> Vec<T> {
+    fn readable<T>(&mut self, exchange: &Exchange, read: Read<T>) -> Vec<T> {
         let new: Vec<_> = read
             .unreadable
             .into_iter()
-            .filter(|unreadable| self.reported.insert(unreadable.line.clone()))
+            .filter(|unreadable| self.reported.insert(unreadable.text.clone()))
             .collect();
         if !new.is_empty() {
             let kept = unparsed_dir()
@@ -154,8 +155,8 @@ impl Cli {
                 );
             for unreadable in &new {
                 eprintln!(
-                    "skipped a sacct line ({kept}): {}: {:?}",
-                    unreadable.error, unreadable.line
+                    "skipped a record {} printed ({kept}): {}: {:?}",
+                    exchange.argv[0], unreadable.error, unreadable.text
                 );
             }
         }

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::fields::{columns, integer, is_placeholder, job_state, seconds, time, tres};
+use super::fields::{Read, columns, integer, is_placeholder, job_state, read, seconds, time, tres};
 use super::hostlist::{count_ids, expand_hosts};
 use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, JobId, JobState, Login, PartitionName, UnixTime,
@@ -43,45 +43,10 @@ pub fn argv(jobs: &[JobId]) -> Vec<String> {
     .collect()
 }
 
-/// What a read of sacct's output gave: the records that parsed, and the lines that did not.
-#[derive(Debug)]
-pub struct Read<T> {
-    /// Records from the lines that parsed.
-    pub records: Vec<T>,
-    /// Lines that did not parse, set aside so one cannot block the rest.
-    pub unreadable: Vec<Unreadable>,
-}
-
-/// A line of sacct's output that did not parse, and why.
-#[derive(Debug)]
-pub struct Unreadable {
-    /// The line.
-    pub line: String,
-    /// Why it did not parse.
-    pub error: String,
-}
-
-fn read<T>(stdout: &str, record: impl Fn(&str) -> Result<T>) -> Read<T> {
-    let mut read = Read {
-        records: Vec::new(),
-        unreadable: Vec::new(),
-    };
-    for line in stdout.lines() {
-        match record(line) {
-            Ok(parsed) => read.records.push(parsed),
-            Err(error) => read.unreadable.push(Unreadable {
-                line: line.to_owned(),
-                error: format!("{error:#}"),
-            }),
-        }
-    }
-    read
-}
-
 /// Parses the output of [`argv`], setting aside lines with too few columns or a value that does
 /// not parse.
 pub fn parse(stdout: &str) -> Read<Outcome> {
-    read(stdout, outcome)
+    read(stdout.lines(), outcome)
 }
 
 fn outcome(line: &str) -> Result<Outcome> {
@@ -145,7 +110,7 @@ pub fn history_argv(from: UnixTime, to: UnixTime) -> Result<Vec<String>> {
 /// Parses the output of [`history_argv`] into attempts, setting aside lines that do not parse.
 /// Accounting keeps no reasons or names, so those stay empty.
 pub fn parse_history(stdout: &str) -> Read<Attempt> {
-    read(stdout, accounted)
+    read(stdout.lines(), accounted)
 }
 
 /// Reads one allocation. A pending job has no allocation yet, so its CPUs, memory and GPUs come from the request.
@@ -322,7 +287,7 @@ mod tests {
         assert_eq!(read.records.len(), 1);
         assert_eq!(read.records[0].key.job, JobId(3_848_268));
         assert_eq!(read.unreadable.len(), 1);
-        assert_eq!(read.unreadable[0].line, "3848267|1794244136");
+        assert_eq!(read.unreadable[0].text, "3848267|1794244136");
         assert!(
             read.unreadable[0].error.contains("columns"),
             "{}",

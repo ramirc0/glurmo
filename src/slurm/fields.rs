@@ -29,6 +29,45 @@ pub fn columns<const N: usize>(line: &str) -> Result<[&str; N]> {
         .map_err(|_| anyhow::anyhow!("expected {N} columns, found {found} in {line:?}"))
 }
 
+/// What a read of command output gave: the records that parsed, and those that did not.
+#[derive(Debug)]
+pub struct Read<T> {
+    /// The records that parsed.
+    pub records: Vec<T>,
+    /// The records that did not parse, set aside so one cannot block the rest.
+    pub unreadable: Vec<Unreadable>,
+}
+
+/// A record of command output that did not parse, and why.
+#[derive(Debug)]
+pub struct Unreadable {
+    /// The record as printed.
+    pub text: String,
+    /// Why it did not parse.
+    pub error: String,
+}
+
+/// Parses each of `texts` with `record`, setting aside those that fail.
+pub fn read<'a, T>(
+    texts: impl IntoIterator<Item = &'a str>,
+    record: impl Fn(&str) -> Result<T>,
+) -> Read<T> {
+    let mut read = Read {
+        records: Vec::new(),
+        unreadable: Vec::new(),
+    };
+    for text in texts {
+        match record(text) {
+            Ok(parsed) => read.records.push(parsed),
+            Err(error) => read.unreadable.push(Unreadable {
+                text: text.to_owned(),
+                error: format!("{error:#}"),
+            }),
+        }
+    }
+    read
+}
+
 /// Whether Slurm printed a stand-in for a missing value.
 pub fn is_placeholder(text: &str) -> bool {
     matches!(
