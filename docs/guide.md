@@ -88,7 +88,7 @@ The `Jobs` panel lists running and pending jobs:
 
 The history panel is a timeline:
 
-* The wheel or a drag pans it back. Shift or ctrl with the wheel, or a pinch, zooms it around the pointer. A white line marks the moment under the pointer, with its time.
+* The wheel pans it back. Shift or ctrl with the wheel, or a pinch, zooms it around the pointer. A drag highlights a stretch, and letting go zooms to it. A white line marks the moment under the pointer, with its time.
 * Type a span such as `6h` or `3d` in its heading, and *now* brings it back.
 * A click replays the cluster from that moment, paused. The heading then offers 1×, 10×, 60× and 600×, pause and *live*. The keys `1` to `4`, `0` and `esc` do the same.
 * The address can start a replay too, as in `?at=1794700000&speed=60`.

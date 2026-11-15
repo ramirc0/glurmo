@@ -617,6 +617,15 @@ aside.editor a {
   pointer-events: none;
 }
 
+.history .timeline .selection {
+  position: absolute;
+  top: 0;
+  bottom: 18px;
+  background: rgb(255 255 255 / 12%);
+  border-inline: 1px solid rgb(255 255 255 / 60%);
+  pointer-events: none;
+}
+
 .history .timeline .cursor span {
   position: absolute;
   top: 0;

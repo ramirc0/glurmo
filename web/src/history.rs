@@ -1,6 +1,7 @@
 //! Cores in use over time, stacked by user, with the queue's depth and a time axis below. It doubles as
-//! a timeline: the wheel or a drag pans it, shift or ctrl with the wheel, or a pinch, zooms it, and a
-//! click replays the cluster from that moment. A line marks the moment under the pointer.
+//! a timeline: the wheel pans it, shift or ctrl with the wheel, or a pinch, zooms it, a drag selects a
+//! stretch to zoom to, and a click replays the cluster from that moment. A line marks the moment under
+//! the pointer.
 
 use glurmo_model::layout::Span;
 use glurmo_model::units::thousands;
@@ -134,14 +135,15 @@ pub fn History(span: Span) -> impl IntoView {
     }
 }
 
-/// The timeline's input around `children`: the wheel or a drag pans it, shift or ctrl with the wheel, or
-/// a pinch, zooms it around the pointer, and a click replays from the moment under the pointer, or goes back to
-/// live near now.
+/// The timeline's input around `children`: the wheel pans it, shift or ctrl with the wheel, or a pinch,
+/// zooms it around the pointer, a drag selects a stretch to zoom to, and a click replays from the moment
+/// under the pointer, or goes back to live near now.
 #[component]
 fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
     let state = expect_context::<State>();
     let press = StoredValue::new(None::<Drag>);
     let hover = RwSignal::new(None::<Hover>);
+    let selection = RwSignal::new(None::<(f64, f64)>);
     let pressed = move |event: web_sys::PointerEvent| {
         if state.editing() || event.button() != 0 {
             return;
@@ -154,33 +156,29 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
             let _ = element.set_pointer_capture(event.pointer_id());
         }
         press.set_value(Some(Drag {
-            x: spot.x,
-            end: view_end(state),
+            x: spot.x.max(LABELS),
+            at: moment(state, &spot),
             moved: false,
         }));
     };
     let moved = move |event: web_sys::PointerEvent| {
         let spot = Spot::of(&event, span_s.get_untracked());
-        hover.set(spot.as_ref().filter(|spot| spot.x >= LABELS).map(|spot| {
-            #[expect(clippy::cast_possible_truncation, reason = "seconds fit in an i64")]
-            let at = view_end(state) - spot.before_end_s as i64;
-            Hover {
-                x: spot.x,
-                at,
-                flip: spot.room < FLIP_PX,
-            }
-        }));
+        hover.set(
+            spot.as_ref()
+                .filter(|spot| spot.x >= LABELS)
+                .map(|spot| Hover {
+                    x: spot.x,
+                    at: moment(state, spot),
+                    flip: spot.room < FLIP_PX,
+                }),
+        );
         let (Some(mut held), Some(spot)) = (press.get_value(), spot) else {
             return;
         };
-        let dx = spot.x - held.x;
-        held.moved |= dx.abs() > DRAG_PX;
+        held.moved |= (spot.x - held.x).abs() > DRAG_PX;
         if held.moved {
-            #[expect(clippy::cast_possible_truncation, reason = "seconds fit in an i64")]
-            let shift = (dx * spot.per_px) as i64;
-            state
-                .timeline
-                .update(|timeline| timeline.end = follow_now(held.end - shift));
+            let x = spot.x.clamp(LABELS, spot.x + spot.room);
+            selection.set(Some((held.x.min(x), (held.x - x).abs())));
         }
         press.set_value(Some(held));
     };
@@ -189,11 +187,19 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
             return;
         };
         press.set_value(None);
-        let Some(spot) = Spot::of(&event, span_s.get_untracked()).filter(|spot| spot.x >= LABELS)
-        else {
+        selection.set(None);
+        let Some(spot) = Spot::of(&event, span_s.get_untracked()) else {
             return;
         };
         if held.moved {
+            let (span, end) = zoom_to(held.at, moment(state, &spot));
+            state.timeline.set(Timeline {
+                span_s: Some(span),
+                end: follow_now(end),
+            });
+            return;
+        }
+        if spot.x < LABELS {
             return;
         }
         #[expect(clippy::cast_precision_loss, reason = "seconds fit in an f64")]
@@ -262,11 +268,25 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
             on:pointerdown=pressed
             on:pointermove=moved
             on:pointerup=released
-            on:pointercancel=move |_| press.set_value(None)
+            on:pointercancel=move |_| {
+                press.set_value(None);
+                selection.set(None);
+            }
             on:pointerleave=move |_| hover.set(None)
             on:wheel=wheeled
         >
             {children()}
+            {move || {
+                selection.get().map(|(left, width)| {
+                    view! {
+                        <div
+                            class="selection"
+                            style:left=format!("{left}px")
+                            style:width=format!("{width}px")
+                        ></div>
+                    }
+                })
+            }}
             {move || {
                 hover.get().map(|Hover { x, at, flip }| {
                     let dated = span_s.get() > DAY_S;
@@ -290,12 +310,31 @@ struct Hover {
     flip: bool,
 }
 
-/// A press on the timeline: where it started, and where the timeline ended then.
+/// A press on the timeline: where it started, and the moment there.
 #[derive(Clone, Copy)]
 struct Drag {
     x: f64,
-    end: i64,
+    at: i64,
     moved: bool,
+}
+
+/// The moment under the pointer, within the graph.
+fn moment(state: State, spot: &Spot) -> i64 {
+    #[expect(clippy::cast_possible_truncation, reason = "seconds fit in an i64")]
+    let before_end = spot.before_end_s.max(0.0) as i64;
+    view_end(state) - before_end
+}
+
+/// The span and end that show moments `a` and `b` edge to edge. A stretch shorter than the shortest
+/// span widens around its middle, and one longer than the longest keeps its end.
+fn zoom_to(a: i64, b: i64) -> (i64, i64) {
+    let (from, to) = (a.min(b), a.max(b));
+    let span = (to - from).clamp(SPANS_S.0, SPANS_S.1);
+    if to - from < span {
+        (span, from + (to - from) / 2 + span / 2)
+    } else {
+        (span, to)
+    }
 }
 
 /// Where a pointer is on the timeline.
@@ -536,6 +575,27 @@ mod tests {
         assert_eq!(parse_span("90d").map(length).as_deref(), Some("90d"));
         assert_eq!(parse_span("36h").map(length).as_deref(), Some("36h"));
         assert_eq!(parse_span("48h").map(length).as_deref(), Some("2d"));
+    }
+
+    #[test]
+    fn a_selection_zooms_to_its_edges() {
+        assert_eq!(zoom_to(10_000, 30_000), (20_000, 30_000));
+        assert_eq!(
+            zoom_to(30_000, 10_000),
+            (20_000, 30_000),
+            "a drag to the left"
+        );
+    }
+
+    #[test]
+    fn a_short_selection_widens_around_its_middle() {
+        assert_eq!(zoom_to(10_000, 10_600), (3_600, 10_300 + 1_800));
+        let (span, end) = zoom_to(0, 100 * 86_400);
+        assert_eq!(
+            (span, end),
+            (90 * 86_400, 100 * 86_400),
+            "a long one keeps its end"
+        );
     }
 
     #[test]
