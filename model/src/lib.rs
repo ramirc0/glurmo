@@ -1082,7 +1082,7 @@ impl Cluster {
         nodes
     }
 
-    /// Sets each node's CPUs and GPUs allocated from who holds its cores and GPUs, and an up node's
+    /// Sets each node's CPUs, GPUs and memory allocated from the attempts running on it, and an up node's
     /// state to idle, mixed or allocated to match. A node that is draining, drained, down or unknown keeps
     /// its state.
     ///
@@ -1112,10 +1112,13 @@ impl Cluster {
     /// cluster.tally_allocation();
     /// assert_eq!(cluster.nodes[0].state, NodeState::Allocated, "8 CPUs fill 4 cores");
     /// assert_eq!((cluster.nodes[0].cpus_alloc, cluster.nodes[0].gpus_used), (8, 1));
+    /// assert_eq!(cluster.nodes[0].mem_alloc_mb, 16000);
     /// ```
     pub fn tally_allocation(&mut self) {
         let occupancy = self.occupancy();
+        let mem_held = self.mem_held();
         for node in &mut self.nodes {
+            node.mem_alloc_mb = mem_held.get(&node.name).copied().unwrap_or(0);
             let Some(cells) = occupancy.get(&node.name) else {
                 continue;
             };
@@ -1134,6 +1137,33 @@ impl Cluster {
                 _ => (NodeState::Mixed, "MIXED".to_owned()),
             };
         }
+    }
+
+    /// Memory each node holds for running attempts: what a lookup found on the node, or else the
+    /// attempt's memory split evenly across its nodes.
+    fn mem_held(&self) -> HashMap<NodeName, u64> {
+        let mut mem_held: HashMap<NodeName, u64> = HashMap::new();
+        for running in self.running.values() {
+            let attempt = &running.attempt;
+            let spread = u64::try_from(attempt.nodes.len())
+                .unwrap_or(u64::MAX)
+                .max(1);
+            let even = attempt.mem_mb.map_or(0, |mb| mb / spread);
+            match &running.placement {
+                Some(placement) => {
+                    for cells in &placement.0 {
+                        *mem_held.entry(cells.node.clone()).or_default() +=
+                            cells.mem_mb.unwrap_or(even);
+                    }
+                }
+                None => {
+                    for node in &attempt.nodes {
+                        *mem_held.entry(node.clone()).or_default() += even;
+                    }
+                }
+            }
+        }
+        mem_held
     }
 }
 

@@ -1,7 +1,7 @@
 //! The cluster at a past moment, rebuilt from history, and the changes from one moment to another.
 //!
-//! History keeps who held which cores, the queue, and node health. It keeps no load, memory in use,
-//! pending reasons, job names or scheduler counters, so the past leaves them out. Hardware, partitions
+//! History keeps who held which cores and memory, the queue, and node health. It keeps no load, free
+//! memory, pending reasons, job names or scheduler counters, so the past leaves them out. Hardware, partitions
 //! and users come from the present.
 
 use std::collections::{BTreeMap, HashMap};
@@ -146,7 +146,7 @@ fn holding(stored: &Stored) -> Running {
 }
 
 /// The frame's nodes, each with its last health up to `at`. A node with no record by then counts as up.
-/// Allocation, load and memory are left empty.
+/// Allocation, load and free memory are left empty.
 fn nodes_at(at: UnixTime, health: &[NodeHealth], frame: &Frame) -> Vec<Node> {
     let mut last: HashMap<&NodeName, &NodeHealth> = HashMap::new();
     for record in health.iter().take_while(|record| record.at <= at) {
@@ -178,6 +178,8 @@ fn nodes_at(at: UnixTime, health: &[NodeHealth], frame: &Frame) -> Vec<Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
     use crate::fixture::{busy_store, store_path};
     use crate::store::History;
     use rtviz_model::{AttemptKey, Occupancies};
@@ -239,9 +241,10 @@ mod tests {
     }
 
     /// A tick's listing runs a moment after the tick starts, so it may or may not see an attempt that
-    /// starts or ends within that second. Those are left out of both sides.
+    /// starts or ends within that second. Those are left out of both sides, and so is the memory on their
+    /// nodes and on completing nodes.
     #[tokio::test]
-    async fn the_past_holds_the_cores_the_stream_showed() {
+    async fn the_past_holds_the_cores_and_memory_the_stream_showed() {
         let (dir, hub) = busy_store().await;
         let history = History::open(&store_path(&dir));
         let frame = hub.read(Frame::of);
@@ -259,14 +262,38 @@ mod tests {
             let health = history.node_health(at).unwrap();
             let mut past = cluster_at(at, history.alive(at).unwrap(), &health, &frame);
             let mut seen = live.clone();
+            let mut unsure_nodes = HashSet::new();
             for cluster in [&mut past, &mut seen] {
-                cluster.running.retain(|key, _| {
+                cluster.running.retain(|key, running| {
                     let (start, end) = times[key];
                     let sure = start != Some(at) && end != Some(at);
-                    unsure += usize::from(!sure);
+                    if !sure {
+                        unsure += 1;
+                        unsure_nodes.extend(running.attempt.nodes.iter().cloned());
+                    }
                     sure
                 });
             }
+            // sinfo's AllocMem leaves out jobs that start on a node while another there completes.
+            unsure_nodes.extend(
+                seen.nodes
+                    .iter()
+                    .filter(|node| node.state_raw.contains("completing"))
+                    .map(|node| node.name.clone()),
+            );
+            let mem_held = |cluster: &Cluster| {
+                cluster
+                    .nodes
+                    .iter()
+                    .filter(|node| !unsure_nodes.contains(&node.name))
+                    .map(|node| (node.name.clone(), node.mem_alloc_mb))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                mem_held(&past),
+                mem_held(&seen),
+                "memory held per node at {at:?}"
+            );
             assert_eq!(
                 past.running.keys().collect::<Vec<_>>(),
                 seen.running.keys().collect::<Vec<_>>(),
