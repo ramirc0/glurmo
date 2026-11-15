@@ -22,6 +22,10 @@ const GAP: u16 = 3;
 /// How much of its color the lower core in each character keeps.
 const LOWER: f32 = 0.68;
 
+/// How much of the down or drain color the free cores of a node that is out keep, so a dead node
+/// reads as dim rather than loud.
+const OUT: f32 = 0.4;
+
 /// Nodes drawn together under one title.
 struct Group<'a> {
     name: String,
@@ -209,8 +213,9 @@ impl Shape {
 /// One node: its name, its cores, its GPUs, then its load and free memory or why it is out.
 fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Vec<Span<'static>> {
     let palette = &scene.palette;
-    let empty = empty(scene, node);
-    let name_color = if usable(node) { palette.subtle } else { empty };
+    let out = out(scene, node);
+    let empty = out.map_or(palette.free, |color| palette.fade(color, OUT));
+    let name_color = out.filter(|_| !usable(node)).unwrap_or(palette.subtle);
     let mut spans = vec![Span::styled(
         format!("{:<width$} ", node.name.0, width = usize::from(shape.name)),
         name_color,
@@ -246,7 +251,10 @@ fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Vec<Span<'static>> {
         return spans;
     }
     if let Some(word) = trouble(node) {
-        spans.push(Span::styled(format!(" {word:<10}"), empty));
+        spans.push(Span::styled(
+            format!(" {word:<10}"),
+            out.unwrap_or(palette.text),
+        ));
         return spans;
     }
     let load = node.load.map_or_else(|| "-".to_owned(), load);
@@ -259,12 +267,12 @@ fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Vec<Span<'static>> {
     spans
 }
 
-/// The color of a node's free cores: down, draining or free.
-fn empty(scene: &Scene, node: &Node) -> Color {
+/// The color of a node that is out: down or draining. `None` for a node that takes jobs.
+fn out(scene: &Scene, node: &Node) -> Option<Color> {
     match node.state {
-        _ if node.flags.contains(&NodeFlag::NotResponding) => scene.palette.down,
-        NodeState::Down | NodeState::Unknown => scene.palette.down,
-        NodeState::Draining | NodeState::Drained => scene.palette.drain,
-        _ => scene.palette.free,
+        _ if node.flags.contains(&NodeFlag::NotResponding) => Some(scene.palette.down),
+        NodeState::Down | NodeState::Unknown => Some(scene.palette.down),
+        NodeState::Draining | NodeState::Drained => Some(scene.palette.drain),
+        _ => None,
     }
 }

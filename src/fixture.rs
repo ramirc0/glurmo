@@ -7,6 +7,7 @@ use crate::hub::Hub;
 use crate::sampler::Sampler;
 use crate::slurm::Slurm;
 use crate::slurm::source::{Exchange, Replay, Source};
+use crate::store::{Settings, Store};
 
 /// The defaults, with zlurm's GPU models.
 pub fn zlurm_config() -> Config {
@@ -37,9 +38,26 @@ pub async fn busy_quarter_hour_with(mut edit: impl FnMut(&mut Exchange)) -> Slur
 
 /// A hub that has published the whole busy quarter hour, sampled without a store.
 pub async fn busy_hub() -> Hub {
+    sample_busy_quarter_hour(None).await
+}
+
+/// A hub that has published the whole busy quarter hour, sampled into a temporary store as a server
+/// would. Unlike [`busy_hub`], it names users and gives them colors.
+pub async fn busy_stored_hub() -> Hub {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings {
+        backfill_days: 0,
+        keep_days: None,
+        backup: dir.path().join("backup.sqlite"),
+    };
+    let store = Store::open(&dir.path().join("rtviz.sqlite"), settings).unwrap();
+    sample_busy_quarter_hour(Some(store)).await
+}
+
+async fn sample_busy_quarter_hour(store: Option<Store>) -> Hub {
     let slurm = busy_quarter_hour().await;
     let hub = Hub::new(slurm.site().clone());
-    let mut sampler = Sampler::new(slurm, &zlurm_config(), None, hub.clone());
+    let mut sampler = Sampler::new(slurm, &zlurm_config(), store, hub.clone());
     sampler.run(None).await;
     hub
 }

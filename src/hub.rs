@@ -374,10 +374,11 @@ mod tests {
 
     #[tokio::test]
     async fn snapshots_and_deltas_read_back_as_they_were_written() {
-        let hub = crate::fixture::busy_hub().await;
+        let hub = crate::fixture::busy_stored_hub().await;
         let snapshot = hub.snapshot();
         assert!(!snapshot.cluster.running.is_empty());
         assert!(!snapshot.cluster.queue.is_empty());
+        assert!(!snapshot.cluster.users.is_empty());
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
         for delta in hub.deltas() {

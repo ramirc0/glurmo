@@ -121,7 +121,7 @@ impl<'a> Scene<'a> {
         let border = if focus.focused {
             self.palette.subtle
         } else {
-            self.palette.overlay
+            self.palette.fade(self.palette.muted, 0.5)
         };
         let mut block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -368,7 +368,7 @@ mod tests {
     /// The busy quarter hour as a view sees it after following every delta, seen by the user with
     /// the most running jobs, over a made-up day of usage by the four busiest users.
     async fn busy_app() -> App {
-        let hub = crate::fixture::busy_hub().await;
+        let hub = crate::fixture::busy_stored_hub().await;
         let mut app = App::new(
             Library::load(Path::new("/nonexistent")),
             &Tui::default(),
