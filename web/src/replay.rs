@@ -110,15 +110,24 @@ pub struct Engine {
     pub effects: Effects,
 }
 
+impl Engine {
+    /// Applies `change` to the live view a replay set aside, or hands it back when none is.
+    fn change_aside<F: FnOnce(&mut Cluster, &mut Ticker)>(&mut self, change: F) -> Option<F> {
+        let Some(aside) = &mut self.aside else {
+            return Some(change);
+        };
+        change(&mut aside.cluster, &mut aside.ticker);
+        None
+    }
+}
+
 /// Changes the live view: the one set aside while a replay has the screen, or else the one shown.
 pub fn update_live(state: State, change: impl FnOnce(&mut Cluster, &mut Ticker)) {
-    let mut change = Some(change);
-    state.engine.update_value(|engine| {
-        if let (Some(aside), Some(change)) = (&mut engine.aside, change.take()) {
-            change(&mut aside.cluster, &mut aside.ticker);
-        }
-    });
-    if let Some(change) = change {
+    let mut unapplied = None;
+    state
+        .engine
+        .update_value(|engine| unapplied = engine.change_aside(change));
+    if let Some(change) = unapplied {
         state
             .ticker
             .update(|ticker| state.cluster.update(|cluster| change(cluster, ticker)));
@@ -400,4 +409,31 @@ fn fetch_ahead(state: State, at: f64, speed: u32, now: f64) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note_ten(cluster: &mut Cluster, _: &mut Ticker) {
+        cluster.at = Some(UnixTime(10));
+    }
+
+    #[test]
+    fn live_changes_go_aside_only_while_a_replay_holds_the_screen() {
+        let mut engine = Engine::default();
+        assert!(
+            engine.change_aside(note_ten).is_some(),
+            "with nothing aside, the change comes back for the screen"
+        );
+        engine.aside = Some(Aside {
+            cluster: Cluster::default(),
+            ticker: Ticker::default(),
+        });
+        assert!(engine.change_aside(note_ten).is_none());
+        assert_eq!(
+            engine.aside.map(|aside| aside.cluster.at),
+            Some(Some(UnixTime(10)))
+        );
+    }
 }
