@@ -2,6 +2,43 @@
 
 use crate::UnixTime;
 
+/// Megabytes as whole gigabytes with a `G`, or terabytes with one decimal and a `T`.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::units::gigabytes;
+///
+/// assert_eq!(gigabytes(64_000), "62G");
+/// assert_eq!(gigabytes(2_000_000), "1.9T");
+/// ```
+pub fn gigabytes(mb: u64) -> String {
+    if mb >= 1_000_000 {
+        #[expect(clippy::cast_precision_loss, reason = "megabytes fit in an f64")]
+        let tb = mb as f64 / 1_048_576.0;
+        format!("{tb:.1}T")
+    } else {
+        format!("{}G", mb / 1_024)
+    }
+}
+
+/// Writes a count as [`thousands`] does, or `–` for none.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::units::count;
+///
+/// assert_eq!((count(0), count(1_024)), ("–".to_owned(), "1,024".to_owned()));
+/// ```
+pub fn count(number: u64) -> String {
+    if number == 0 {
+        "–".to_owned()
+    } else {
+        thousands(number)
+    }
+}
+
 /// Writes `1205` as `1,205`.
 ///
 /// # Examples

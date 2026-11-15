@@ -62,6 +62,8 @@ pub enum Pane {
     },
     /// Your own jobs.
     Mine,
+    /// Running and pending jobs, grouped, to search and filter.
+    Jobs,
     /// Starts and ends as they happen.
     Ticker,
 }

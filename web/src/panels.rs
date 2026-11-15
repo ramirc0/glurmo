@@ -11,7 +11,7 @@ use crate::paint::{Rgb, clock, display_name, now, user_color};
 use crate::state::{Highlight, Link, State};
 
 /// The CSS color of `login` in the current theme.
-fn color_of(state: State, login: &Login) -> String {
+pub fn color_of(state: State, login: &Login) -> String {
     state.theme.with(|theme| {
         theme.as_ref().map_or_else(String::new, |theme| {
             state

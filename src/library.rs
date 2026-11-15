@@ -25,10 +25,11 @@ const THEMES: [(&str, &str); 3] = [
     ),
 ];
 
-const LAYOUTS: [(&str, &str); 3] = [
+const LAYOUTS: [(&str, &str); 4] = [
     ("tui", include_str!("../layouts/tui.ron")),
     ("web", include_str!("../layouts/web.ron")),
     ("tv", include_str!("../layouts/tv.ron")),
+    ("jobs", include_str!("../layouts/jobs.ron")),
 ];
 
 /// Every theme and layout, by file name without `.ron`.

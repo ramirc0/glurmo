@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use leptos::prelude::*;
-use rtviz_model::units::{load, since, span};
+use rtviz_model::units::{gigabytes, load, since, span};
 use rtviz_model::{Attempt, Cluster, Node, Occupancies, Occupancy, Owner};
 
-use crate::die::{Spot, gigabytes};
+use crate::die::{Spot, owner_at};
 use crate::paint::display_name;
 
 /// The most holders a node's tooltip lists.
@@ -24,18 +24,12 @@ impl Tip {
     /// What to say about `spot` on `node`.
     pub fn of(cluster: &Cluster, occupancy: &Occupancies, node: &Node, spot: Spot) -> Self {
         let cells = occupancy.get(&node.name);
-        let (what, owner) = match spot {
-            Spot::Core(i) => (
-                format!(" · core {i}"),
-                cells.and_then(|cells| cells.cores.get(i).copied().flatten()),
-            ),
-            Spot::Gpu(i) => (
-                format!(" · gpu {i}"),
-                cells.and_then(|cells| cells.gpus.get(i).copied().flatten()),
-            ),
-            Spot::Tile => (String::new(), None),
+        let what = match spot {
+            Spot::Core(i) => format!(" · core {i}"),
+            Spot::Gpu(i) => format!(" · gpu {i}"),
+            Spot::Tile => String::new(),
         };
-        let rows = match owner {
+        let rows = match owner_at(occupancy, node, spot) {
             Some(Owner::Attempt(key)) => cluster.running.get(&key).map_or_else(
                 || vec![row("job", "ended")],
                 |running| job(cluster, cells, &running.attempt, Owner::Attempt(key)),

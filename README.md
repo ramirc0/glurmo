@@ -65,6 +65,7 @@ Config(
   http://js029:8765/?me=otter
   ```
   `me` fills the `Mine` panel. The `tv` layout, or `tv` in the address, hides the cursor and lights up each user's cores in turn. Elsewhere, hovering a user, partition, or node row lights up its cores, and hovering the Die shows the job on a core or the state of a node. `t` and `l` cycle themes and layouts. `f` fills the screen with the panel under the pointer, and `f` or `esc` brings the layout back.
+* The `Jobs` panel lists running and pending jobs. Jobs from one user that share a name, an array, or partitions collapse into one row, and a click opens it. Its heading searches user, full name, job ID, name, partition, node, and reason. Its chips narrow it to running, pending, your own, or GPU jobs. A click on a column heading sorts by it. Hovering a row lights its cores on the Die. Hovering a core on the Die lights its job's row, and hovering a node lights the rows of every job on it. A panel 1,200 pixels wide adds full names, time left and submit times. The terminal view shows the same rows, narrowed by `/`. The `jobs` layout sets the panel beside the Die.
 * The web view's history panel is a timeline. The wheel or a drag pans it back, and ctrl with the wheel, or a pinch, zooms it. Type a span such as `6h` or `3d` in its heading, and *now* brings it back. A click replays the cluster from that moment, paused. The heading then offers 1×, 10×, 60× and 600×, pause, and *live*, and the keys `1` to `4`, `0` and `esc` do the same. The header shows the replayed time under a replay badge. The address can start a replay too, as in `?at=1794700000&speed=60`. A replay shows no load, free memory, pending reasons or job names, because the history does not keep them.
 * Press `e` in the web view to edit its layout and theme on the live page. Click a panel to pick it, then split, remove, or change it in the sidebar. Drag a panel onto another to swap them, and drag the gap between panes to resize them. The theme side has a color picker for every color and imports a pasted base16 scheme. *Save in this browser* keeps the result in local storage. *Export RON* gives the file to save in the configuration directory below, which every page then picks up. `e` or `esc` closes the editor and drops unsaved changes.
 
@@ -83,7 +84,7 @@ The terminal view takes these keys:
 | `t` | Next theme |
 | `?` | Help |
 
-Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pine-moon` and `rose-pine-dawn`. The built-in layouts are `tui`, `web` and `tv`. A file in `~/.config/rtviz/themes/` or `~/.config/rtviz/layouts/` adds one, or replaces the built-in of the same name. The view reloads them within 2 seconds of an edit. See `themes/` and `layouts/` for the format.
+Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pine-moon` and `rose-pine-dawn`. The built-in layouts are `tui`, `web`, `tv` and `jobs`. A file in `~/.config/rtviz/themes/` or `~/.config/rtviz/layouts/` adds one, or replaces the built-in of the same name. The view reloads them within 2 seconds of an edit. See `themes/` and `layouts/` for the format.
 
 ## Help
 

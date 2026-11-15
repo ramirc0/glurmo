@@ -6,6 +6,7 @@ mod die;
 mod feed;
 mod header;
 mod history;
+mod jobs;
 mod mine;
 mod nodes;
 mod palette;

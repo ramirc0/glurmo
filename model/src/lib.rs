@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub mod jobs;
 pub mod layout;
 pub mod summary;
 pub mod theme;

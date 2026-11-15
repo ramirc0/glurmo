@@ -1,7 +1,7 @@
 //! What every panel reads: the cluster as the stream builds it, the picked theme and layout, and what
 //! the page's address asks for.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use leptos::prelude::*;
 
@@ -11,7 +11,9 @@ use rtviz_model::layout::{Layout, Pane};
 use rtviz_model::summary::Ticker;
 use rtviz_model::theme::Theme;
 use rtviz_model::usage::Usage;
-use rtviz_model::{Cluster, Login, Node, NodeName, Occupancies, PartitionName, UnixTime};
+use rtviz_model::{
+    AttemptKey, Cluster, Login, Node, NodeName, Occupancies, PartitionName, UnixTime,
+};
 
 /// The state of the stream from the server.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,13 +35,17 @@ pub enum Highlight {
     Partition(PartitionName),
     /// One node.
     Node(NodeName),
+    /// The job under the pointer on the Die. The job list lights its row and scrolls to it.
+    Job(AttemptKey),
+    /// The jobs in a row of the job list.
+    Jobs(BTreeSet<AttemptKey>),
 }
 
 impl Highlight {
-    /// Whether `node`'s whole tile fades. A user highlight fades cores, not tiles.
+    /// Whether `node`'s whole tile fades. A user or job highlight fades cores, not tiles.
     pub fn fades(&self, node: &Node) -> bool {
         match self {
-            Self::User(_) => false,
+            Self::User(_) | Self::Job(_) | Self::Jobs(_) => false,
             Self::Partition(partition) => !node.partitions.contains(partition),
             Self::Node(name) => node.name != *name,
         }

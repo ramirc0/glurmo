@@ -12,6 +12,7 @@ mod die;
 mod editor;
 mod feed;
 mod history;
+mod jobs;
 mod paint;
 mod pane;
 mod panels;

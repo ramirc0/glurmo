@@ -11,7 +11,7 @@ use crate::state::State;
 use crate::tree::{self, Path, at, at_mut, dragged, size_mut};
 
 /// Every panel, with the options a new one starts with.
-const PANELS: [Pane; 10] = [
+const PANELS: [Pane; 11] = [
     Pane::Header,
     Pane::Die {
         group: Grouping::Hardware,
@@ -26,6 +26,7 @@ const PANELS: [Pane; 10] = [
         span: Span::Hours(24),
     },
     Pane::Mine,
+    Pane::Jobs,
     Pane::Ticker,
     Pane::Keys,
 ];
@@ -55,6 +56,7 @@ fn kind(pane: &Pane) -> &'static str {
         Pane::Nodes => "Nodes",
         Pane::History { .. } => "History",
         Pane::Mine => "Mine",
+        Pane::Jobs => "Jobs",
         Pane::Ticker => "Ticker",
     }
 }

@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 
 use super::app::App;
 use super::palette::Palette;
-use super::{die, header, history, mine, nodes, partitions, queue, ticker, users};
+use super::{die, header, history, jobs, mine, nodes, partitions, queue, ticker, users};
 use rtviz_model::layout::{Direction, Pane, Size};
 use rtviz_model::summary::{self, Tally};
 use rtviz_model::{Attempt, Cluster, Login, Occupancies, Owner, UnixTime};
@@ -228,6 +228,7 @@ fn walk(scene: &Scene, pane: &Pane, area: Rect, buf: &mut Buffer, limits: &mut V
         Pane::Partitions => partitions::draw(scene, area, buf, focus),
         Pane::Nodes => nodes::draw(scene, area, buf, focus),
         Pane::Mine => mine::draw(scene, area, buf, focus),
+        Pane::Jobs => jobs::draw(scene, area, buf, focus),
         Pane::Ticker => ticker::draw(scene, area, buf, focus),
     };
     limits.push(limit);
@@ -477,5 +478,16 @@ mod tests {
         assert!(!app.quit);
         app.key(KeyEvent::from(KeyCode::BackTab));
         assert_eq!(render(&mut app, 100, 30).backend().to_string(), layout);
+    }
+
+    #[tokio::test]
+    async fn the_jobs_layout_groups_jobs_and_widens_when_filled() {
+        let mut app = busy_app().await;
+        app.layout = "jobs".into();
+        insta::assert_snapshot!("jobs_layout", render(&mut app, 160, 50).backend());
+        app.key(KeyEvent::from(KeyCode::Tab));
+        app.key(KeyEvent::from(KeyCode::Char('f')));
+        app.filter.text = "4hours".into();
+        insta::assert_snapshot!("jobs_filled", render(&mut app, 200, 30).backend());
     }
 }

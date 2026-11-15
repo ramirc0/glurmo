@@ -325,6 +325,9 @@ mod tests {
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.layout, "tv");
         press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.layout, "web");
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.layout, "jobs", "wraps around to the first by name");
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.layout, "tui");
         press(&mut app, KeyCode::Char('t'));

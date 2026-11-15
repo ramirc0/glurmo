@@ -10,7 +10,7 @@ use leptos::prelude::*;
 use rtviz_model::layout::Grouping;
 use rtviz_model::summary::{NodeGroup, node_groups};
 use rtviz_model::theme::Theme;
-use rtviz_model::units::{load, thousands};
+use rtviz_model::units::{gigabytes, load, thousands};
 use rtviz_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use web_sys::CanvasRenderingContext2d;
 
@@ -115,6 +115,34 @@ pub fn spot_at<'a>(board: &Board<'a>, x: f64, y: f64) -> Option<(&'a Node, Spot)
         .or_else(|| near(&tile.gpus).map(Spot::Gpu))
         .unwrap_or(Spot::Tile);
     Some((tile.node, spot))
+}
+
+/// Who holds the core or GPU at `spot` on `node`.
+pub fn owner_at(occupancy: &Occupancies, node: &Node, spot: Spot) -> Option<Owner> {
+    let cells = occupancy.get(&node.name)?;
+    match spot {
+        Spot::Core(i) => cells.cores.get(i).copied().flatten(),
+        Spot::Gpu(i) => cells.gpus.get(i).copied().flatten(),
+        Spot::Tile => None,
+    }
+}
+
+/// Lights what the pointer is on: the job that holds a core or GPU, else the node. Clears what it lit
+/// once the pointer leaves the tiles. Highlights from elsewhere stay until the pointer finds a tile.
+fn light_from_die(state: State, lit: Option<Highlight>) {
+    if state.tv {
+        return;
+    }
+    let from_die = state.highlight.with_untracked(|highlight| {
+        matches!(highlight, Some(Highlight::Job(_) | Highlight::Node(_)))
+    });
+    if (lit.is_some() || from_die)
+        && state
+            .highlight
+            .with_untracked(|highlight| *highlight != lit)
+    {
+        state.highlight.set(lit);
+    }
 }
 
 /// Where one node's tile, cores and GPUs go.
@@ -533,10 +561,16 @@ pub fn Die(group: Grouping) -> impl IntoView {
                 let groups = node_groups(cluster, group);
                 let board = board(&groups, width, height);
                 let (node, spot) = spot_at(&board, x, y)?;
-                Some(Tip::of(cluster, occupancy, node, spot))
+                let lit = match owner_at(occupancy, node, spot) {
+                    Some(Owner::Attempt(key)) => Highlight::Job(key),
+                    _ => Highlight::Node(node.name.clone()),
+                };
+                Some((Tip::of(cluster, occupancy, node, spot), lit))
             })
         });
+        let (found, lit) = found.unzip();
         tip.set(found.map(|tip| tip.at(x, y, width, height)));
+        light_from_die(state, lit);
     };
     let draw = move |context: &CanvasRenderingContext2d, width: f64, height: f64| {
         let Some(theme) = state.theme.get() else {
@@ -574,7 +608,10 @@ pub fn Die(group: Grouping) -> impl IntoView {
                     point(event);
                 }
             }
-            on:mouseleave=move |_| tip.set(None)
+            on:mouseleave=move |_| {
+                tip.set(None);
+                light_from_die(state, None);
+            }
         >
             <div
                 class="board"
@@ -683,21 +720,28 @@ impl Ink<'_> {
     /// The color of a cell held by `owner`, or `empty` when no one holds it.
     fn cell(&self, owner: Option<Owner>, empty: Rgb) -> Rgb {
         let free = Self::rgb(&self.theme.state.free);
-        let (color, login) = match owner {
+        let (color, login, key) = match owner {
             None => return empty,
-            Some(Owner::Hidden) => (Self::rgb(&self.theme.ui.muted), None),
+            Some(Owner::Hidden) => (Self::rgb(&self.theme.ui.muted), None, None),
             Some(Owner::Attempt(key)) => match self.cluster.running.get(&key) {
                 Some(running) => {
                     let login = &running.attempt.login;
-                    (user_color(self.theme, self.cluster, login), Some(login))
+                    (
+                        user_color(self.theme, self.cluster, login),
+                        Some(login),
+                        Some(key),
+                    )
                 }
-                None => (Self::rgb(&self.theme.ui.muted), None),
+                None => (Self::rgb(&self.theme.ui.muted), None, Some(key)),
             },
         };
-        match self.highlight {
-            Some(Highlight::User(lit)) if login != Some(lit) => color.fade(free, FADED),
-            _ => color,
-        }
+        let lit = match self.highlight {
+            Some(Highlight::User(lit)) => login == Some(lit),
+            Some(Highlight::Job(lit)) => key == Some(*lit),
+            Some(Highlight::Jobs(lit)) => key.is_some_and(|key| lit.contains(&key)),
+            _ => true,
+        };
+        if lit { color } else { color.fade(free, FADED) }
     }
 
     fn tile(&self, tile: &Tile, gauges: bool) {
@@ -998,17 +1042,6 @@ fn out(theme: &Theme, node: &Node) -> Option<Rgb> {
     }
 }
 
-/// Megabytes as whole gigabytes with a `G`, or terabytes with one decimal and a `T`.
-pub fn gigabytes(mb: u64) -> String {
-    if mb >= 1_000_000 {
-        #[expect(clippy::cast_precision_loss, reason = "megabytes fit in an f64")]
-        let tb = mb as f64 / 1_048_576.0;
-        format!("{tb:.1}T")
-    } else {
-        format!("{}G", mb / 1_024)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1209,11 +1242,5 @@ mod tests {
                 .iter()
                 .all(|gpu| gpu.x > tile.bar.unwrap().x + 30.0)
         );
-    }
-
-    #[test]
-    fn memory_reads_in_gigabytes_or_terabytes() {
-        assert_eq!(gigabytes(64_000), "62G");
-        assert_eq!(gigabytes(2_000_000), "1.9T");
     }
 }

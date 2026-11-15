@@ -1,0 +1,10 @@
+Layout(name: "jobs", root:
+    Split(Vertical, [
+        (Length(2), Header),
+        (Fill(1), Split(Horizontal, [
+            (Percentage(50), Die(group: Hardware)),
+            (Fill(1), Jobs),
+        ])),
+        (Length(12), History(span: Hours(24))),
+    ]),
+)

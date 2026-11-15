@@ -8,6 +8,7 @@ use rtviz_model::layout::{Direction, Pane, Size};
 use crate::builder::{Cover, Grip, label};
 use crate::die::Die;
 use crate::history::History;
+use crate::jobs::Jobs;
 use crate::panels::{Header, Keys, Mine, Nodes, Partitions, Queue, Ticker, Users};
 use crate::state::State;
 use crate::tree::Path;
@@ -60,6 +61,7 @@ fn panel(pane: &Pane) -> AnyView {
         Pane::Nodes => view! { <Nodes/> }.into_any(),
         Pane::History { span } => view! { <History span=span/> }.into_any(),
         Pane::Mine => view! { <Mine/> }.into_any(),
+        Pane::Jobs => view! { <Jobs/> }.into_any(),
         Pane::Ticker => view! { <Ticker/> }.into_any(),
     }
 }
