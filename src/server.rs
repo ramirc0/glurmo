@@ -435,6 +435,7 @@ fn content_type(path: &str) -> &'static str {
         "wasm" => "application/wasm",
         "css" => "text/css",
         "woff2" => "font/woff2",
+        "svg" => "image/svg+xml",
         "txt" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
@@ -635,6 +636,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type("glurmo-web-1a2b_bg.wasm"), "application/wasm");
         assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
+        assert_eq!(content_type("favicon-1a2b.svg"), "image/svg+xml");
     }
 
     /// The RON the server writes for `json` sent as `{kind: json}`.
