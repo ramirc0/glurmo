@@ -130,7 +130,7 @@ A file in `~/.config/glurmo/themes/` or `~/.config/glurmo/layouts/` adds one, or
 
 ## Recordings
 
-* `glurmo record --minutes 30 OUT.jsonl` saves each call to Slurm and its answer. `--pseudonymize` rewrites logins and job names.
+* `glurmo record --minutes 30 OUT.jsonl` saves each call to Slurm and its answer. `--pseudonymize` rewrites logins, job names, free-text reasons and errors.
 * `glurmo pseudonymize RAW OUT` rewrites a recording made without it.
 * `glurmo serve --replay FILE` serves a recording with a throwaway history. `--speed 10` plays it ten times faster.
 * `glurmo convert OLD NEW` turns a recording of command output, made before glurmo spoke the protocol, into one of calls and answers.

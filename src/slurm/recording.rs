@@ -97,7 +97,7 @@ pub fn read(path: &Path) -> Result<Vec<Exchange>> {
         .collect()
 }
 
-/// Appends exchanges to a recording, optionally with logins and job names rewritten.
+/// Appends exchanges to a recording, optionally rewritten by [`Pseudonyms`].
 pub struct Recorder {
     file: File,
     pseudonyms: Option<Pseudonyms>,
@@ -141,24 +141,42 @@ const ANIMALS: [&str; 24] = [
     "zebu", "bison",
 ];
 
-/// Stable stand-ins for every login and job name seen so far. Nothing else a recording holds names a
-/// person.
+/// Stable stand-ins for every login, job name and free-text reason seen so far.
+///
+/// A job's reason can quote an association message, such as `user=alice`, and a node's reason is
+/// whatever an operator typed. Reasons that are one word of letters, digits and `_`, as Slurm's own
+/// reason names are, stay. Others become `reason1`, `reason2` and so on. An error's text can quote
+/// command output, so it becomes [`HIDDEN_ERROR`]. Nothing else a recording holds names a person.
 #[derive(Default)]
 pub struct Pseudonyms {
     logins: HashMap<String, String>,
     names: HashMap<String, String>,
+    reasons: HashMap<String, String>,
 }
 
+/// What an error's text becomes in a pseudonymized recording.
+pub const HIDDEN_ERROR: &str = "error text removed by --pseudonymize";
+
 impl Pseudonyms {
-    /// Rewrites the logins and job names in an exchange's answer.
+    /// Rewrites the logins, job names, reasons and error text in an exchange.
     pub fn rewrite(&mut self, exchange: &mut Exchange) {
-        if let Ok(Answer::Jobs(attempts) | Answer::History(attempts)) = &mut exchange.answer {
-            for attempt in attempts {
-                attempt.login = self.login(&attempt.login);
-                if !attempt.name.is_empty() {
-                    attempt.name = self.name(&attempt.name);
+        match &mut exchange.answer {
+            Ok(Answer::Jobs(attempts) | Answer::History(attempts)) => {
+                for attempt in attempts {
+                    attempt.login = self.login(&attempt.login);
+                    if !attempt.name.is_empty() {
+                        attempt.name = self.name(&attempt.name);
+                    }
+                    attempt.reason = attempt.reason.take().map(|reason| self.reason(reason));
                 }
             }
+            Ok(Answer::Nodes(nodes)) => {
+                for node in nodes {
+                    node.reason = node.reason.take().map(|reason| self.reason(reason));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => HIDDEN_ERROR.clone_into(error),
         }
     }
 
@@ -181,6 +199,17 @@ impl Pseudonyms {
         self.names
             .entry(name.to_owned())
             .or_insert_with(|| format!("job{}", next + 1))
+            .clone()
+    }
+
+    fn reason(&mut self, reason: String) -> String {
+        if reason.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return reason;
+        }
+        let next = self.reasons.len();
+        self.reasons
+            .entry(reason)
+            .or_insert_with(|| format!("reason{}", next + 1))
             .clone()
     }
 }
@@ -394,5 +423,60 @@ mod tests {
             pairs,
             [("otter", "job1"), ("heron", "job1"), ("otter", "job2")]
         );
+    }
+
+    #[test]
+    fn pseudonyms_cover_free_text_in_every_carrier() {
+        let mut attempt = crate::slurm::squeue::parse(
+            "7|7|N/A|alice|4hours|PENDING|4|cpu=4,mem=4G,node=1,billing=4|1:00:00|1794244136|N/A|N/A||Priority|secret",
+        )
+        .unwrap()
+        .remove(0);
+        let mut held = attempt.clone();
+        held.reason = Some("AssocMaxJobsLimit user=alice".into());
+        attempt.reason = Some("Priority".into());
+        let node = Node {
+            reason: Some("alice broke secret".into()),
+            ..crate::slurm::sinfo::parse(
+                "z1014|30mins*|idle|0/88/0/88|0.19|500000|0|254476|(null)|gpu:0|broadwell|2|22|none",
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let exchanges = [
+            (Call::Jobs, Ok(Answer::Jobs(vec![attempt, held.clone()]))),
+            (
+                Call::History {
+                    from: UnixTime(0),
+                    to: UnixTime(1),
+                },
+                Ok(Answer::History(vec![held])),
+            ),
+            (Call::Nodes, Ok(Answer::Nodes(vec![node.clone(), node]))),
+            (
+                Call::Placements,
+                Err("scontrol job \"JobName=secret UserId=alice(1)\": bad".into()),
+            ),
+        ];
+        let mut pseudonyms = Pseudonyms::default();
+        let mut texts = Vec::new();
+        for (call, answer) in exchanges {
+            let mut exchange = Exchange {
+                at: UnixTime(1),
+                call,
+                answer,
+            };
+            pseudonyms.rewrite(&mut exchange);
+            texts.push(serde_json::to_string(&exchange).unwrap());
+        }
+        for text in &texts {
+            assert!(
+                !text.contains("alice") && !text.contains("secret"),
+                "{text}"
+            );
+        }
+        assert!(texts[0].contains("\"Priority\""), "{}", texts[0]);
+        assert!(texts[0].contains("\"reason1\"") && texts[1].contains("\"reason1\""));
+        assert_eq!(texts[2].matches("\"reason2\"").count(), 2, "{}", texts[2]);
     }
 }

@@ -85,7 +85,7 @@ enum Command {
     },
     /// Sample the cluster and save every call and its answer as JSON lines.
     Record {
-        /// Rewrite logins and job names, so the recording can become a test fixture.
+        /// Rewrite logins, job names, free-text reasons and errors, so the recording can become a test fixture.
         #[arg(long)]
         pseudonymize: bool,
         /// How long to keep sampling after the first tick.
@@ -94,7 +94,7 @@ enum Command {
         /// Where to write the recording.
         out: PathBuf,
     },
-    /// Rewrite a raw recording's logins and job names, so it can become a test fixture.
+    /// Rewrite a raw recording's logins, job names, free-text reasons and errors, so it can become a test fixture.
     Pseudonymize {
         /// The raw recording.
         raw: PathBuf,
