@@ -63,6 +63,20 @@ pub struct Usage {
     pub steps: Vec<Step>,
 }
 
+/// A step that gives at most about 600 steps over `span_s`, in whole five-minute bins.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::usage::step_for;
+///
+/// assert_eq!(step_for(86_400), 300);
+/// assert_eq!(step_for(7 * 86_400), 1_200);
+/// ```
+pub fn step_for(span_s: i64) -> i64 {
+    ((span_s / 600).max(300) + 299) / 300 * 300
+}
+
 /// One column of a usage graph: cores held by each login, biggest user overall first, and tasks waiting.
 ///
 /// # Examples
@@ -133,5 +147,18 @@ impl Usage {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steps_are_whole_bins_and_at_most_about_600() {
+        assert_eq!(step_for(3_600), 300);
+        assert_eq!(step_for(86_400), 300);
+        assert_eq!(step_for(7 * 86_400), 1_200);
+        assert_eq!(step_for(30 * 86_400), 4_500);
     }
 }

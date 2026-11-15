@@ -15,7 +15,7 @@ use crate::slurm::Slurm;
 use crate::slurm::source::Source;
 use crate::store::{By, History, Settings, Store, UsageQuery};
 use rtviz_model::UnixTime;
-use rtviz_model::usage::Usage;
+use rtviz_model::usage::{Usage, step_for};
 
 /// How long to wait before reconnecting to a server, as the server's `retry` field also says.
 const RETRY: Duration = Duration::from_secs(5);
@@ -206,11 +206,6 @@ impl Feed {
     }
 }
 
-/// A step that gives at most about 600 steps over `span_s`, in whole five-minute bins.
-fn step_for(span_s: i64) -> i64 {
-    ((span_s / 600).max(300) + 299) / 300 * 300
-}
-
 /// Follows the server's stream until `updates` closes, reconnecting after each break.
 async fn follow_remote(client: reqwest::Client, base: String, updates: mpsc::Sender<Update>) {
     let mut last_id: Option<String> = None;
@@ -380,13 +375,5 @@ mod tests {
 
         let usage = feed.usage(86_400).await.unwrap();
         assert_eq!((usage.step_s, usage.steps), (300, Vec::new()));
-    }
-
-    #[test]
-    fn steps_are_whole_bins_and_at_most_about_600() {
-        assert_eq!(step_for(3_600), 300);
-        assert_eq!(step_for(86_400), 300);
-        assert_eq!(step_for(7 * 86_400), 1_200);
-        assert_eq!(step_for(30 * 86_400), 4_500);
     }
 }
