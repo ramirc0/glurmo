@@ -65,6 +65,7 @@ Config(
   http://js029:8765/?me=otter
   ```
   `me` fills the `Mine` panel. The `tv` layout, or `tv` in the address, hides the cursor and lights up each user's cores in turn. Elsewhere, hovering a user, partition, or node row lights up its cores, and hovering the Die shows the job on a core or the state of a node. `t` and `l` cycle themes and layouts.
+* The web view's history panel is a timeline. The wheel or a drag pans it back, and ctrl with the wheel, or a pinch, zooms it. Its heading sets the span in hours or days, and *now* brings it back. A click replays the cluster from that moment, paused. The heading then offers 1×, 10×, 60× and 600×, pause, and *live*, and the keys `1` to `4`, `0` and `esc` do the same. The header shows the replayed time under a replay badge. The address can start a replay too, as in `?at=1794700000&speed=60`. A replay shows no load, memory, pending reasons or job names, because the history does not keep them.
 * Press `e` in the web view to edit its layout and theme on the live page. Click a panel to pick it, then split, remove, or change it in the sidebar. Drag a panel onto another to swap them, and drag the gap between panes to resize them. The theme side has a color picker for every color and imports a pasted base16 scheme. *Save in this browser* keeps the result in local storage. *Export RON* gives the file to save in the configuration directory below, which every page then picks up. `e` or `esc` closes the editor and drops unsaved changes.
 
 The terminal view takes these keys:
