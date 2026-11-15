@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub mod layout;
+pub mod summary;
 pub mod theme;
+pub mod units;
+pub mod usage;
 
 /// A job ID unique to each array task, as sacct's `JobIDRaw` prints it.
 ///
@@ -264,6 +267,30 @@ pub struct Attempt {
     pub name: String,
 }
 
+impl Attempt {
+    /// How many tasks the row stands for: an array range's count, or 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "key": {"job": 4242, "submit": 1700000000}, "array": {"job": 4242, "spec": "0-3", "count": 4},
+    /// #     "login": "otter", "partitions": ["5days"], "state": "pending", "state_raw": "PENDING", "cpus": 8,
+    /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": null, "end": null,
+    /// #     "nodes": [], "reason": "Priority", "name": "align"
+    /// # }"#;
+    /// use rtviz_model::Attempt;
+    ///
+    /// let mut attempt: Attempt = serde_json::from_str(json).unwrap();
+    /// assert_eq!(attempt.tasks(), 4);
+    /// attempt.array = None;
+    /// assert_eq!(attempt.tasks(), 1);
+    /// ```
+    pub fn tasks(&self) -> u32 {
+        self.array.as_ref().map_or(1, |array| array.count)
+    }
+}
+
 /// A node's state, neutral across schedulers.
 ///
 /// # Examples
@@ -393,6 +420,64 @@ impl Node {
     /// ```
     pub fn cpus_per_core(&self) -> u32 {
         self.cpus.checked_div(self.cores).unwrap_or(1).max(1)
+    }
+
+    /// Whether the node can run jobs: up, responding, and not drained.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "name": "z1001", "partitions": ["5days"], "state": "mixed", "flags": [], "state_raw": "MIXED",
+    /// #     "reason": null, "cpus": 8, "cpus_alloc": 4, "sockets": 1, "cores": 4, "load": 2.5,
+    /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
+    /// #     "gpu_model": "V100", "features": ["avx512"]
+    /// # }"#;
+    /// use rtviz_model::{Node, NodeState};
+    ///
+    /// let mut node: Node = serde_json::from_str(json).unwrap();
+    /// assert!(node.is_usable());
+    /// node.state = NodeState::Drained;
+    /// assert!(!node.is_usable());
+    /// ```
+    pub fn is_usable(&self) -> bool {
+        !matches!(
+            self.state,
+            NodeState::Down | NodeState::Drained | NodeState::Unknown
+        ) && !self.flags.contains(&NodeFlag::NotResponding)
+    }
+
+    /// A short word for why the node cannot take new jobs, or `None` when it can.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "name": "z1001", "partitions": ["5days"], "state": "mixed", "flags": [], "state_raw": "MIXED",
+    /// #     "reason": null, "cpus": 8, "cpus_alloc": 4, "sockets": 1, "cores": 4, "load": 2.5,
+    /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
+    /// #     "gpu_model": "V100", "features": ["avx512"]
+    /// # }"#;
+    /// use rtviz_model::{Node, NodeFlag, NodeState};
+    ///
+    /// let mut node: Node = serde_json::from_str(json).unwrap();
+    /// assert_eq!(node.trouble(), None);
+    /// node.state = NodeState::Draining;
+    /// assert_eq!(node.trouble(), Some("draining"));
+    /// node.flags.push(NodeFlag::NotResponding);
+    /// assert_eq!(node.trouble(), Some("no reply"));
+    /// ```
+    pub fn trouble(&self) -> Option<&'static str> {
+        if self.flags.contains(&NodeFlag::NotResponding) {
+            return Some("no reply");
+        }
+        match self.state {
+            NodeState::Down => Some("down"),
+            NodeState::Drained => Some("drained"),
+            NodeState::Draining => Some("draining"),
+            NodeState::Unknown => Some("unknown"),
+            _ => None,
+        }
     }
 }
 
@@ -801,6 +886,18 @@ pub struct Occupancy {
     pub gpus: Vec<Option<Owner>>,
 }
 
+/// Who holds each core and GPU, node by node.
+///
+/// # Examples
+///
+/// ```
+/// use rtviz_model::{Cluster, Occupancies};
+///
+/// let occupancy: Occupancies = Cluster::default().occupancy();
+/// assert!(occupancy.is_empty());
+/// ```
+pub type Occupancies = BTreeMap<NodeName, Occupancy>;
+
 impl Cluster {
     /// Applies one delta.
     ///
@@ -895,8 +992,8 @@ impl Cluster {
     /// assert_eq!(z1001.cores.iter().flatten().count(), 4, "8 CPUs at 2 threads per core");
     /// assert_eq!(z1001.gpus.iter().flatten().count(), 1);
     /// ```
-    pub fn occupancy(&self) -> BTreeMap<NodeName, Occupancy> {
-        let mut nodes: BTreeMap<NodeName, Occupancy> = self
+    pub fn occupancy(&self) -> Occupancies {
+        let mut nodes: Occupancies = self
             .nodes
             .iter()
             .map(|node| {

@@ -3,17 +3,16 @@
 //! Each character holds two cores: one from the first half of the node's cores on top, and its match
 //! from the second half, faded, below. On a two-socket node that puts socket 0 over socket 1.
 
-use std::collections::BTreeMap;
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
-use super::units::{load, thousands};
-use super::view::{Focus, Scene, scrolled, trouble, usable};
+use super::view::{Focus, Scene, scrolled};
 use rtviz_model::layout::Grouping;
+use rtviz_model::summary::{NodeGroup, node_groups};
+use rtviz_model::units::{load, thousands};
 use rtviz_model::{Node, NodeFlag, NodeState};
 
 /// Columns between node entries.
@@ -26,17 +25,11 @@ const LOWER: f32 = 0.68;
 /// reads as dim rather than loud.
 const OUT: f32 = 0.4;
 
-/// Nodes drawn together under one title.
-struct Group<'a> {
-    name: String,
-    nodes: Vec<&'a Node>,
-}
-
 /// Draws the groups' titles and node entries, as many entries to a line as fit. When they do not fit
 /// the panel's height, each node's load and free memory are left out to fit more to a line.
 pub fn draw(scene: &Scene, grouping: Grouping, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
     let inner = Block::bordered().inner(area);
-    let groups = groups(scene, grouping);
+    let groups = node_groups(scene.cluster(), grouping);
     let mut gauges = true;
     let mut lines = lines_of(scene, &groups, inner.width, gauges);
     if lines.len() > usize::from(inner.height) {
@@ -62,7 +55,7 @@ pub fn draw(scene: &Scene, grouping: Grouping, area: Rect, buf: &mut Buffer, foc
 }
 
 /// Each group's title, then its entries in lines `width` wide.
-fn lines_of(scene: &Scene, groups: &[Group], width: u16, gauges: bool) -> Vec<Line<'static>> {
+fn lines_of(scene: &Scene, groups: &[NodeGroup], width: u16, gauges: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for group in groups {
         lines.push(title(scene, group));
@@ -82,80 +75,11 @@ fn lines_of(scene: &Scene, groups: &[Group], width: u16, gauges: bool) -> Vec<Li
     lines
 }
 
-/// The nodes in groups. By hardware, CPU nodes group by their features, largest group first, and GPU
-/// nodes follow by GPU model and core count. By partition, a node shows once in each of its partitions.
-fn groups<'a>(scene: &'a Scene, grouping: Grouping) -> Vec<Group<'a>> {
-    let nodes = &scene.cluster().nodes;
-    match grouping {
-        Grouping::Hardware => {
-            let mut cpu: BTreeMap<String, Vec<&Node>> = BTreeMap::new();
-            let mut gpu: BTreeMap<(String, u32), Vec<&Node>> = BTreeMap::new();
-            for node in nodes {
-                if node.gpus > 0 {
-                    let name = node
-                        .gpu_model
-                        .as_ref()
-                        .map_or_else(|| "gpu".to_owned(), |model| format!("gpu · {model}"));
-                    gpu.entry((name, node.cores)).or_default().push(node);
-                } else {
-                    let name = if node.features.is_empty() {
-                        "cpu".to_owned()
-                    } else {
-                        node.features.join(" + ")
-                    };
-                    cpu.entry(name).or_default().push(node);
-                }
-            }
-            let mut groups: Vec<Group> = cpu
-                .into_iter()
-                .map(|(name, nodes)| Group { name, nodes })
-                .collect();
-            groups.sort_by_key(|group| {
-                std::cmp::Reverse(group.nodes.iter().map(|node| node.cores).sum::<u32>())
-            });
-            groups.extend(
-                gpu.into_iter()
-                    .map(|((name, _), nodes)| Group { name, nodes }),
-            );
-            groups
-        }
-        Grouping::Partition => scene
-            .cluster()
-            .partitions
-            .iter()
-            .map(|partition| Group {
-                name: partition.name.0.clone(),
-                nodes: nodes
-                    .iter()
-                    .filter(|node| partition.nodes.contains(&node.name))
-                    .collect(),
-            })
-            .filter(|group| !group.nodes.is_empty())
-            .collect(),
-    }
-}
-
 /// The group's name, its node count, and the cores and GPUs held.
-fn title(scene: &Scene, group: &Group) -> Line<'static> {
+fn title(scene: &Scene, group: &NodeGroup) -> Line<'static> {
     let palette = &scene.palette;
-    let held = |cells: &[Option<rtviz_model::Owner>]| {
-        cells.iter().filter(|cell| cell.is_some()).count() as u64
-    };
-    let (mut cores, mut gpus) = ((0, 0), (0, 0));
-    for occupancy in group
-        .nodes
-        .iter()
-        .filter_map(|node| scene.occupancy.get(&node.name))
-    {
-        cores = (
-            cores.0 + held(&occupancy.cores),
-            cores.1 + occupancy.cores.len() as u64,
-        );
-        gpus = (
-            gpus.0 + held(&occupancy.gpus),
-            gpus.1 + occupancy.gpus.len() as u64,
-        );
-    }
+    let cores = group.cores(&scene.occupancy);
+    let gpus = group.gpus(&scene.occupancy);
     let count = group.nodes.len();
     let mut spans = vec![
         Span::styled(
@@ -169,13 +93,17 @@ fn title(scene: &Scene, group: &Group) -> Line<'static> {
             palette.subtle,
         ),
         Span::styled(
-            format!("  {}/{} cores held", thousands(cores.0), thousands(cores.1)),
+            format!(
+                "  {}/{} cores held",
+                thousands(cores.held),
+                thousands(cores.total)
+            ),
             palette.muted,
         ),
     ];
-    if gpus.1 > 0 {
+    if gpus.total > 0 {
         spans.push(Span::styled(
-            format!("  {}/{} gpus held", gpus.0, gpus.1),
+            format!("  {}/{} gpus held", gpus.held, gpus.total),
             palette.muted,
         ));
     }
@@ -218,7 +146,7 @@ fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Vec<Span<'static>> {
     let palette = &scene.palette;
     let out = out(scene, node);
     let empty = out.map_or(palette.free, |color| palette.fade(color, OUT));
-    let name_color = out.filter(|_| !usable(node)).unwrap_or(palette.subtle);
+    let name_color = out.filter(|_| !node.is_usable()).unwrap_or(palette.subtle);
     let mut spans = vec![Span::styled(
         format!("{:<width$} ", node.name.0, width = usize::from(shape.name)),
         name_color,
@@ -253,7 +181,7 @@ fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Vec<Span<'static>> {
     if !shape.gauges {
         return spans;
     }
-    if let Some(word) = trouble(node) {
+    if let Some(word) = node.trouble() {
         spans.push(Span::styled(
             format!(" {word:<10}"),
             out.unwrap_or(palette.text),
@@ -277,70 +205,5 @@ fn out(scene: &Scene, node: &Node) -> Option<Color> {
         NodeState::Down | NodeState::Unknown => Some(scene.palette.down),
         NodeState::Draining | NodeState::Drained => Some(scene.palette.drain),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use jiff::tz::TimeZone;
-
-    use super::*;
-    use crate::config::Tui;
-    use crate::library::Library;
-    use crate::tui::app::App;
-    use rtviz_model::{Login, NodeName};
-
-    fn node(name: &str, cores: u32, gpus: u32) -> Node {
-        Node {
-            name: NodeName(name.into()),
-            partitions: Vec::new(),
-            state: NodeState::Idle,
-            flags: Vec::new(),
-            state_raw: "IDLE".into(),
-            reason: None,
-            cpus: cores * 2,
-            cpus_alloc: 0,
-            sockets: 2,
-            cores,
-            load: None,
-            mem_mb: 0,
-            mem_alloc_mb: 0,
-            mem_free_mb: None,
-            gpus,
-            gpus_used: 0,
-            gpu_model: None,
-            features: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn gpu_nodes_with_no_model_group_by_core_count() {
-        let mut app = App::new(
-            Library::load(Path::new("/nonexistent")),
-            &Tui::default(),
-            Login("otter".into()),
-            TimeZone::UTC,
-        );
-        let mut typed = node("t1", 16, 4);
-        typed.gpu_model = Some("V100".into());
-        app.cluster.nodes = vec![
-            node("c1", 26, 0),
-            node("big", 128, 8),
-            node("g1", 16, 4),
-            typed,
-            node("g2", 16, 4),
-        ];
-        let scene = Scene::new(&app);
-        let groups: Vec<(String, usize)> = groups(&scene, Grouping::Hardware)
-            .iter()
-            .map(|group| (group.name.clone(), group.nodes.len()))
-            .collect();
-        let expected = [("cpu", 1), ("gpu", 2), ("gpu", 1), ("gpu · V100", 1)];
-        assert_eq!(
-            groups,
-            expected.map(|(name, count)| (name.to_owned(), count))
-        );
     }
 }

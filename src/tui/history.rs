@@ -1,6 +1,6 @@
 //! Cores in use over time, stacked by user, with the queue's depth and a time axis below.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -8,11 +8,11 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span as Text};
 use ratatui::widgets::{Paragraph, Widget};
 
-use super::feed::Usage;
-use super::units::thousands;
 use super::view::{Focus, Scene};
 use rtviz_model::Login;
 use rtviz_model::layout::Span;
+use rtviz_model::units::thousands;
+use rtviz_model::usage::Column;
 
 /// Lower blocks by eighths, from empty to full.
 const LOWER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
@@ -22,13 +22,6 @@ const LABELS: u16 = 7;
 
 /// Hours between time labels. The axis takes the fewest that keep labels apart.
 const LABEL_EVERY_H: [i64; 9] = [1, 2, 3, 6, 12, 24, 48, 168, 336];
-
-/// One column of the graph: cores held by each login, biggest user overall first, and tasks waiting.
-#[derive(Default)]
-struct Column<'a> {
-    cores: Vec<(&'a str, u64)>,
-    waiting: u64,
-}
 
 /// Draws the stacked cores, the queue line and the time axis over `span`.
 pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
@@ -59,7 +52,7 @@ pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
         inner.width - LABELS,
         inner.height - 2,
     );
-    let columns = columns(usage, from, span_s, graph.width);
+    let columns = usage.columns(from, span_s, graph.width);
     stack(scene, &columns, graph, buf);
     queue(
         scene,
@@ -76,45 +69,13 @@ pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
     );
 }
 
-/// Samples the usage step under the middle of each of `count` columns over `from` to `from + span_s`.
-fn columns(usage: &Usage, from: i64, span_s: i64, count: u16) -> Vec<Column<'_>> {
-    let step_s = u64::try_from(usage.step_s.max(1)).unwrap_or(1);
-    let mut by_time: BTreeMap<i64, Column> = BTreeMap::new();
-    let mut totals: HashMap<&str, u64> = HashMap::new();
-    for step in &usage.steps {
-        let column = by_time.entry(step.at.0).or_default();
-        column.cores.push((&step.key, step.core_s / step_s));
-        column.waiting += step.wait_s / step_s;
-        *totals.entry(&step.key).or_default() += step.core_s;
-    }
-    let count = i64::from(count);
-    (0..count)
-        .map(|i| {
-            let time = from + (2 * i + 1) * span_s / (2 * count);
-            let Some((_, step)) = by_time
-                .range(..=time)
-                .next_back()
-                .filter(|(at, _)| **at + usage.step_s > time)
-            else {
-                return Column::default();
-            };
-            let mut cores = step.cores.clone();
-            cores.sort_by_key(|(login, _)| (std::cmp::Reverse(totals[login]), *login));
-            Column {
-                cores,
-                waiting: step.waiting,
-            }
-        })
-        .collect()
-}
-
 /// Stacks each column's cores from the bottom, one color per login, on a scale up to the usable cores
 /// or the peak, whichever is higher. Each cell takes the color of the login under its middle.
 fn stack(scene: &Scene, columns: &[Column], area: Rect, buf: &mut Buffer) {
     let palette = &scene.palette;
     let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
     let peak = columns.iter().map(total).max().unwrap_or(0);
-    let capacity = scene.cores().0.max(peak).max(1);
+    let capacity = scene.cores().total.max(peak).max(1);
     let rows = u64::from(area.height);
     let mut colors: HashMap<&str, Color> = HashMap::new();
     for (x, column) in (area.x..).zip(columns) {

@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
+use rtviz_model::usage::Step;
 use rtviz_model::{
     Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeName, NodeState,
     PartitionName, UnixTime, User,
@@ -523,28 +524,6 @@ pub struct UsageQuery {
     pub step_s: i64,
     /// What to sum by.
     pub by: By,
-}
-
-/// Usage summed over one step for one login or partition.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Step {
-    /// The step's start.
-    pub at: UnixTime,
-    /// The login or partition.
-    pub key: String,
-    /// Core-seconds held.
-    pub core_s: u64,
-    /// GPU-seconds held.
-    pub gpu_s: u64,
-    /// Task-seconds spent pending.
-    pub wait_s: u64,
-    /// Attempts that took their cores.
-    pub started: u32,
-    /// Attempts that freed their cores.
-    pub ended: u32,
-    /// Ended attempts that failed. Counted per partition only, never per person.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed: Option<u32>,
 }
 
 /// Reads history on a connection of its own, so a server can query while the sampler writes.

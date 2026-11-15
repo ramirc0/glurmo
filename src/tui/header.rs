@@ -6,9 +6,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::feed::Link;
-use super::units::{clock, percent, since, thousands};
+use super::units::clock;
 use super::view::Scene;
 use rtviz_model::UnixTime;
+use rtviz_model::units::{percent, since, thousands};
 
 /// Eighth blocks, from empty to full.
 const EIGHTHS: [&str; 9] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
@@ -26,12 +27,12 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
         || "waiting for the first sample".to_owned(),
         |at| clock(at, &scene.app.tz, "%a %-d %b %H:%M:%S"),
     );
-    let (cores, held_cores) = scene.cores();
-    let (gpus, held_gpus) = scene.gpus();
+    let cores = scene.cores();
+    let gpus = scene.gpus();
     let pending: u64 = cluster
         .queue
         .values()
-        .map(|attempt| u64::from(attempt.array.as_ref().map_or(1, |array| array.count)))
+        .map(|attempt| u64::from(attempt.tasks()))
         .sum();
     let label = |text: &str| Span::styled(format!("{text} "), palette.muted);
     let value = |text: String| Span::styled(text, palette.text);
@@ -50,17 +51,23 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
         Span::styled(format!(" {when}   "), palette.subtle),
         label("cores"),
     ];
-    spans.extend(bar(held_cores, cores, 16, palette.user(0), palette.free));
+    spans.extend(bar(
+        cores.held,
+        cores.total,
+        16,
+        palette.user(0),
+        palette.free,
+    ));
     spans.push(value(format!(
         " {}/{} {}%   ",
-        thousands(held_cores),
-        thousands(cores),
-        percent(held_cores, cores)
+        thousands(cores.held),
+        thousands(cores.total),
+        percent(cores.held, cores.total)
     )));
-    if gpus > 0 {
+    if gpus.total > 0 {
         spans.push(label("gpus"));
-        spans.extend(bar(held_gpus, gpus, 8, palette.user(1), palette.free));
-        spans.push(value(format!(" {held_gpus}/{gpus}   ")));
+        spans.extend(bar(gpus.held, gpus.total, 8, palette.user(1), palette.free));
+        spans.push(value(format!(" {}/{}   ", gpus.held, gpus.total)));
     }
     spans.extend([
         label("running"),

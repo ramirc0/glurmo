@@ -1,52 +1,24 @@
 //! The terminal view's state: the cluster, what the user picked, and what the feed reported.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::tz::TimeZone;
 
-use super::feed::{Link, Update, Usage};
+use super::feed::{Link, Update};
 use super::view;
 use crate::config::Tui;
 use crate::hub::Message;
 use crate::library::Library;
 use crate::slurm::Site;
 use rtviz_model::layout::{Layout, Pane};
+use rtviz_model::summary::{Tick, ticks};
 use rtviz_model::theme::Theme;
-use rtviz_model::{Attempt, Cluster, Delta, Event, Login, PartitionName, UnixTime};
+use rtviz_model::usage::Usage;
+use rtviz_model::{Cluster, Delta, Login};
 
 /// Ticker lines kept.
 const TICKER: usize = 200;
-
-/// An attempt taking or freeing its cores, for the ticker.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Tick {
-    /// When it started or ended.
-    pub at: UnixTime,
-    /// Whether it started, as opposed to ended.
-    pub started: bool,
-    /// The owner.
-    pub login: Login,
-    /// The partition it runs in.
-    pub partition: Option<PartitionName>,
-    /// CPUs it holds.
-    pub cpus: u32,
-    /// GPUs it holds.
-    pub gpus: u32,
-}
-
-impl Tick {
-    fn of(attempt: &Attempt, at: UnixTime, started: bool) -> Self {
-        Self {
-            at,
-            started,
-            login: attempt.login.clone(),
-            partition: attempt.partitions.first().cloned(),
-            cpus: attempt.cpus,
-            gpus: attempt.gpus,
-        }
-    }
-}
 
 /// Text that narrows what the panels show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -168,27 +140,8 @@ impl App {
 
     /// Applies a delta and adds its starts and ends to the ticker, latest first.
     fn apply(&mut self, delta: &Delta) {
-        let mut started: HashMap<_, &Attempt> = HashMap::new();
-        for event in &delta.events {
-            match event {
-                Event::Started { attempt } => {
-                    started.insert(attempt.key, attempt);
-                    let at = attempt.start.unwrap_or(delta.at);
-                    self.ticker.push_front(Tick::of(attempt, at, true));
-                }
-                Event::Ended { key, at, .. } => {
-                    let attempt = started.get(key).copied().or_else(|| {
-                        self.cluster
-                            .running
-                            .get(key)
-                            .map(|running| &running.attempt)
-                    });
-                    if let Some(attempt) = attempt {
-                        self.ticker.push_front(Tick::of(attempt, *at, false));
-                    }
-                }
-                _ => {}
-            }
+        for tick in ticks(&self.cluster, delta) {
+            self.ticker.push_front(tick);
         }
         self.ticker
             .make_contiguous()
@@ -279,7 +232,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use rtviz_model::{AttemptKey, JobId, JobState};
+    use rtviz_model::{Attempt, AttemptKey, Event, JobId, JobState, PartitionName, UnixTime};
 
     fn app() -> App {
         App::new(

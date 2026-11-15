@@ -1,15 +1,13 @@
 //! Who holds how many cores and GPUs, with their running and pending jobs.
 
-use std::collections::BTreeMap;
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::units::thousands;
 use super::view::{Focus, Scene, scrolled};
-use rtviz_model::{Login, Owner};
+use rtviz_model::summary::{Holding, holdings};
+use rtviz_model::units::thousands;
 
 /// The widest name shown.
 const NAME: usize = 12;
@@ -17,64 +15,18 @@ const NAME: usize = 12;
 /// Squares in the share column.
 const SHARE: usize = 8;
 
-/// What one user holds and waits for.
-#[derive(Default)]
-struct Holding {
-    cores: u64,
-    gpus: u64,
-    jobs: u64,
-    pending: u64,
-}
-
-/// What each user holds and waits for, and what hidden jobs hold.
-fn holdings<'a>(scene: &'a Scene) -> (BTreeMap<&'a Login, Holding>, Holding) {
-    let cluster = scene.cluster();
-    let mut users: BTreeMap<&Login, Holding> = BTreeMap::new();
-    let mut hidden = Holding::default();
-    for occupancy in scene.occupancy.values() {
-        for (cells, gpus) in [(&occupancy.cores, false), (&occupancy.gpus, true)] {
-            for owner in cells.iter().flatten() {
-                let holding = match owner {
-                    Owner::Hidden => &mut hidden,
-                    Owner::Attempt(_) => match scene.attempt(*owner) {
-                        Some(attempt) => users.entry(&attempt.login).or_default(),
-                        None => continue,
-                    },
-                };
-                if gpus {
-                    holding.gpus += 1;
-                } else {
-                    holding.cores += 1;
-                }
-            }
-        }
-    }
-    for running in cluster.running.values() {
-        users.entry(&running.attempt.login).or_default().jobs += 1;
-    }
-    for attempt in cluster.queue.values() {
-        users.entry(&attempt.login).or_default().pending +=
-            u64::from(attempt.array.as_ref().map_or(1, |array| array.count));
-    }
-    (users, hidden)
-}
-
 /// One row per user, most cores first, and a row for cores the scheduler hides.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
     let palette = &scene.palette;
-    let (users, hidden) = holdings(scene);
-    let mut rows: Vec<(&Login, Holding)> = users
+    let holdings = holdings(scene.cluster(), &scene.occupancy);
+    let hidden = holdings.hidden;
+    let rows: Vec<_> = holdings
+        .users
         .into_iter()
         .filter(|(login, _)| scene.shows(&[&login.0, scene.name(login)]))
         .collect();
-    rows.sort_by_key(|(login, held)| {
-        (
-            std::cmp::Reverse((held.cores, held.gpus, held.pending)),
-            *login,
-        )
-    });
 
-    let (capacity, _) = scene.cores();
+    let capacity = scene.cores().total;
     let row = |swatch: &'static str, color: Color, name: &str, you: bool, held: &Holding| {
         let mut spans = vec![
             Span::styled(swatch, color),

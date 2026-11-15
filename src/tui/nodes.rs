@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use super::view::{Focus, Scene, scrolled, trouble};
+use super::view::{Focus, Scene, scrolled};
 use rtviz_model::NodeState;
 
 /// Counts by state on the first line, then one line per node that is out.
@@ -19,14 +19,14 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
     ] {
         let count = nodes
             .iter()
-            .filter(|node| node.state == state && trouble(node).is_none())
+            .filter(|node| node.state == state && node.trouble().is_none())
             .count();
         counts.push(Span::styled(format!("{count} "), palette.text));
         counts.push(Span::styled(format!("{word}   "), palette.muted));
     }
     let out: Vec<_> = nodes
         .iter()
-        .filter_map(|node| Some((node, trouble(node)?)))
+        .filter_map(|node| Some((node, node.trouble()?)))
         .filter(|(node, word)| {
             scene.shows(&[&node.name.0, word, node.reason.as_deref().unwrap_or("")])
         })

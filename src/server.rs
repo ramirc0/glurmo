@@ -191,7 +191,7 @@ struct UsageParams {
 async fn usage(
     State(app): State<App>,
     Query(params): Query<UsageParams>,
-) -> Result<Json<Vec<crate::store::Step>>, Failure> {
+) -> Result<Json<Vec<rtviz_model::usage::Step>>, Failure> {
     let now = UnixTime::now();
     let to = params.to.unwrap_or(now.0);
     let query = UsageQuery {

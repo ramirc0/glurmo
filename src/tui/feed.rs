@@ -13,8 +13,9 @@ use crate::hub::{Hub, Message};
 use crate::sampler::Sampler;
 use crate::slurm::Slurm;
 use crate::slurm::source::Source;
-use crate::store::{By, History, Settings, Step, Store, UsageQuery};
+use crate::store::{By, History, Settings, Store, UsageQuery};
 use rtviz_model::UnixTime;
+use rtviz_model::usage::Usage;
 
 /// How long to wait before reconnecting to a server, as the server's `retry` field also says.
 const RETRY: Duration = Duration::from_secs(5);
@@ -50,19 +51,6 @@ pub enum Link {
         /// Why the last attempt failed.
         error: String,
     },
-}
-
-/// Usage by login over a stretch of time.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Usage {
-    /// The start.
-    pub from: UnixTime,
-    /// The end.
-    pub to: UnixTime,
-    /// The length of each step.
-    pub step_s: i64,
-    /// Usage per step and login.
-    pub steps: Vec<Step>,
 }
 
 /// The source of snapshots, deltas and usage.

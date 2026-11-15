@@ -5,9 +5,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::units::{since, span};
 use super::view::{Focus, Scene, scrolled};
 use rtviz_model::Attempt;
+use rtviz_model::units::{since, span};
 
 /// The widest job name shown.
 const NAME: usize = 16;

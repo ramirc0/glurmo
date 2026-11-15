@@ -1,7 +1,5 @@
 //! Lays a layout's panels out over the terminal and gives them what they draw from.
 
-use std::collections::BTreeMap;
-
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction as Axis, Rect};
@@ -13,9 +11,8 @@ use super::app::App;
 use super::palette::Palette;
 use super::{die, header, history, mine, nodes, partitions, queue, ticker, users};
 use rtviz_model::layout::{Direction, Pane, Size};
-use rtviz_model::{
-    Attempt, Cluster, Login, Node, NodeFlag, NodeName, NodeState, Occupancy, Owner, UnixTime,
-};
+use rtviz_model::summary::{self, Tally};
+use rtviz_model::{Attempt, Cluster, Login, Occupancies, Owner, UnixTime};
 
 /// What every panel draws from, worked out once per frame.
 pub struct Scene<'a> {
@@ -24,7 +21,7 @@ pub struct Scene<'a> {
     /// The theme's colors.
     pub palette: Palette,
     /// Who holds each core and GPU.
-    pub occupancy: BTreeMap<NodeName, Occupancy>,
+    pub occupancy: Occupancies,
     /// The time of the last delta, which ages count from.
     pub now: UnixTime,
 }
@@ -141,48 +138,13 @@ impl<'a> Scene<'a> {
     }
 
     /// Cores on nodes that can run jobs, and how many of them jobs hold.
-    pub fn cores(&self) -> (u64, u64) {
-        self.count(|occupancy| &occupancy.cores)
+    pub fn cores(&self) -> Tally {
+        summary::cores(self.cluster(), &self.occupancy)
     }
 
     /// GPUs on nodes that can run jobs, and how many of them jobs hold.
-    pub fn gpus(&self) -> (u64, u64) {
-        self.count(|occupancy| &occupancy.gpus)
-    }
-
-    fn count(&self, cells: impl Fn(&Occupancy) -> &Vec<Option<Owner>>) -> (u64, u64) {
-        let mut total = 0;
-        let mut held = 0;
-        for node in self.cluster().nodes.iter().filter(|node| usable(node)) {
-            if let Some(occupancy) = self.occupancy.get(&node.name) {
-                let cells = cells(occupancy);
-                total += cells.len() as u64;
-                held += cells.iter().filter(|cell| cell.is_some()).count() as u64;
-            }
-        }
-        (total, held)
-    }
-}
-
-/// Whether a node can run jobs: up, responding, and not drained.
-pub fn usable(node: &Node) -> bool {
-    !matches!(
-        node.state,
-        NodeState::Down | NodeState::Drained | NodeState::Unknown
-    ) && !node.flags.contains(&NodeFlag::NotResponding)
-}
-
-/// A short word for a node that cannot take new jobs, or `None` for one that can.
-pub fn trouble(node: &Node) -> Option<&'static str> {
-    if node.flags.contains(&NodeFlag::NotResponding) {
-        return Some("no reply");
-    }
-    match node.state {
-        NodeState::Down => Some("down"),
-        NodeState::Drained => Some("drained"),
-        NodeState::Draining => Some("draining"),
-        NodeState::Unknown => Some("unknown"),
-        _ => None,
+    pub fn gpus(&self) -> Tally {
+        summary::gpus(self.cluster(), &self.occupancy)
     }
 }
 
@@ -351,6 +313,7 @@ fn help(scene: &Scene, area: Rect, buf: &mut Buffer) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     use jiff::tz::TimeZone;
@@ -361,9 +324,10 @@ mod tests {
     use crate::config::{Tui, from_ron};
     use crate::hub::Message;
     use crate::library::Library;
-    use crate::store::Step;
-    use crate::tui::feed::{Link, Update, Usage};
+    use crate::tui::feed::{Link, Update};
     use rtviz_model::UnixTime;
+    use rtviz_model::usage::Step;
+    use rtviz_model::usage::Usage;
 
     /// The busy quarter hour as a view sees it after following every delta, seen by the user with
     /// the most running jobs, over a made-up day of usage by the four busiest users.
