@@ -10,6 +10,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- Release builds embed the web view when `web/dist` appears or changes after an earlier build. Before, they could serve an empty page.
 - The command backend reads jobs whose `SubmitLine` spans several lines, as an `sbatch --wrap` script with newlines does. Before, one such job failed every placement read.
 
 ## [0.1.0] - 2026-11-15
