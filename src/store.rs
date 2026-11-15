@@ -21,7 +21,7 @@ const DAY_S: i64 = 86_400;
 const GRACE_S: i64 = 30;
 
 /// Schema changes, applied in order. `PRAGMA user_version` counts how many have run.
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 3] = [
     "
     CREATE TABLE attempts (
         job INTEGER NOT NULL,
@@ -71,6 +71,13 @@ const MIGRATIONS: [&str; 2] = [
     "
     CREATE INDEX attempts_by_start ON attempts (start);
     CREATE INDEX attempts_by_submit ON attempts (submit);
+",
+    // Ended attempts with a start and no nodes never ran, and old bugs stored a start for them. Their
+    // bins are rolled up again by `Store::open`.
+    "
+    INSERT OR REPLACE INTO meta SELECT 'stale_from', min(submit) FROM attempts
+        WHERE start IS NOT NULL AND end IS NOT NULL AND nodes = '[]' HAVING count(*) > 0;
+    UPDATE attempts SET start = NULL WHERE start IS NOT NULL AND end IS NOT NULL AND nodes = '[]';
 ",
 ];
 
@@ -132,12 +139,12 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens or creates the store at `path` and brings its schema up to date.
-    /// Warns on stderr when `path` is on a network filesystem, where SQLite's locks are unreliable.
+    /// Opens or creates the store at `path`, brings its schema up to date, and rolls up again the bins of
+    /// attempts a migration repaired. Warns on stderr when `path` is on a network filesystem, where SQLite's locks are unreliable.
     ///
     /// # Errors
     ///
-    /// Fails when the file cannot be opened or a migration fails.
+    /// Fails when the file cannot be opened, or a migration or rollup fails.
     pub fn open(path: &Path, settings: Settings) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -164,7 +171,7 @@ impl Store {
                 Ok((NodeName(row.get(0)?), (row.get(1)?, row.get(2)?)))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        Ok(Self {
+        let mut store = Self {
             db,
             path: path.to_owned(),
             settings,
@@ -172,7 +179,23 @@ impl Store {
             health,
             coverage: Coverage::Unchecked,
             users_seen: 0,
-        })
+        };
+        store.roll_stale_bins()?;
+        Ok(store)
+    }
+
+    /// Rolls up again the closed bins from where a migration changed attempts.
+    fn roll_stale_bins(&mut self) -> Result<()> {
+        if let (Some(stale), Some(history_from), Some(rolled_to)) = (
+            self.meta("stale_from")?,
+            self.meta("history_from")?,
+            self.meta("rolled_to")?,
+        ) {
+            self.roll_bins(bin_of(stale.max(history_from)), rolled_to, rolled_to)?;
+        }
+        self.db
+            .execute("DELETE FROM meta WHERE key = 'stale_from'", [])?;
+        Ok(())
     }
 
     /// Writes one tick's events.
@@ -495,8 +518,19 @@ impl Store {
         Ok(())
     }
 
-    /// Replaces the bins from `from` up to `to` with fresh rollups.
+    /// Replaces the bins from `from` up to `to` with fresh rollups, a day at a time, so each bin walks
+    /// only the attempts of its day.
     fn roll_bins(&mut self, from: UnixTime, to: UnixTime, now: UnixTime) -> Result<()> {
+        let mut day = from;
+        while day < to {
+            let next = UnixTime((day.0 + DAY_S).min(to.0));
+            self.roll_day(day, next, now)?;
+            day = next;
+        }
+        Ok(())
+    }
+
+    fn roll_day(&mut self, from: UnixTime, to: UnixTime, now: UnixTime) -> Result<()> {
         let tx = self.db.transaction()?;
         let spans = spans(&tx, from, to)?;
         tx.execute(
@@ -1819,6 +1853,50 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(left, [2]);
+    }
+
+    #[test]
+    fn opening_an_old_store_clears_starts_without_nodes_and_rolls_their_bins_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        store.sampled(UnixTime(T0), 300).unwrap();
+        let cancelled = Attempt {
+            key: AttemptKey {
+                job: JobId(5),
+                submit: UnixTime(T0 + 10),
+            },
+            nodes: Vec::new(),
+            ..attempt(
+                5,
+                JobState::Ended(EndState::Cancelled),
+                Some(4_294_967_294),
+                Some(T0 + 310),
+            )
+        };
+        store
+            .record(
+                UnixTime(T0),
+                &[
+                    Event::Nodes(vec![node(NodeState::Idle)]),
+                    Event::Started { attempt: cancelled },
+                ],
+            )
+            .unwrap();
+        store.roll(UnixTime(T0 + 900 + GRACE_S)).unwrap();
+        let wait_s = |store: &Store| -> i64 {
+            store
+                .db
+                .query_row("SELECT sum(wait_s) FROM usage", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(wait_s(&store), 890, "the start in 2106 kept it waiting");
+        store.db.pragma_update(None, "user_version", 2).unwrap();
+        drop(store);
+
+        let store = open(&dir);
+        assert_eq!(row(&store, 5).0, None);
+        assert_eq!(wait_s(&store), 300);
+        assert_eq!(store.meta("stale_from").unwrap(), None);
     }
 
     #[test]
