@@ -643,7 +643,8 @@ impl History {
     }
 
     /// Usage summed per step, by login or partition, in time then key order. Bins the sampler has rolled
-    /// up come from the usage table. Later bins are rolled up from the attempts, counting up to `now`.
+    /// up come from the usage table. Later bins are rolled up from the attempts, counting up to the
+    /// query's end or `now`, whichever comes first.
     ///
     /// # Errors
     ///
@@ -691,7 +692,7 @@ impl History {
             Vec::new()
         };
         while bin < to {
-            for ((login, partition), usage) in rollup(bin, &spans, now) {
+            for ((login, partition), usage) in rollup(bin, &spans, to) {
                 let key = match query.by {
                     By::Login => login.0,
                     By::Partition => partition.0,
@@ -1761,6 +1762,37 @@ mod tests {
                 (600, "long".into(), 0, 1, Some(1)),
             ]
         );
+    }
+
+    #[test]
+    fn usage_counts_open_bins_up_to_the_end_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        store
+            .record(
+                UnixTime(T0),
+                &[
+                    Event::Nodes(vec![node(NodeState::Mixed)]),
+                    Event::Started {
+                        attempt: running(1),
+                    },
+                ],
+            )
+            .unwrap();
+        store.sampled(UnixTime(T0), 300).unwrap();
+        let query = UsageQuery {
+            from: UnixTime(T0),
+            to: UnixTime(T0 + 450),
+            step_s: 300,
+            by: By::Login,
+        };
+        let core_s: Vec<(i64, u64)> = History::open(&dir.path().join("glurmo.sqlite"))
+            .usage(&query, UnixTime(T0 + 1_000))
+            .unwrap()
+            .into_iter()
+            .map(|step| (step.at.0 - T0, step.core_s))
+            .collect();
+        assert_eq!(core_s, [(0, 4 * 300), (300, 4 * 150)]);
     }
 
     #[test]

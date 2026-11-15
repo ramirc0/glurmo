@@ -97,7 +97,8 @@ pub struct Column<'a> {
 
 impl Usage {
     /// Samples the step under the middle of each of `count` columns over `from` to `from + span_s`.
-    /// A column that no step covers is empty.
+    /// A column that no step covers is empty. A step that runs past [`Usage::to`] averages over the
+    /// time up to it, since the server counts no further.
     ///
     /// # Examples
     ///
@@ -117,15 +118,19 @@ impl Usage {
     /// let columns = usage.columns(0, 600, 2);
     /// assert_eq!(columns[0].cores, [("otter", 4), ("heron", 1)]);
     /// assert_eq!(columns[1].cores, [("otter", 2)]);
+    ///
+    /// let so_far = Usage { to: UnixTime(450), ..usage };
+    /// assert_eq!(so_far.columns(0, 600, 2)[1].cores, [("otter", 4)]);
     /// ```
     pub fn columns(&self, from: i64, span_s: i64, count: u16) -> Vec<Column<'_>> {
-        let step_s = u64::try_from(self.step_s.max(1)).unwrap_or(1);
+        let step_s = self.step_s.max(1);
+        let covered = |at: i64| u64::try_from((self.to.0 - at).clamp(1, step_s)).unwrap_or(1);
         let mut by_time: BTreeMap<i64, Vec<(&str, u64)>> = BTreeMap::new();
         let mut wait_s: HashMap<i64, u64> = HashMap::new();
         let mut totals: HashMap<&str, u64> = HashMap::new();
         for step in &self.steps {
             let cores = by_time.entry(step.at.0).or_default();
-            cores.push((&step.key, step.core_s / step_s));
+            cores.push((&step.key, step.core_s / covered(step.at.0)));
             *wait_s.entry(step.at.0).or_default() += step.wait_s;
             *totals.entry(&step.key).or_default() += step.core_s;
         }
@@ -144,7 +149,7 @@ impl Usage {
                 cores.sort_by_cached_key(|(login, _)| (std::cmp::Reverse(totals[login]), *login));
                 Column {
                     cores,
-                    waiting: wait_s[at] / step_s,
+                    waiting: wait_s[at] / covered(*at),
                 }
             })
             .collect()
@@ -198,6 +203,30 @@ mod tests {
             steps: vec![step("heron"), step("otter")],
         };
         assert_eq!(usage.columns(0, 300, 1)[0].waiting, 1);
+    }
+
+    #[test]
+    fn the_last_step_averages_over_the_time_it_covers() {
+        let step = |at, core_s| Step {
+            at: UnixTime(at),
+            key: "otter".into(),
+            core_s,
+            gpu_s: 0,
+            wait_s: 150,
+            started: 0,
+            ended: 0,
+            failed: None,
+        };
+        let usage = Usage {
+            from: UnixTime(0),
+            to: UnixTime(450),
+            step_s: 300,
+            steps: vec![step(0, 1_200), step(300, 600)],
+        };
+        let columns = usage.columns(0, 600, 2);
+        assert_eq!(columns[0].cores, [("otter", 4)]);
+        assert_eq!(columns[1].cores, [("otter", 4)]);
+        assert_eq!(columns[1].waiting, 1);
     }
 
     #[test]
