@@ -618,7 +618,11 @@ impl History {
         }
 
         let mut bin = from.max(rolled_to);
-        let spans = spans(&db, bin, to)?;
+        let spans = if bin < to {
+            spans(&db, bin, to)?
+        } else {
+            Vec::new()
+        };
         while bin < to {
             for ((login, partition), usage) in rollup(bin, &spans, now) {
                 let key = match query.by {
@@ -660,16 +664,9 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn alive(&self, at: UnixTime) -> Result<Vec<Stored>> {
-        // Two halves, so each uses an index: one on ends and one on open attempts.
-        stored(
-            &self.connect()?,
-            &format!(
-                "SELECT {STORED} FROM attempts WHERE end > ?1 AND submit <= ?1
-                 UNION ALL
-                 SELECT {STORED} FROM attempts WHERE end IS NULL AND submit <= ?1"
-            ),
-            [at.0],
-        )
+        let db = self.connect()?;
+        let by_end = ends_are_fewer(&db, at, at)?;
+        stored(&db, &overlapping(STORED, "<= ?1", by_end), [at.0])
     }
 
     /// Attempts submitted, started or ended after `from` and up to `to`.
@@ -826,12 +823,38 @@ fn usual(cpus_per_core: &HashMap<NodeName, u32>) -> u32 {
         .map_or(1, |(per_core, _)| per_core)
 }
 
+/// Whether fewer attempts ended after `from` than were submitted before `to`, taking attempts as
+/// spread evenly over history. That decides which index finds the attempts alive between the two.
+fn ends_are_fewer(db: &Connection, from: UnixTime, to: UnixTime) -> Result<bool> {
+    let (Some(first), Some(last)) = (meta(db, "history_from")?, meta(db, "complete_to")?) else {
+        return Ok(true);
+    };
+    Ok(last.0 - from.0 < to.0 - first.0)
+}
+
+/// Selects `columns` of the attempts submitted `submitted`, such as `< ?2`, that had not ended by `?1`.
+/// Each half of the union names its index, because SQLite does not weigh the indexes by bound values:
+/// attempts by end when `by_end`, else attempts by submit time.
+fn overlapping(columns: &str, submitted: &str, by_end: bool) -> String {
+    let (end, submit) = if by_end {
+        ("end", "+submit")
+    } else {
+        ("+end", "submit")
+    };
+    format!(
+        "SELECT {columns} FROM attempts WHERE {end} > ?1 AND {submit} {submitted}
+         UNION ALL
+         SELECT {columns} FROM attempts WHERE end IS NULL AND submit {submitted}"
+    )
+}
+
 /// Attempts that waited or ran at some point from `from` up to `to`.
 fn spans(db: &Connection, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
-    let mut query = db.prepare(
-        "SELECT login, partition, tasks, coalesce(cores, 0), gpus, submit, start, end, state
-         FROM attempts WHERE submit < ?2 AND (end IS NULL OR end > ?1)",
-    )?;
+    let mut query = db.prepare(&overlapping(
+        "login, partition, tasks, coalesce(cores, 0), gpus, submit, start, end, state",
+        "< ?2",
+        ends_are_fewer(db, from, to)?,
+    ))?;
     let rows = query.query_map([from.0, to.0], |row| {
         Ok(Span {
             login: Login(row.get(0)?),
@@ -1527,6 +1550,69 @@ mod tests {
                 (600, "long".into(), 0, 1, Some(1)),
             ]
         );
+    }
+
+    #[test]
+    fn overlapping_attempts_come_through_the_index_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        let plan = |by_end| -> String {
+            let sql = format!("EXPLAIN QUERY PLAN {}", overlapping("job", "< ?2", by_end));
+            let mut query = store.db.prepare(&sql).unwrap();
+            let details = query
+                .query_map([0, 0], |row| row.get::<_, String>(3))
+                .unwrap();
+            details.map(Result::unwrap).collect::<Vec<_>>().join("; ")
+        };
+        let near = plan(true);
+        assert!(near.contains("attempts_by_end"), "{near}");
+        assert!(!near.contains("attempts_by_submit"), "{near}");
+        let far = plan(false);
+        let (first_half, _) = far.split_once("UNION ALL").unwrap();
+        assert!(first_half.contains("attempts_by_submit"), "{far}");
+        assert!(!first_half.contains("attempts_by_end"), "{far}");
+
+        let mut events = vec![Event::Nodes(vec![node(NodeState::Mixed)])];
+        for id in 0..40 {
+            let start = T0 + i64::from(id) * 300;
+            let end = (id % 3 != 0).then_some(start + 1_000);
+            let state = if end.is_some() {
+                JobState::Ended(EndState::Completed)
+            } else {
+                JobState::Running
+            };
+            events.push(Event::Started {
+                attempt: Attempt {
+                    key: AttemptKey {
+                        job: JobId(id),
+                        submit: UnixTime(start - 60),
+                    },
+                    ..attempt(id, state, Some(start), end)
+                },
+            });
+        }
+        store.record(UnixTime(T0), &events).unwrap();
+        for (from, to) in [
+            (T0 + 3_000, T0 + 3_300),
+            (T0, T0),
+            (T0 + 20_000, T0 + 30_000),
+        ] {
+            let keys = |by_end| {
+                let mut query = store
+                    .db
+                    .prepare(&overlapping("job", "< ?2", by_end))
+                    .unwrap();
+                let mut jobs: Vec<u32> = query
+                    .query_map([from, to], |row| row.get(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                jobs.sort_unstable();
+                jobs
+            };
+            assert_eq!(keys(true), keys(false), "{from}..{to}");
+            assert!(!keys(true).is_empty(), "{from}..{to}");
+        }
     }
 
     #[test]
