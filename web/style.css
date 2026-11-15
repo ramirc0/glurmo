@@ -94,7 +94,22 @@ main.tv {
   flex-direction: column;
 }
 
+.stage {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.stage > *,
+.leaf > .panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
 .slot {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -292,6 +307,7 @@ td.share {
 }
 
 .header .stat {
+  white-space: nowrap;
   display: grid;
   grid-template-rows: var(--line) var(--line);
   grid-template-columns: auto 64px;
@@ -369,4 +385,202 @@ kbd {
   background: var(--overlay);
   color: var(--text);
   font: 12px var(--mono);
+}
+
+/* The editor: the page on the left, the sidebar on the right. */
+
+main.editing {
+  gap: var(--gap);
+}
+
+.leaf {
+  position: relative;
+  display: flex;
+}
+
+.cover {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: 1px dashed var(--muted);
+  border-radius: 8px;
+  cursor: grab;
+}
+
+.cover:hover {
+  background: color-mix(in srgb, var(--overlay) 35%, transparent);
+}
+
+.cover.picked {
+  border: 2px solid var(--text);
+}
+
+.cover.target:hover {
+  border: 2px dashed var(--drain);
+}
+
+.cover .tag {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--overlay);
+  color: var(--text);
+  font: 600 11px/18px var(--sans);
+}
+
+.grip {
+  position: absolute;
+  z-index: 3;
+  border-radius: 3px;
+}
+
+.grip:hover {
+  background: var(--muted);
+}
+
+.grip.across {
+  top: 0;
+  bottom: 0;
+  right: calc(-1 * var(--gap));
+  width: var(--gap);
+  cursor: col-resize;
+}
+
+.grip.down {
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * var(--gap));
+  height: var(--gap);
+  cursor: row-resize;
+}
+
+aside.editor {
+  flex: 0 0 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: auto;
+}
+
+aside.editor nav {
+  display: flex;
+  gap: 6px;
+}
+
+aside.editor nav .close {
+  margin-left: auto;
+}
+
+aside.editor section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+aside.editor h3 {
+  margin: 6px 0 0;
+  font: 700 11px var(--sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+aside.editor label {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 8px;
+  color: var(--subtle);
+}
+
+aside.editor input,
+aside.editor select,
+aside.editor textarea,
+aside.editor button {
+  font: 12.5px var(--mono);
+  color: var(--text);
+  background: var(--overlay);
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+
+aside.editor button {
+  font: 600 12px var(--sans);
+  cursor: pointer;
+}
+
+aside.editor button.on {
+  background: var(--text);
+  color: var(--base);
+}
+
+aside.editor button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+aside.editor .pair {
+  display: flex;
+  gap: 6px;
+}
+
+aside.editor .pair > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+aside.editor .buttons,
+aside.editor .crumbs,
+aside.editor .palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+aside.editor .crumb {
+  font-weight: 500;
+}
+
+aside.editor .colors {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+}
+
+aside.editor label.color {
+  grid-template-columns: 36px 1fr;
+  color: var(--text);
+}
+
+aside.editor input[type="color"] {
+  width: 36px;
+  height: 24px;
+  padding: 1px;
+}
+
+aside.editor .user {
+  display: flex;
+}
+
+aside.editor .user button {
+  padding: 0 5px;
+}
+
+aside.editor textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+aside.editor .note {
+  font-size: 12px;
+}
+
+aside.editor a {
+  color: var(--text);
 }

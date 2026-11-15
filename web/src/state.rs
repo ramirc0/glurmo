@@ -66,9 +66,13 @@ pub struct State {
     pub theme_name: RwSignal<String>,
     /// The layout asked for.
     pub layout_name: RwSignal<String>,
-    /// The theme drawn with, once themes have loaded.
+    /// The theme being edited, which every panel draws with until the editor closes.
+    pub draft_theme: RwSignal<Option<Theme>>,
+    /// The layout being edited, shown until the editor closes. The editor is open while it is set.
+    pub draft_layout: RwSignal<Option<Layout>>,
+    /// The theme drawn with: the draft, else the one asked for once themes have loaded.
     pub theme: Memo<Option<Theme>>,
-    /// The layout shown, once layouts have loaded.
+    /// The layout shown: the draft, else the one asked for once layouts have loaded.
     pub layout: Memo<Option<Layout>>,
     /// What stands out on the Die while the rest fades.
     pub highlight: RwSignal<Option<Highlight>>,
@@ -119,6 +123,8 @@ impl State {
         let layouts = RwSignal::new(BTreeMap::new());
         let theme_name = RwSignal::new(address.theme);
         let layout_name = RwSignal::new(address.layout);
+        let draft_theme = RwSignal::new(None);
+        let draft_layout = RwSignal::new(None);
         Self {
             cluster,
             occupancy: Memo::new(move |_| cluster.with(Cluster::occupancy)),
@@ -130,11 +136,17 @@ impl State {
             layouts,
             theme_name,
             layout_name,
+            draft_theme,
+            draft_layout,
             theme: Memo::new(move |_| {
-                themes.with(|themes| pick(themes, &theme_name.get(), "rose-pine").cloned())
+                draft_theme.get().or_else(|| {
+                    themes.with(|themes| pick(themes, &theme_name.get(), "rose-pine").cloned())
+                })
             }),
             layout: Memo::new(move |_| {
-                layouts.with(|layouts| pick(layouts, &layout_name.get(), "web").cloned())
+                draft_layout.get().or_else(|| {
+                    layouts.with(|layouts| pick(layouts, &layout_name.get(), "web").cloned())
+                })
             }),
             highlight: RwSignal::new(None),
             me: RwSignal::new(address.me.map(Login)),
@@ -142,6 +154,11 @@ impl State {
             zoom: RwSignal::new(crate::paint::zoom()),
             tv: address.tv,
         }
+    }
+
+    /// Whether the editor is open.
+    pub fn editing(&self) -> bool {
+        self.draft_layout.with(Option::is_some)
     }
 
     /// How far back the layout's history panels look, in seconds: the longest of them, or a day.

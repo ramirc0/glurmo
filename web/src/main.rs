@@ -9,22 +9,31 @@
     )
 )]
 
+mod base16;
+mod builder;
 mod die;
+mod editor;
 mod feed;
 mod history;
 mod paint;
 mod pane;
 mod panels;
+mod shelf;
 mod state;
+mod theme_editor;
 mod tip;
+mod tree;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use leptos::prelude::*;
 use rtviz_model::summary::holdings;
+use wasm_bindgen::JsCast;
 
+use editor::{Editor, Sidebar};
 use state::{Address, Highlight, State};
+use tree::Path;
 
 /// How long a wall display highlights each user.
 const HIGHLIGHT_EVERY: Duration = Duration::from_secs(8);
@@ -42,7 +51,9 @@ fn main() {
 #[component]
 fn App() -> impl IntoView {
     let state = State::new(Address::read());
+    let editor = Editor::default();
     provide_context(state);
+    provide_context(editor);
     feed::load_library(state);
     feed::follow(state);
     feed::watch_usage(state);
@@ -57,14 +68,17 @@ fn App() -> impl IntoView {
         }
     });
     let keys = window_event_listener(leptos::ev::keydown, move |event| {
-        if event.ctrl_key() || event.meta_key() || event.alt_key() {
+        if event.ctrl_key() || event.meta_key() || event.alt_key() || typing(&event) {
             return;
         }
+        let editing = state.draft_layout.with_untracked(Option::is_some);
         match event.key().as_str() {
-            "t" => state
+            "e" | "Escape" if editing => Editor::close(state),
+            "e" if !state.tv => editor.open(state),
+            "t" if !editing => state
                 .themes
                 .with_untracked(|themes| advance(state.theme_name, themes)),
-            "l" => state
+            "l" if !editing => state
                 .layouts
                 .with_untracked(|layouts| advance(state.layout_name, layouts)),
             _ => {}
@@ -75,10 +89,26 @@ fn App() -> impl IntoView {
         set_interval(move || cycle_highlight(state), HIGHLIGHT_EVERY);
     }
     view! {
-        <main class:tv=state.tv>
-            {move || state.layout.get().map(|layout| pane::pane(layout.root))}
+        <main class:tv=state.tv class:editing=move || state.editing()>
+            <div class="stage">
+                {move || {
+                    let editing = state.editing();
+                    state.layout.get().map(|layout| pane::pane(layout.root, Path::root(), editing))
+                }}
+            </div>
+            {move || state.editing().then(|| view! { <Sidebar/> })}
         </main>
     }
+}
+
+/// Whether a key went to a form field, where it is typing rather than a command.
+fn typing(event: &web_sys::KeyboardEvent) -> bool {
+    event
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .is_some_and(|element| {
+            matches!(element.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT")
+        })
 }
 
 /// Sets `picked` to the name after it in `among`, in name order, wrapping around.

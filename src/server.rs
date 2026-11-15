@@ -483,17 +483,78 @@ mod tests {
         assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
     }
 
+    /// The RON the server writes for `json` sent as `{kind: json}`.
+    async fn ron_of(router: &Router, kind: &str, json: &str) -> String {
+        let request = Request::post("/api/ron")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(r#"{{"{kind}": {json}}}"#)))
+            .unwrap();
+        let (status, _, ron) = send(router, request).await;
+        assert_eq!(status, StatusCode::OK, "{ron}");
+        ron
+    }
+
+    #[tokio::test]
+    async fn a_built_layout_and_an_edited_theme_round_trip_through_ron() {
+        use rtviz_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span};
+        let dir = tempfile::tempdir().unwrap();
+        let (router, _) = app(&dir);
+        let layout = Layout {
+            name: "every panel".into(),
+            root: Pane::Split(
+                Direction::Vertical,
+                vec![
+                    (Size::Length(2), Pane::Header),
+                    (
+                        Size::Percentage(40),
+                        Pane::Die {
+                            group: Grouping::Partition,
+                        },
+                    ),
+                    (
+                        Size::Fill(3),
+                        Pane::Split(
+                            Direction::Horizontal,
+                            vec![
+                                (Size::Min(20), Pane::Users),
+                                (Size::Fill(38), Pane::Queue { by: QueueBy::Login }),
+                                (Size::Fill(13), Pane::Partitions),
+                                (Size::Fill(1), Pane::Nodes),
+                                (Size::Fill(1), Pane::Mine),
+                                (Size::Fill(1), Pane::Ticker),
+                            ],
+                        ),
+                    ),
+                    (
+                        Size::Length(12),
+                        Pane::History {
+                            span: Span::Days(7),
+                        },
+                    ),
+                    (Size::Length(1), Pane::Keys),
+                ],
+            ),
+        };
+        let json = serde_json::to_string(&layout).unwrap();
+        let ron = ron_of(&router, "layout", &json).await;
+        assert_eq!(crate::config::from_ron::<Layout>(&ron).unwrap(), layout);
+
+        let mut theme = Library::load(dir.path()).themes["rose-pine-dawn"].clone();
+        theme.name = "Dawn, edited".into();
+        theme.users.truncate(2);
+        theme.fonts.mono = "Iosevka".into();
+        let json = serde_json::to_string(&theme).unwrap();
+        let ron = ron_of(&router, "theme", &json).await;
+        assert!(ron.starts_with("Theme("), "{ron}");
+        assert_eq!(crate::config::from_ron::<Theme>(&ron).unwrap(), theme);
+    }
+
     #[tokio::test]
     async fn a_layout_round_trips_through_ron() {
         let dir = tempfile::tempdir().unwrap();
         let (router, _) = app(&dir);
         let (_, _, json) = get(&router, "/api/layouts/tui").await;
-        let request = Request::post("/api/ron")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(format!(r#"{{"layout": {json}}}"#)))
-            .unwrap();
-        let (status, _, ron) = send(&router, request).await;
-        assert_eq!(status, StatusCode::OK, "{ron}");
+        let ron = ron_of(&router, "layout", &json).await;
         assert!(ron.starts_with("Layout("), "{ron}");
         let parsed: Layout = crate::config::from_ron(&ron).unwrap();
         assert_eq!(parsed, Library::load(dir.path()).layouts["tui"]);

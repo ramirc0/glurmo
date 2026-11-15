@@ -1,28 +1,56 @@
-//! A layout's split tree as nested flexbox.
+//! A layout's split tree as nested flexbox. While the editor is open, each panel wears a cover to pick
+//! and drag it by, and each gap between panes a grip to resize them by.
 
 use leptos::prelude::*;
 use rtviz_model::layout::{Direction, Pane, Size};
 
+use crate::builder::{Cover, Grip, label};
 use crate::die::Die;
 use crate::history::History;
 use crate::panels::{Header, Keys, Mine, Nodes, Partitions, Queue, Ticker, Users};
+use crate::tree::Path;
 
-/// The view of `pane` and everything inside it.
-pub fn pane(pane: Pane) -> AnyView {
-    match pane {
-        Pane::Split(direction, children) => {
-            let class = match direction {
-                Direction::Vertical => "split column",
-                Direction::Horizontal => "split row",
-            };
-            let slots = children
-                .into_iter()
-                .map(|(size, child)| {
-                    view! { <div class="slot" style=flex(size, direction)>{self::pane(child)}</div> }
-                })
-                .collect_view();
-            view! { <div class=class>{slots}</div> }.into_any()
+/// The view of `pane`, at `path` in its layout, and everything inside it.
+pub fn pane(pane: Pane, path: Path, editing: bool) -> AnyView {
+    let Pane::Split(direction, children) = pane else {
+        let panel = panel(&pane);
+        if !editing {
+            return panel;
         }
+        return view! {
+            <div class="leaf">
+                {panel}
+                <Cover tag=label(&pane) path=path/>
+            </div>
+        }
+        .into_any();
+    };
+    let class = match direction {
+        Direction::Vertical => "split column",
+        Direction::Horizontal => "split row",
+    };
+    let last = children.len().saturating_sub(1);
+    let slots = children
+        .into_iter()
+        .enumerate()
+        .map(|(index, (size, child))| {
+            let grip = (editing && index < last)
+                .then(|| view! { <Grip split=path.clone() gap=index direction=direction/> });
+            view! {
+                <div class="slot" style=flex(size, direction)>
+                    {self::pane(child, path.child(index), editing)}
+                    {grip}
+                </div>
+            }
+        })
+        .collect_view();
+    view! { <div class=class>{slots}</div> }.into_any()
+}
+
+/// The panel `pane` names. A split is not a panel, so it draws nothing.
+fn panel(pane: &Pane) -> AnyView {
+    match *pane {
+        Pane::Split(..) => ().into_any(),
         Pane::Header => view! { <Header/> }.into_any(),
         Pane::Keys => view! { <Keys/> }.into_any(),
         Pane::Die { group } => view! { <Die group=group/> }.into_any(),

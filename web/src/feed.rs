@@ -1,9 +1,12 @@
 //! What the server sends: the live stream, the themes and layouts, and usage history.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rtviz_model::layout::Layout;
+use rtviz_model::theme::Theme;
 use rtviz_model::usage::{Step, Usage, step_for};
 use rtviz_model::{Cluster, Delta};
 use serde::Deserialize;
@@ -12,6 +15,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::Closure;
 use web_sys::{EventSource, MessageEvent};
 
+use crate::shelf::Shelf;
 use crate::state::{Link, State};
 
 /// How long to wait before opening a new stream after the browser gave up on one.
@@ -137,15 +141,21 @@ pub fn watch_fonts(state: State) {
     loaded.forget();
 }
 
-/// Reads the themes and layouts into `state`.
+/// Reads the server's themes and layouts into `state`, with the ones saved in this browser on top.
 pub fn load_library(state: State) {
     spawn_local(async move {
-        match fetch("/api/themes").await {
-            Ok(themes) => state.themes.set(themes),
+        match fetch::<BTreeMap<String, Theme>>("/api/themes").await {
+            Ok(mut themes) => {
+                themes.extend(Shelf::Themes.all());
+                state.themes.try_set(themes);
+            }
             Err(error) => web_sys::console::error_1(&format!("no themes: {error}").into()),
         }
-        match fetch("/api/layouts").await {
-            Ok(layouts) => state.layouts.set(layouts),
+        match fetch::<BTreeMap<String, Layout>>("/api/layouts").await {
+            Ok(mut layouts) => {
+                layouts.extend(Shelf::Layouts.all());
+                state.layouts.try_set(layouts);
+            }
             Err(error) => web_sys::console::error_1(&format!("no layouts: {error}").into()),
         }
     });
@@ -155,9 +165,10 @@ pub fn load_library(state: State) {
 pub fn watch_usage(state: State) {
     let ticks = RwSignal::new(0_u64);
     set_interval(move || ticks.update(|count| *count += 1), USAGE_EVERY);
+    let span_s = Memo::new(move |_| state.history_span_s());
     Effect::new(move |_| {
         ticks.track();
-        let span_s = state.history_span_s();
+        let span_s = span_s.get();
         spawn_local(async move { state.usage.set(usage(span_s).await) });
     });
 }
@@ -187,4 +198,22 @@ async fn fetch<T: DeserializeOwned>(url: &str) -> Result<T, String> {
         return Err(format!("{url} answered {}", response.status()));
     }
     response.json().await.map_err(|error| error.to_string())
+}
+
+/// The RON the server writes for `value`, a `kind` such as `layout`, to save in a file.
+pub async fn ron<T: serde::Serialize>(kind: &str, value: &T) -> Result<String, String> {
+    let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
+    let body = serde_json::Value::Object([(kind.to_owned(), value)].into_iter().collect());
+    let response = gloo_net::http::Request::post("/api/ron")
+        .json(&body)
+        .map_err(|error| error.to_string())?
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let text = response.text().await.map_err(|error| error.to_string())?;
+    if response.ok() {
+        Ok(text)
+    } else {
+        Err(format!("the server answered {}: {text}", response.status()))
+    }
 }
