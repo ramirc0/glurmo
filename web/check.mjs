@@ -121,6 +121,10 @@ if (pull) {
   open = false;
   for (const socket of sockets) socket.destroy();
   await sleep(Number(pull));
+  const pulled = out.replace(/\.png$/, "-pulled.png");
+  const shot = await page("Page.captureScreenshot", { format: "png" });
+  writeFileSync(pulled, Buffer.from(shot.data, "base64"));
+  lines.push(`screenshot while pulled: ${pulled}`);
   open = true;
   await sleep(settle);
   const after = await stats();

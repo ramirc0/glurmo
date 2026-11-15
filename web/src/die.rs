@@ -2,7 +2,7 @@
 //!
 //! Tiles grow to the largest core size at which every group fits the panel, dropping each node's load
 //! and memory gauges before shrinking the cores. When even the smallest size does not fit, each node
-//! shrinks to a compact tile with one bar of its cores by user.
+//! shrinks to a brief tile: its name over one bar of its cores by user, then both on one line.
 
 use std::fmt::Write;
 
@@ -33,9 +33,21 @@ const HEAD: f64 = 20.0;
 const FOOT: f64 = 32.0;
 const BARE_FOOT: f64 = 8.0;
 const MIN_TILE_W: f64 = 116.0;
-/// A compact tile's size.
-const COMPACT_W: f64 = 132.0;
-const COMPACT_H: f64 = 34.0;
+/// Brief tiles, tried in order: the name over the bar, then the name beside it.
+const BRIEFS: [Brief; 2] = [
+    Brief {
+        w: 132.0,
+        h: 34.0,
+        one_line: false,
+    },
+    Brief {
+        w: 96.0,
+        h: 18.0,
+        one_line: true,
+    },
+];
+/// The advance of a brief tile's name characters.
+const BRIEF_CHAR: f64 = 6.0;
 /// Approximate advances of a title's characters and its note's, to keep titles from running into each
 /// other. The note is monospace.
 const TITLE_CHAR: f64 = 8.5;
@@ -65,8 +77,12 @@ pub struct Tile<'a> {
     pub node: &'a Node,
     /// The whole tile.
     pub frame: Rect,
-    /// Each core, by index. Empty for a compact tile.
+    /// Where the name's baseline starts.
+    pub name: (f64, f64),
+    /// Each core, by index. Empty for a brief tile.
     pub cores: Vec<Rect>,
+    /// A brief tile's bar of cores by user.
+    pub bar: Option<Rect>,
     /// Each GPU, by index.
     pub gpus: Vec<Rect>,
 }
@@ -93,10 +109,25 @@ pub struct Board<'a> {
     pub labels: Vec<Label>,
     /// The height the board needs.
     pub height: f64,
-    /// Whether tiles are compact, with no core grid.
-    pub compact: bool,
-    /// Whether full tiles show load and memory gauges.
-    pub gauges: bool,
+    /// How the tiles look.
+    pub style: Style,
+}
+
+/// How tiles look.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Style {
+    /// A grid of cores at a pitch, with or without gauges.
+    Full(Pitch),
+    /// A bar of cores by user.
+    Brief(Brief),
+}
+
+/// A tile with no core grid: the node's name and one bar of its cores by user.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Brief {
+    w: f64,
+    h: f64,
+    one_line: bool,
 }
 
 /// How a node's cores and GPUs arrange: sockets stacked, each a grid of rows.
@@ -133,7 +164,8 @@ impl Shape {
 }
 
 /// Lengths that follow from the core pitch, and whether tiles have gauges.
-struct Pitch {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pitch {
     gauges: bool,
     step: f64,
     gap: f64,
@@ -191,35 +223,44 @@ impl Pitch {
 
 /// Lays out `groups` in a panel `width` wide, at the largest core pitch whose board fits `height`. Tiles
 /// keep their gauges while cores stay at least the smallest gauged pitch, and drop them after. Tiles go
-/// compact when nothing fits.
+/// brief when nothing fits, and take the smallest brief style when even that overflows.
 pub fn board<'a>(groups: &[NodeGroup<'a>], width: f64, height: f64) -> Board<'a> {
-    let gauged = GAUGED_PITCHES.rev().map(|pitch| Pitch::new(pitch, true));
-    let bare = PITCHES.rev().map(|pitch| Pitch::new(pitch, false));
-    for pitch in gauged.chain(bare) {
-        let board = pack(groups, width, Some(&pitch));
-        if board.height <= height {
-            return board;
+    let gauged = GAUGED_PITCHES
+        .rev()
+        .map(|pitch| Style::Full(Pitch::new(pitch, true)));
+    let bare = PITCHES
+        .rev()
+        .map(|pitch| Style::Full(Pitch::new(pitch, false)));
+    let brief = BRIEFS.map(Style::Brief);
+    let mut board = None;
+    for style in gauged.chain(bare).chain(brief) {
+        let packed = pack(groups, width, style);
+        if packed.height <= height {
+            return packed;
         }
+        board = Some(packed);
     }
-    pack(groups, width, None)
+    board.unwrap_or_else(|| pack(groups, width, Style::Brief(BRIEFS[1])))
 }
 
 /// Places each group's tiles in a grid under its title, and groups side by side while they fit the
-/// width. With no pitch, tiles are compact.
-fn pack<'a>(groups: &[NodeGroup<'a>], width: f64, pitch: Option<&Pitch>) -> Board<'a> {
+/// width.
+fn pack<'a>(groups: &[NodeGroup<'a>], width: f64, style: Style) -> Board<'a> {
     let mut board = Board {
         tiles: Vec::new(),
         labels: Vec::new(),
         height: 0.0,
-        compact: pitch.is_none(),
-        gauges: pitch.is_some_and(|pitch| pitch.gauges),
+        style,
     };
     let (mut x, mut y, mut shelf) = (MARGIN, MARGIN, 0.0_f64);
     for (index, group) in groups.iter().enumerate() {
         let (tile_w, tile_h) = group
             .nodes
             .iter()
-            .map(|node| pitch.map_or((COMPACT_W, COMPACT_H), |pitch| pitch.tile(node)))
+            .map(|node| match &style {
+                Style::Full(pitch) => pitch.tile(node),
+                Style::Brief(brief) => brief.tile(node),
+            })
             .fold((0.0_f64, 0.0_f64), |(w, h), (nw, nh)| {
                 (w.max(nw), h.max(nh))
             });
@@ -258,7 +299,10 @@ fn pack<'a>(groups: &[NodeGroup<'a>], width: f64, pitch: Option<&Pitch>) -> Boar
                 w: tile_w,
                 h: tile_h,
             };
-            board.tiles.push(place(node, frame, pitch));
+            board.tiles.push(match &style {
+                Style::Full(pitch) => place(node, frame, pitch),
+                Style::Brief(brief) => place_brief(node, frame, brief),
+            });
         }
         x += block_w + GROUP_GAP;
         shelf = shelf.max(block_h);
@@ -297,26 +341,78 @@ fn note(count: usize, (cores_held, cores): (u64, u64), (gpus_held, gpus): (u64, 
     note
 }
 
-/// A node's cores and GPUs inside `frame`, centered.
-fn place<'a>(node: &'a Node, frame: Rect, pitch: Option<&Pitch>) -> Tile<'a> {
-    let shape = Shape::of(node);
-    let Some(pitch) = pitch else {
-        let side = 7.0;
-        let gpus = (0..shape.gpus)
-            .map(|i| Rect {
-                x: frame.x + frame.w - PAD - f64::from(shape.gpus - i) * (side + 2.0) + 2.0,
-                y: frame.y + 5.0,
-                w: side,
-                h: side,
-            })
-            .collect();
-        return Tile {
-            node,
-            frame,
-            cores: Vec::new(),
-            gpus,
-        };
+impl Brief {
+    /// The GPU dots' side and the tile's inset.
+    fn sizes(&self) -> (f64, f64) {
+        if self.one_line {
+            (5.0, 5.0)
+        } else {
+            (7.0, PAD)
+        }
+    }
+
+    /// The tile's size: wider than its least width when one line must fit the name, a bar of at least
+    /// 30 pixels and the GPU dots.
+    fn tile(&self, node: &Node) -> (f64, f64) {
+        if !self.one_line {
+            return (self.w, self.h);
+        }
+        let (side, inset) = self.sizes();
+        #[expect(clippy::cast_precision_loss, reason = "a short name")]
+        let name_w = node.name.0.chars().count() as f64 * BRIEF_CHAR;
+        let gpus_w = f64::from(node.gpus) * (side + 2.0) + 3.0;
+        (
+            self.w.max(2.0 * inset + name_w + 5.0 + 30.0 + gpus_w),
+            self.h,
+        )
+    }
+}
+
+/// A node's name, bar and GPUs inside a brief tile `frame`. GPUs sit at the right, and on one line
+/// the bar runs between the name and them.
+fn place_brief<'a>(node: &'a Node, frame: Rect, brief: &Brief) -> Tile<'a> {
+    let (side, inset) = brief.sizes();
+    let gpu_x = |i: u32| frame.x + frame.w - inset - f64::from(node.gpus - i) * (side + 2.0) + 2.0;
+    let gpus_left = gpu_x(0) - if node.gpus > 0 { 3.0 } else { 0.0 };
+    let gpus = (0..node.gpus)
+        .map(|i| Rect {
+            x: gpu_x(i),
+            y: frame.y + if brief.one_line { 6.5 } else { 5.0 },
+            w: side,
+            h: side,
+        })
+        .collect();
+    #[expect(clippy::cast_precision_loss, reason = "a short name")]
+    let name_w = node.name.0.chars().count() as f64 * BRIEF_CHAR;
+    let bar = if brief.one_line {
+        let x = frame.x + inset + name_w + 5.0;
+        Rect {
+            x,
+            y: frame.y + 5.0,
+            w: (gpus_left - x).max(4.0),
+            h: 8.0,
+        }
+    } else {
+        Rect {
+            x: frame.x + inset,
+            y: frame.y + 20.0,
+            w: frame.w - 2.0 * inset,
+            h: 8.0,
+        }
     };
+    Tile {
+        node,
+        frame,
+        name: (frame.x + inset, frame.y + 13.0),
+        cores: Vec::new(),
+        bar: Some(bar),
+        gpus,
+    }
+}
+
+/// A node's cores and GPUs inside `frame`, centered.
+fn place<'a>(node: &'a Node, frame: Rect, pitch: &Pitch) -> Tile<'a> {
+    let shape = Shape::of(node);
     let (body_w, _) = pitch.body(&shape);
     let (grid_w, _) = pitch.grid(&shape);
     let (chips_w, chips_h) = pitch.chips(&shape);
@@ -354,7 +450,9 @@ fn place<'a>(node: &'a Node, frame: Rect, pitch: Option<&Pitch>) -> Tile<'a> {
     Tile {
         node,
         frame,
+        name: (frame.x + PAD, frame.y + 14.0),
         cores,
+        bar: None,
         gpus,
     }
 }
@@ -434,10 +532,9 @@ impl Ink<'_> {
             self.label(&groups[label.group], label);
         }
         for tile in &board.tiles {
-            if board.compact {
-                self.compact(tile);
-            } else {
-                self.tile(tile, board.gauges);
+            match board.style {
+                Style::Full(pitch) => self.tile(tile, pitch.gauges),
+                Style::Brief(brief) => self.brief(tile, &brief),
             }
         }
     }
@@ -514,10 +611,10 @@ impl Ink<'_> {
             6.0,
         );
         self.context.stroke();
-        let head = frame.y + 14.0;
+        let (name_x, head) = tile.name;
         self.text(
             &node.name.0,
-            frame.x + PAD,
+            name_x,
             head,
             &self.font(600, 12.0, true),
             Self::rgb(&ui.text),
@@ -645,27 +742,25 @@ impl Ink<'_> {
         }
     }
 
-    /// One line per node: its name and a bar of its cores by user, then its GPUs.
-    fn compact(&self, tile: &Tile) {
+    /// A node's name and a bar of its cores by user, then its GPUs.
+    fn brief(&self, tile: &Tile, brief: &Brief) {
         let ui = &self.theme.ui;
         let node = tile.node;
         let frame = tile.frame;
         self.fill(frame, 4.0, Self::rgb(&ui.surface));
         let name_color = out(self.theme, node).unwrap_or_else(|| Self::rgb(&ui.text));
+        let size = if brief.one_line { 10.0 } else { 10.5 };
         self.text(
             &node.name.0,
-            frame.x + PAD,
-            frame.y + 13.0,
-            &self.font(600, 10.5, true),
+            tile.name.0,
+            tile.name.1,
+            &self.font(600, size, true),
             name_color,
         );
         let empty = self.empty(node);
         let (cores, gpus) = self.cells(node);
-        let bar = Rect {
-            x: frame.x + PAD,
-            y: frame.y + 20.0,
-            w: frame.w - 2.0 * PAD,
-            h: 8.0,
+        let Some(bar) = tile.bar else {
+            return;
         };
         self.fill(bar, 2.0, empty);
         let mut runs: Vec<(Rgb, usize)> = Vec::new();
@@ -760,14 +855,14 @@ mod tests {
     fn a_roomy_panel_gets_the_largest_cores() {
         let nodes = [node("z1", 52, 0)];
         let board = board(&[group("cpu", &nodes)], 1_000.0, 1_000.0);
-        assert!(!board.compact);
+        assert!(matches!(board.style, Style::Full(_)));
         let core = board.tiles[0].cores[0];
         assert_eq!(core.w, 16.0, "pitch 18 less a gap of 2");
         assert_eq!(board.tiles[0].cores.len(), 52);
     }
 
     #[test]
-    fn cores_shrink_until_the_board_fits_then_go_compact() {
+    fn cores_shrink_until_the_board_fits_then_go_brief() {
         let nodes: Vec<Node> = (0..40).map(|i| node(&format!("z{i}"), 52, 0)).collect();
         let groups = [group("cpu", &nodes)];
         let roomy = board(&groups, 1_400.0, 2_000.0);
@@ -775,7 +870,7 @@ mod tests {
         assert!(tight.tiles[0].cores[0].w < roomy.tiles[0].cores[0].w);
         assert!(tight.height <= 600.0);
         let cramped = board(&groups, 1_400.0, 150.0);
-        assert!(cramped.compact);
+        assert!(matches!(cramped.style, Style::Brief(_)));
         assert_eq!(cramped.tiles[0].cores, []);
     }
 
@@ -847,9 +942,41 @@ mod tests {
         let nodes = zlurm();
         let groups: Vec<NodeGroup> = nodes.iter().map(|nodes| group("g", nodes)).collect();
         let board = board(&groups, 1_330.0, 690.0);
-        assert!(!board.compact);
-        let with_gauges = super::board(&groups, 1_330.0, 2_000.0);
-        assert!(with_gauges.gauges, "gauges come back when there is room");
+        assert!(matches!(board.style, Style::Full(_)));
+        let roomy = super::board(&groups, 1_330.0, 2_000.0);
+        assert!(
+            matches!(roomy.style, Style::Full(Pitch { gauges: true, .. })),
+            "gauges come back when there is room"
+        );
+    }
+
+    #[test]
+    fn zlurm_fits_a_small_tv_in_one_line_tiles() {
+        let nodes = zlurm();
+        let groups: Vec<NodeGroup> = nodes.iter().map(|nodes| group("g", nodes)).collect();
+        let board = board(&groups, 940.0, 400.0);
+        assert!(board.height <= 400.0, "{}", board.height);
+    }
+
+    #[test]
+    fn one_line_tiles_widen_to_keep_a_bar_beside_many_gpus() {
+        let nodes = [node("js029", 128, 8)];
+        let tile = place_brief(
+            &nodes[0],
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: BRIEFS[1].tile(&nodes[0]).0,
+                h: 18.0,
+            },
+            &BRIEFS[1],
+        );
+        assert!(tile.bar.unwrap().w >= 30.0);
+        assert!(
+            tile.gpus
+                .iter()
+                .all(|gpu| gpu.x > tile.bar.unwrap().x + 30.0)
+        );
     }
 
     #[test]
