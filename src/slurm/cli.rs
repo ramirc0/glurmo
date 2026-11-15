@@ -42,7 +42,8 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 pub struct Cli {
     version: Option<Version>,
     nodes: Vec<Node>,
-    /// Records already reported as unreadable, so a job listed every tick is saved once.
+    /// Records already reported as unreadable, and stderr already logged, so what recurs every tick
+    /// is reported once.
     reported: HashSet<String>,
     /// Kinds of call whose unparsed output this run has saved, so a listing that fails every tick is
     /// saved once.
@@ -55,7 +56,8 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// Fails when the command cannot run, fails, writes to stderr, or prints output that does not parse.
+    /// Fails when the command cannot run, exits with a failing status, or prints output that does not
+    /// parse. Anything a command that succeeds prints on stderr is logged once and does not fail it.
     pub async fn answer(&mut self, call: &Call) -> Result<Answer> {
         if matches!(call, Call::Placements | Call::Lookup { .. }) && self.nodes.is_empty() {
             self.parse(&Call::Nodes, &run(sinfo::argv(), TIMEOUT).await?)?;
@@ -96,12 +98,12 @@ impl Cli {
             return Ok(Answer::Lookup(Lookup::Gone));
         }
         let command = exchange.argv.join(" ");
-        if exchange.status != 0 || !exchange.stderr.is_empty() {
-            bail!(
-                "{command} exited with {}: {}",
-                exchange.status,
-                exchange.stderr.trim()
-            );
+        let stderr = exchange.stderr.trim();
+        if exchange.status != 0 {
+            bail!("{command} exited with {}: {stderr}", exchange.status);
+        }
+        if !stderr.is_empty() && self.reported.insert(stderr.to_owned()) {
+            eprintln!("{} succeeded and printed: {stderr}", exchange.argv[0]);
         }
         let stdout = exchange.stdout.as_str();
         let answer = match call {
@@ -391,6 +393,24 @@ mod tests {
             Cli::default().parse(&call, &exchange).unwrap(),
             Answer::Lookup(Lookup::Gone)
         );
+    }
+
+    #[test]
+    fn stderr_fails_a_call_only_with_a_failing_status() {
+        let mut exchange = Exchange {
+            at: UnixTime(1_794_000_000),
+            argv: squeue::argv(),
+            status: 0,
+            stdout: "5|5|N/A|otter|long|RUNNING|4|cpu=4,mem=4G,node=1,billing=4|UNLIMITED|1794244136|1794244200|NONE|z1054|None|job1\n".into(),
+            stderr: "squeue: warning: slurm.conf has an unknown key\n".into(),
+        };
+        let Answer::Jobs(jobs) = Cli::default().parse(&Call::Jobs, &exchange).unwrap() else {
+            panic!("not jobs")
+        };
+        assert_eq!(jobs.len(), 1);
+        exchange.status = 1;
+        let error = Cli::default().parse(&Call::Jobs, &exchange).unwrap_err();
+        assert!(error.to_string().contains("unknown key"), "{error}");
     }
 
     #[test]
