@@ -1,0 +1,8 @@
+// From the base16 scheme by Michaël Ball.
+Theme(
+    name: "Tokyo Night Dark",
+    ui: (base: "#1a1b26", surface: "#16161e", overlay: "#2f3549", muted: "#444b6a", subtle: "#787c99", text: "#a9b1d6"),
+    state: (free: "#2f3549", down: "#c0caf5", drain: "#0db9d7"),
+    users: ["#b4f9f8", "#bb9af7", "#2ac3de", "#9ece6a", "#a9b1d6", "#f7768e"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

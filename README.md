@@ -84,7 +84,7 @@ The terminal view takes these keys:
 | `t` | Next theme |
 | `?` | Help |
 
-Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pine-moon` and `rose-pine-dawn`. The built-in layouts are `tui`, `web`, `tv` and `jobs`. A file in `~/.config/rtviz/themes/` or `~/.config/rtviz/layouts/` adds one, or replaces the built-in of the same name. The view reloads them within 2 seconds of an edit. See `themes/` and `layouts/` for the format.
+Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pine-moon` and `rose-pine-dawn`, plus 20 base16 schemes such as `catppuccin-mocha`, `gruvbox-light` and `tokyo-night-dark`. `themes/` lists them all. The built-in layouts are `tui`, `web`, `tv` and `jobs`. A file in `~/.config/rtviz/themes/` or `~/.config/rtviz/layouts/` adds one, or replaces the built-in of the same name. The view reloads them within 2 seconds of an edit. See `themes/` and `layouts/` for the format.
 
 ## Help
 

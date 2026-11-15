@@ -1,0 +1,8 @@
+// From the base16 scheme by https://github.com/catppuccin/catppuccin.
+Theme(
+    name: "Catppuccin Frappe",
+    ui: (base: "#303446", surface: "#292c3c", overlay: "#414559", muted: "#51576d", subtle: "#626880", text: "#c6d0f5"),
+    state: (free: "#414559", down: "#e78284", drain: "#e5c890"),
+    users: ["#81c8be", "#ca9ee6", "#8caaee", "#a6d189", "#ef9f76", "#eebebe"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

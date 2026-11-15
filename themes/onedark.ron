@@ -1,0 +1,8 @@
+// From the base16 scheme by Lalit Magant (http://github.com/tilal6991).
+Theme(
+    name: "OneDark",
+    ui: (base: "#282c34", surface: "#353b45", overlay: "#3e4451", muted: "#545862", subtle: "#565c64", text: "#abb2bf"),
+    state: (free: "#3e4451", down: "#e06c75", drain: "#e5c07b"),
+    users: ["#56b6c2", "#c678dd", "#61afef", "#98c379", "#d19a66", "#be5046"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

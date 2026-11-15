@@ -1,0 +1,8 @@
+// From the base16 scheme by xscriptor (https://github.com/xscriptor).
+Theme(
+    name: "Miami",
+    ui: (base: "#000000", surface: "#111112", overlay: "#1e1d1f", muted: "#69676c", subtle: "#88858c", text: "#f7f1ff"),
+    state: (free: "#1e1d1f", down: "#ff4c8b", drain: "#ffd84c"),
+    users: ["#47cfff", "#d36cff", "#00ffa8", "#7fffd4", "#ff926c", "#a65f46"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

@@ -1,0 +1,8 @@
+// From the base16 scheme by Tinted Theming (https://github.com/tinted-theming), morhetz (https://github.com/morhetz/gruvbox).
+Theme(
+    name: "Gruvbox Light",
+    ui: (base: "#fbf1c7", surface: "#ebdbb2", overlay: "#d5c4a1", muted: "#bdae93", subtle: "#7c6f64", text: "#3c3836"),
+    state: (free: "#d5c4a1", down: "#cc241d", drain: "#d79921"),
+    users: ["#689d6a", "#b16286", "#458588", "#98971a", "#d65d0e", "#9d0006"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

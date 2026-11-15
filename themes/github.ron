@@ -1,0 +1,8 @@
+// From the base16 scheme by Tinted Theming (https://github.com/tinted-theming).
+Theme(
+    name: "Github",
+    ui: (base: "#ffffff", surface: "#f6f8fa", overlay: "#d1d9e0", muted: "#818b98", subtle: "#59636e", text: "#454c54"),
+    state: (free: "#d1d9e0", down: "#cf222e", drain: "#9a6700"),
+    users: ["#1b7c83", "#8250df", "#0969da", "#116329", "#953800", "#a40e26"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

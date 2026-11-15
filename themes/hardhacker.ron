@@ -1,0 +1,8 @@
+// From the base16 scheme by fe2-Nyxar, based on the https://github.com/hardhackerlabs.
+Theme(
+    name: "Hardhacker",
+    ui: (base: "#211e2a", surface: "#2c2737", overlay: "#3f3951", muted: "#6e6780", subtle: "#8a829e", text: "#e4dee9"),
+    state: (free: "#3f3951", down: "#e965a5", drain: "#ebde76"),
+    users: ["#b3f4f3", "#ff79c6", "#95a6f4", "#b1f2a7", "#f4b870", "#bd93f9"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

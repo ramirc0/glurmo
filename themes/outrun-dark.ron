@@ -1,0 +1,8 @@
+// From the base16 scheme by Hugo Delahousse (http://github.com/hugodelahousse/).
+Theme(
+    name: "Outrun Dark",
+    ui: (base: "#00002a", surface: "#20204a", overlay: "#30305a", muted: "#50507a", subtle: "#b0b0da", text: "#d0d0fa"),
+    state: (free: "#30305a", down: "#ff4242", drain: "#f3e877"),
+    users: ["#0ef0f0", "#f10596", "#66b0ff", "#59f176", "#fc8d28", "#f003ef"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

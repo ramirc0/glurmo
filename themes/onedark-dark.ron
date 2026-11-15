@@ -1,0 +1,8 @@
+// From the base16 scheme by olimorris (https://github.com/olimorris).
+Theme(
+    name: "OneDark Dark",
+    ui: (base: "#000000", surface: "#1c1f24", overlay: "#2c313a", muted: "#434852", subtle: "#565c64", text: "#abb2bf"),
+    state: (free: "#2c313a", down: "#ef596f", drain: "#e5c07b"),
+    users: ["#2bbac5", "#d55fde", "#61afef", "#89ca78", "#d19a66", "#be5046"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

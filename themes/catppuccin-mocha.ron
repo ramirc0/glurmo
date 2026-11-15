@@ -1,0 +1,8 @@
+// From the base16 scheme by https://github.com/catppuccin/catppuccin.
+Theme(
+    name: "Catppuccin Mocha",
+    ui: (base: "#1e1e2e", surface: "#181825", overlay: "#313244", muted: "#45475a", subtle: "#585b70", text: "#cdd6f4"),
+    state: (free: "#313244", down: "#f38ba8", drain: "#f9e2af"),
+    users: ["#94e2d5", "#cba6f7", "#89b4fa", "#a6e3a1", "#fab387", "#f2cdcd"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

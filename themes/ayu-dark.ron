@@ -1,0 +1,8 @@
+// From the base16 scheme by Tinted Theming (https://github.com/tinted-theming), Ayu Theme (https://github.com/ayu-theme).
+Theme(
+    name: "Ayu Dark",
+    ui: (base: "#0b0e14", surface: "#131721", overlay: "#202229", muted: "#3e4b59", subtle: "#bfbdb6", text: "#e6e1cf"),
+    state: (free: "#202229", down: "#f07178", drain: "#ffb454"),
+    users: ["#95e6cb", "#d2a6ff", "#59c2ff", "#aad94c", "#ff8f40", "#e6b450"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

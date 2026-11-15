@@ -1,0 +1,8 @@
+// From the base16 scheme by xscriptor (https://github.com/xscriptor).
+Theme(
+    name: "X",
+    ui: (base: "#050505", surface: "#161616", overlay: "#222123", muted: "#6b686e", subtle: "#8a878e", text: "#f7f1ff"),
+    state: (free: "#222123", down: "#fc618d", drain: "#fce566"),
+    users: ["#5ad4e6", "#948ae3", "#fd9353", "#7bd88f", "#fca37a", "#a66c51"],
+    fonts: (sans: "Hanken Grotesk", mono: "CommitMono Nerd Font"),
+)

@@ -13,7 +13,7 @@ use crate::config::from_ron;
 use rtviz_model::layout::Layout;
 use rtviz_model::theme::Theme;
 
-const THEMES: [(&str, &str); 3] = [
+const THEMES: [(&str, &str); 23] = [
     ("rose-pine", include_str!("../themes/rose-pine.ron")),
     (
         "rose-pine-moon",
@@ -23,6 +23,50 @@ const THEMES: [(&str, &str); 3] = [
         "rose-pine-dawn",
         include_str!("../themes/rose-pine-dawn.ron"),
     ),
+    ("ayu-dark", include_str!("../themes/ayu-dark.ron")),
+    ("ayu-light", include_str!("../themes/ayu-light.ron")),
+    (
+        "catppuccin-frappe",
+        include_str!("../themes/catppuccin-frappe.ron"),
+    ),
+    (
+        "catppuccin-latte",
+        include_str!("../themes/catppuccin-latte.ron"),
+    ),
+    (
+        "catppuccin-macchiato",
+        include_str!("../themes/catppuccin-macchiato.ron"),
+    ),
+    (
+        "catppuccin-mocha",
+        include_str!("../themes/catppuccin-mocha.ron"),
+    ),
+    ("github", include_str!("../themes/github.ron")),
+    ("github-dark", include_str!("../themes/github-dark.ron")),
+    (
+        "github-dark-colorblind",
+        include_str!("../themes/github-dark-colorblind.ron"),
+    ),
+    (
+        "github-light-colorblind",
+        include_str!("../themes/github-light-colorblind.ron"),
+    ),
+    ("gruvbox-dark", include_str!("../themes/gruvbox-dark.ron")),
+    ("gruvbox-light", include_str!("../themes/gruvbox-light.ron")),
+    ("hardhacker", include_str!("../themes/hardhacker.ron")),
+    ("miami", include_str!("../themes/miami.ron")),
+    ("onedark", include_str!("../themes/onedark.ron")),
+    ("onedark-dark", include_str!("../themes/onedark-dark.ron")),
+    ("outrun-dark", include_str!("../themes/outrun-dark.ron")),
+    (
+        "tokyo-night-dark",
+        include_str!("../themes/tokyo-night-dark.ron"),
+    ),
+    (
+        "tokyo-night-light",
+        include_str!("../themes/tokyo-night-light.ron"),
+    ),
+    ("x", include_str!("../themes/x.ron")),
 ];
 
 const LAYOUTS: [(&str, &str); 4] = [
@@ -146,10 +190,9 @@ mod tests {
         fs::write(dir.path().join("themes/broken.ron"), "Theme(").unwrap();
         fs::write(dir.path().join("themes/notes.txt"), "not a theme").unwrap();
         let library = Library::load(dir.path());
-        assert_eq!(
-            library.themes.keys().collect::<Vec<_>>(),
-            ["extra", "rose-pine", "rose-pine-dawn", "rose-pine-moon"]
-        );
+        assert!(library.themes.contains_key("extra"));
+        assert!(!library.themes.contains_key("broken"));
+        assert_eq!(library.themes.len(), THEMES.len() + 1);
         assert_eq!(library.themes["rose-pine"].name, "Mine");
     }
 
