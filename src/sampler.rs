@@ -6,14 +6,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::Serialize;
+use tokio::sync::mpsc;
 
-use crate::config::{Config, Names};
+use crate::config::{Config, Names, Reach};
 use crate::diff::{Known, placed};
 use crate::hub::Hub;
 use crate::passwd;
 use crate::slurm::recording::Exhausted;
-use crate::slurm::{Lookup, Slurm};
-use crate::store::Store;
+use crate::slurm::{Lookup, Slurm, Source};
+use crate::store::{Store, Window};
 use glurmo_model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
 
 /// A call slower than this counts against its kind, like a failure.
@@ -174,6 +175,65 @@ impl Pace {
     }
 }
 
+/// One window of accounting, read on the history task.
+struct Read {
+    window: Window,
+    attempts: Result<Vec<Attempt>>,
+    /// How the history task's calls have fared, this one included.
+    calls: Calls,
+}
+
+/// The way to the task that reads accounting, so a slow slurmdbd never holds up a tick.
+struct Historian {
+    windows: mpsc::Sender<Window>,
+    reads: mpsc::Receiver<Read>,
+    /// Whether a window went out and its read has not come back.
+    reading: bool,
+}
+
+impl Historian {
+    /// Starts the task, which reaches Slurm as `reach` says through a connection of its own.
+    fn spawn(reach: Reach) -> Self {
+        let (windows, asked) = mpsc::channel(1);
+        let (answers, reads) = mpsc::channel(1);
+        tokio::spawn(read_history(reach, asked, answers));
+        Self {
+            windows,
+            reads,
+            reading: false,
+        }
+    }
+}
+
+/// Reads each window that comes through `asked` and sends it back through `answers`. It connects at the
+/// first window, and again after a connection that failed.
+async fn read_history(
+    reach: Reach,
+    mut asked: mpsc::Receiver<Window>,
+    answers: mpsc::Sender<Read>,
+) {
+    let mut slurm: Option<Slurm> = None;
+    let mut calls = Calls::default();
+    while let Some(window) = asked.recv().await {
+        let read = async {
+            let slurm = match &mut slurm {
+                Some(slurm) => slurm,
+                None => slurm.insert(Slurm::connect(Source::live(&reach)?, None).await?),
+            };
+            slurm.history(window.from, window.to).await
+        };
+        let (attempts, _) = calls.time(read).await;
+        let read = Read {
+            window,
+            attempts,
+            calls: calls.clone(),
+        };
+        if answers.send(read).await.is_err() {
+            return;
+        }
+    }
+}
+
 /// What one tick saw.
 #[derive(Default)]
 struct Tick {
@@ -206,6 +266,8 @@ pub struct Sampler {
     names: Names,
     /// GPU models by partition, for nodes whose GRES names no type.
     gpu_models: BTreeMap<String, String>,
+    /// Reads accounting into the store, for a live cluster.
+    historian: Option<Historian>,
     /// How much accounting the next backfill reads.
     backfill_span_s: i64,
     /// When the next history read may start, after one failed.
@@ -219,6 +281,8 @@ impl Sampler {
     pub fn new(slurm: Slurm, config: &Config, store: Option<Store>, hub: Hub) -> Self {
         let intervals = config.sample;
         let jobs_most_s = (slurm.site().min_job_age_s / 2).max(intervals.jobs_s);
+        let historian =
+            (store.is_some() && slurm.is_live()).then(|| Historian::spawn(config.slurm.clone()));
         Self {
             slurm,
             known: Known::default(),
@@ -237,6 +301,7 @@ impl Sampler {
             store,
             names: config.names,
             gpu_models: config.gpu_models.clone(),
+            historian,
             backfill_span_s: 21_600,
             backfill_after: UnixTime(0),
         }
@@ -268,7 +333,7 @@ impl Sampler {
                 ));
             }
             self.hub.publish(at, events);
-            if listed && let Err(error) = self.backfill(at).await {
+            if listed && let Err(error) = self.backfill(at) {
                 eprintln!("store at {}: {error:#}", at.0);
             }
             self.hub.report(self.health());
@@ -385,27 +450,35 @@ impl Sampler {
         store.new_users()
     }
 
-    /// Reads one window of accounting into the store, then runs the daily upkeep. It runs after the
-    /// tick's changes are out, because a read can take seconds.
-    async fn backfill(&mut self, now: UnixTime) -> Result<()> {
+    /// Writes a window of accounting that came back into the store, sends out the next one if none is
+    /// out, then runs the daily upkeep. The reads run on their own task, because one can take a minute.
+    fn backfill(&mut self, now: UnixTime) -> Result<()> {
         let Some(store) = &mut self.store else {
             return Ok(());
         };
-        let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
-        if now >= self.backfill_after
-            && let Some(window) = store.next_backfill(now, min_job_age_s, self.backfill_span_s)?
-        {
-            let (attempts, _) = self
-                .backfilling
-                .time(self.slurm.history(window.from, window.to))
-                .await;
-            self.backfill_span_s = next_span(self.backfill_span_s, attempts.is_ok());
-            match attempts {
-                Ok(attempts) => store.backfill(window, &attempts, &self.known.active(), now)?,
-                Err(error) => {
-                    eprintln!("history at {}: {error:#}", now.0);
-                    self.backfill_after = UnixTime(now.0 + BACKFILL_RETRY_S);
+        if let Some(historian) = &mut self.historian {
+            if let Ok(read) = historian.reads.try_recv() {
+                historian.reading = false;
+                self.backfilling = read.calls;
+                self.backfill_span_s = next_span(self.backfill_span_s, read.attempts.is_ok());
+                match read.attempts {
+                    Ok(attempts) => {
+                        store.backfill(read.window, &attempts, &self.known.active(), now)?;
+                    }
+                    Err(error) => {
+                        let Window { from, to, .. } = read.window;
+                        eprintln!("history from {} to {}: {error:#}", from.0, to.0);
+                        self.backfill_after = UnixTime(now.0 + BACKFILL_RETRY_S);
+                    }
                 }
+            }
+            let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
+            if !historian.reading
+                && now >= self.backfill_after
+                && let Some(window) =
+                    store.next_backfill(now, min_job_age_s, self.backfill_span_s)?
+            {
+                historian.reading = historian.windows.try_send(window).is_ok();
             }
         }
         store.maintain(now)
@@ -537,13 +610,13 @@ mod tests {
 
     #[tokio::test]
     async fn store_agrees_with_the_deltas() {
-        assert_store_agrees_with_the_deltas(busy_quarter_hour().await).await;
+        assert_store_agrees_with_the_deltas(busy_quarter_hour().await, 0, None).await;
     }
 
-    #[tokio::test]
-    async fn store_agrees_with_the_deltas_after_a_controller_outage() {
+    /// The busy quarter hour, with a controller outage longer than `MinJobAge` in it.
+    async fn busy_quarter_hour_with_an_outage() -> Slurm {
         let mut listings = 0;
-        let slurm = busy_quarter_hour_with(|exchange| {
+        busy_quarter_hour_with(|exchange| {
             if exchange.call != Call::Jobs {
                 return;
             }
@@ -553,8 +626,48 @@ mod tests {
                 exchange.answer = Err("slurmctld did not answer: connection refused".into());
             }
         })
-        .await;
-        let (dir, deltas) = assert_store_agrees_with_the_deltas(slurm).await;
+        .await
+    }
+
+    /// When the store's coverage ends, in seconds since the epoch.
+    fn complete_to(dir: &tempfile::TempDir) -> i64 {
+        rusqlite::Connection::open(dir.path().join("glurmo.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'complete_to'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// A history task that answers each window with no records, a tick after it went out.
+    fn empty_accounting() -> Historian {
+        let (windows, mut asked) = mpsc::channel(1);
+        let (answers, reads) = mpsc::channel(1);
+        tokio::spawn(async move {
+            while let Some(window) = asked.recv().await {
+                let read = Read {
+                    window,
+                    attempts: Ok(Vec::new()),
+                    calls: Calls::default(),
+                };
+                if answers.send(read).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Historian {
+            windows,
+            reads,
+            reading: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn store_agrees_with_the_deltas_after_a_controller_outage() {
+        let slurm = busy_quarter_hour_with_an_outage().await;
+        let (dir, deltas) = assert_store_agrees_with_the_deltas(slurm, 0, None).await;
         let outages: Vec<Option<&str>> = deltas
             .iter()
             .flat_map(|delta| &delta.events)
@@ -567,36 +680,59 @@ mod tests {
         assert!(outages[0].is_some_and(|error| error.contains("slurmctld did not answer")));
         assert_eq!(outages[1], None);
         let last = deltas.last().unwrap().at;
-        let covered: i64 = rusqlite::Connection::open(dir.path().join("glurmo.sqlite"))
-            .unwrap()
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'complete_to'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
         assert!(
-            last.0 - covered > 300,
+            last.0 - complete_to(&dir) > 300,
             "the store waits at the outage for accounting, which this replay lacks"
         );
     }
 
-    /// Samples `slurm` into a new store, then checks the store against the deltas: open attempts that
-    /// started are the running ones, every end landed, and open pending attempts hold the queue's tasks.
-    /// Returns the store's directory and the deltas.
+    #[tokio::test]
+    async fn accounting_read_on_its_own_task_closes_an_outage_gap() {
+        let slurm = busy_quarter_hour_with_an_outage().await;
+        let (dir, deltas) =
+            assert_store_agrees_with_the_deltas(slurm, 0, Some(empty_accounting())).await;
+        let last = deltas.last().unwrap().at;
+        assert!(last.0 - complete_to(&dir) <= 30, "the gap closed");
+    }
+
+    #[tokio::test]
+    async fn a_history_read_that_never_ends_holds_up_no_tick() {
+        let (windows, mut asked) = mpsc::channel(1);
+        let (_answers, reads) = mpsc::channel(1);
+        let hung = Historian {
+            windows,
+            reads,
+            reading: false,
+        };
+        let replay = assert_store_agrees_with_the_deltas(busy_quarter_hour().await, 1, Some(hung));
+        let (_, deltas) = tokio::time::timeout(Duration::from_secs(60), replay)
+            .await
+            .expect("the replay ran to its end");
+        let unstored = busy_hub().await.deltas();
+        assert_eq!(deltas.len(), unstored.len());
+        assert!(asked.try_recv().is_ok(), "one window went out");
+        assert!(asked.try_recv().is_err(), "and no more while it was out");
+    }
+
+    /// Samples `slurm` into a new store that backfills `backfill_days` through `historian`, then checks
+    /// the store against the deltas: open attempts that started are the running ones, every end landed,
+    /// and open pending attempts hold the queue's tasks. Returns the store's directory and the deltas.
     async fn assert_store_agrees_with_the_deltas(
         slurm: Slurm,
+        backfill_days: u32,
+        historian: Option<Historian>,
     ) -> (tempfile::TempDir, Vec<std::sync::Arc<Delta>>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("glurmo.sqlite");
         let settings = Settings {
-            backfill_days: 0,
+            backfill_days,
             keep_days: None,
             backup: dir.path().join("backup.sqlite"),
         };
         let store = Store::open(&path, settings).unwrap();
         let hub = Hub::new(slurm.site().clone());
         let mut sampler = Sampler::new(slurm, &zlurm_config(), Some(store), hub.clone());
+        sampler.historian = historian;
         sampler.run(None).await;
 
         let mut cluster = Cluster::default();
@@ -709,7 +845,8 @@ mod tests {
                 .collect::<rusqlite::Result<_>>()
                 .unwrap()
         };
-        let (clean, _) = assert_store_agrees_with_the_deltas(busy_quarter_hour().await).await;
+        let (clean, _) =
+            assert_store_agrees_with_the_deltas(busy_quarter_hour().await, 0, None).await;
         let mut failed = false;
         let slurm = busy_quarter_hour_with(|exchange| {
             if exchange.call == Call::Nodes && !failed {
@@ -718,7 +855,7 @@ mod tests {
             }
         })
         .await;
-        let (late, _) = assert_store_agrees_with_the_deltas(slurm).await;
+        let (late, _) = assert_store_agrees_with_the_deltas(slurm, 0, None).await;
         assert_eq!(core_s_by_bin(&late), core_s_by_bin(&clean));
     }
 

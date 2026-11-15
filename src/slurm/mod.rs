@@ -256,6 +256,11 @@ impl Slurm {
         }
     }
 
+    /// Whether the answers come from a cluster rather than a recording.
+    pub fn is_live(&self) -> bool {
+        !matches!(self.source, Source::Replay(_))
+    }
+
     /// Waits until `time`. A replay moves its clock there at once.
     pub async fn sleep_until(&mut self, time: UnixTime) {
         match &mut self.source {

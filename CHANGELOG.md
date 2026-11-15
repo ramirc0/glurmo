@@ -16,6 +16,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - The protocol backend places jobs from the tick's job listing, so each tick sends slurmctld one job-info request instead of two.
 - The protocol backend reads every field of each reply and fails one with bytes left over, so a layout it misreads shows as an error. It also checks the return code of slurmdbd's TRES list. Before, the configuration, scheduler statistics and TRES walks stopped early, and nothing checked what remained.
 - The jobs list keeps the rows whose text has not changed, so a delta or a filter change builds only the rows that appear or change. On a replay with 1,170 rows, ten deltas rebuilt 12,446 rows before and 2,833 now. A search that every row matched rebuilt all 1,170 before and none now.
+- History reads run on a task of their own, over a second connection to Slurm, so no tick waits for one. On zlurm, a fresh store's backfill kept jobs ticks 10 s apart while reads took up to 15 s. Before, each tick waited for the read, so reads of 8 to 13 s held ticks up to 20 s apart, and a hung slurmdbd held each tick for up to a minute.
 
 ### Removed
 
