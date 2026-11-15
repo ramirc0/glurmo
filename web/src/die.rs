@@ -36,6 +36,8 @@ const HEAD: f64 = 20.0;
 const FOOT: f64 = 32.0;
 const BARE_FOOT: f64 = 8.0;
 const MIN_TILE_W: f64 = 116.0;
+/// The shortest gauge track worth drawing.
+const MIN_TRACK: f64 = 16.0;
 /// Brief tiles, tried in order: the name over the bar, then the name beside it.
 const BRIEFS: [Brief; 2] = [
     Brief {
@@ -735,24 +737,35 @@ impl Ink<'_> {
         }
     }
 
-    /// Load against CPUs, and memory allocated with what the OS has in use as a tick.
+    /// Load against CPUs, and memory allocated with what the OS has in use as a tick. The tracks start
+    /// after the wider label, and are left out when the tile has no room for them.
     fn gauges(&self, node: &Node, frame: Rect) {
         let ui = &self.theme.ui;
         let font = self.font(500, 10.0, true);
-        let label_w = 70.0;
-        let track_x = frame.x + PAD + label_w;
-        let track_w = frame.w - 2.0 * PAD - label_w;
         let first = frame.y + frame.h - FOOT + 11.0;
         let second = first + 13.0;
-        let cpus = f64::from(node.cpus.max(1));
-        let load_text = node.load.map_or_else(|| "-".to_owned(), load);
-        self.text(
-            &format!("load {load_text}"),
-            frame.x + PAD,
-            first,
-            &font,
-            Self::rgb(&ui.subtle),
+        let load_label = format!(
+            "load {}",
+            node.load.map_or_else(|| "-".to_owned(), load)
         );
+        let mem_label = format!(
+            "mem {}/{}",
+            gigabytes(node.mem_alloc_mb),
+            gigabytes(node.mem_mb)
+        );
+        self.text(&load_label, frame.x + PAD, first, &font, Self::rgb(&ui.subtle));
+        self.text(&mem_label, frame.x + PAD, second, &font, Self::rgb(&ui.subtle));
+        let label_w = [&load_label, &mem_label]
+            .iter()
+            .filter_map(|label| self.context.measure_text(label).ok())
+            .map(|metrics| metrics.width())
+            .fold(0.0, f64::max);
+        let track_x = frame.x + PAD + label_w + 8.0;
+        let track_w = frame.x + frame.w - PAD - track_x;
+        if track_w < MIN_TRACK {
+            return;
+        }
+        let cpus = f64::from(node.cpus.max(1));
         self.track(
             track_x,
             first - 3.5,
@@ -763,17 +776,6 @@ impl Ink<'_> {
         let mem = node.mem_mb.max(1);
         #[expect(clippy::cast_precision_loss, reason = "megabytes fit in an f64")]
         let fraction = |mb: u64| mb as f64 / mem as f64;
-        self.text(
-            &format!(
-                "mem {}/{}",
-                gigabytes(node.mem_alloc_mb),
-                gigabytes(node.mem_mb)
-            ),
-            frame.x + PAD,
-            second,
-            &font,
-            Self::rgb(&ui.subtle),
-        );
         let used = node
             .mem_free_mb
             .map(|free| fraction(node.mem_mb.saturating_sub(free)));
