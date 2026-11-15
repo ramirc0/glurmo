@@ -1,14 +1,17 @@
 //! History on disk: every attempt, five-minute usage bins, node health changes and user colors.
 
+mod connection;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
+use rusqlite::OpenFlags;
 use serde::Deserialize;
 
 use crate::rollup::{BIN_S, Span, bin_of, rollup};
+use connection::{Connection, Value, params};
 use glurmo_model::usage::Step;
 use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeFlag,
@@ -156,21 +159,24 @@ impl Store {
                 );
             }
         }
-        let mut db =
-            Connection::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+        let mut db = rusqlite::Connection::open(path)
+            .with_context(|| format!("cannot open {}", path.display()))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "synchronous", "NORMAL")?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
+        // The store runs more statements than the default 16, and each one is prepared once and kept.
+        db.set_prepared_statement_cache_capacity(64);
         migrate(&mut db)?;
+        let db = Connection::Sqlite(db);
         let health = db
-            .prepare(
+            .query_map(
                 "SELECT node, state, reason FROM node_states AS latest
                  WHERE at = (SELECT max(at) FROM node_states WHERE node = latest.node)",
+                params![],
+                |row| Ok((NodeName(row.get(0)?), (row.get(1)?, row.get(2)?))),
             )?
-            .query_map([], |row| {
-                Ok((NodeName(row.get(0)?), (row.get(1)?, row.get(2)?)))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+            .into_iter()
+            .collect();
         let mut store = Self {
             db,
             path: path.to_owned(),
@@ -194,7 +200,7 @@ impl Store {
             self.roll_bins(bin_of(stale.max(history_from)), rolled_to, rolled_to)?;
         }
         self.db
-            .execute("DELETE FROM meta WHERE key = 'stale_from'", [])?;
+            .execute("DELETE FROM meta WHERE key = 'stale_from'", params![])?;
         Ok(())
     }
 
@@ -218,7 +224,7 @@ impl Store {
                 }
                 Event::Ended { key, at, state } => {
                     tx.execute(
-                        "UPDATE attempts SET end = ?3, state = ?4 WHERE job = ?1 AND submit = ?2",
+                        r#"UPDATE attempts SET "end" = ?3, state = ?4 WHERE job = ?1 AND submit = ?2"#,
                         params![key.job.0, key.submit.0, at.0, state.map(state_name)],
                     )?;
                 }
@@ -253,8 +259,10 @@ impl Store {
                         let health = (health(node), node.reason.clone());
                         if self.health.get(&node.name) != Some(&health) {
                             tx.execute(
-                                "INSERT OR REPLACE INTO node_states VALUES (?1, ?2, ?3, ?4)",
-                                params![node.name.0, at.0, health.0, health.1],
+                                "INSERT INTO node_states VALUES (?1, ?2, ?3, ?4)
+                                 ON CONFLICT (node, at) DO UPDATE
+                                 SET state = excluded.state, reason = excluded.reason",
+                                params![&node.name.0, at.0, &health.0, health.1.as_deref()],
                             )?;
                             self.health.insert(node.name.clone(), health);
                         }
@@ -284,20 +292,18 @@ impl Store {
     ///
     /// Fails when a read fails.
     pub fn new_users(&mut self) -> Result<Vec<User>> {
-        let users: Vec<User> = self
-            .db
-            .prepare(
-                "SELECT login, full_name, color_slot FROM users WHERE color_slot >= ?1
-                 ORDER BY color_slot",
-            )?
-            .query_map([self.users_seen], |row| {
+        let users = self.db.query_map(
+            "SELECT login, full_name, color_slot FROM users WHERE color_slot >= ?1
+             ORDER BY color_slot",
+            params![self.users_seen],
+            |row| {
                 Ok(User {
                     login: Login(row.get(0)?),
                     name: row.get(1)?,
                     color_slot: row.get(2)?,
                 })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+            },
+        )?;
         if let Some(last) = users.last() {
             self.users_seen = last.color_slot + 1;
         }
@@ -314,7 +320,7 @@ impl Store {
         for (login, name) in names {
             tx.execute(
                 "UPDATE users SET full_name = ?2 WHERE login = ?1",
-                params![login.0, name],
+                params![&login.0, name],
             )?;
         }
         tx.commit()?;
@@ -366,20 +372,24 @@ impl Store {
             return Ok(0);
         };
         let tx = self.db.transaction()?;
-        let open: Vec<AttemptKey> = tx
-            .prepare("SELECT job, submit FROM attempts WHERE end IS NULL")?
-            .query_map([], |row| {
+        let open = tx.query_map(
+            r#"SELECT job, submit FROM attempts WHERE "end" IS NULL"#,
+            params![],
+            |row| {
                 Ok(AttemptKey {
                     job: JobId(row.get(0)?),
                     submit: UnixTime(row.get(1)?),
                 })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+            },
+        )?;
         let mut closed = 0;
         for key in open.iter().filter(|key| !active.contains(key)) {
             closed += tx.execute(
-                "UPDATE attempts SET end = max(?3, coalesce(start, submit)), state = ?4
-                 WHERE job = ?1 AND submit = ?2",
+                r#"UPDATE attempts SET
+                       "end" = CASE WHEN ?3 > coalesce(start, submit) THEN ?3
+                               ELSE coalesce(start, submit) END,
+                       state = ?4
+                   WHERE job = ?1 AND submit = ?2"#,
                 params![key.job.0, key.submit.0, last.0, state_name(EndState::Lost)],
             )?;
         }
@@ -505,14 +515,17 @@ impl Store {
     /// one replaced by then.
     fn prune(&mut self, cutoff: UnixTime) -> Result<()> {
         let tx = self.db.transaction()?;
-        tx.execute("DELETE FROM attempts WHERE end < ?1", [cutoff.0])?;
-        tx.execute("DELETE FROM usage WHERE bin < ?1", [cutoff.0])?;
+        tx.execute(
+            r#"DELETE FROM attempts WHERE "end" < ?1"#,
+            params![cutoff.0],
+        )?;
+        tx.execute("DELETE FROM usage WHERE bin < ?1", params![cutoff.0])?;
         tx.execute(
             "DELETE FROM node_states WHERE at < ?1 AND EXISTS (
                  SELECT 1 FROM node_states AS later
                  WHERE later.node = node_states.node AND later.at > node_states.at AND later.at <= ?1
              )",
-            [cutoff.0],
+            params![cutoff.0],
         )?;
         tx.commit()?;
         Ok(())
@@ -535,28 +548,28 @@ impl Store {
         let spans = spans(&tx, from, to)?;
         tx.execute(
             "DELETE FROM usage WHERE bin >= ?1 AND bin < ?2",
-            [from.0, to.0],
+            params![from.0, to.0],
         )?;
-        let mut insert =
-            tx.prepare("INSERT INTO usage VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
         let mut bin = from;
         while bin < to {
             for ((login, partition), usage) in rollup(bin, &spans, now) {
-                insert.execute(params![
-                    bin.0,
-                    login.0,
-                    partition.0,
-                    usage.core_s,
-                    usage.gpu_s,
-                    usage.wait_s,
-                    usage.started,
-                    usage.ended,
-                    usage.failed
-                ])?;
+                tx.execute(
+                    "INSERT INTO usage VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        bin.0,
+                        login.0,
+                        partition.0,
+                        i64::try_from(usage.core_s)?,
+                        i64::try_from(usage.gpu_s)?,
+                        i64::try_from(usage.wait_s)?,
+                        usage.started,
+                        usage.ended,
+                        usage.failed
+                    ],
+                )?;
             }
             bin = UnixTime(bin.0 + BIN_S);
         }
-        drop(insert);
         tx.commit()?;
         Ok(())
     }
@@ -567,7 +580,8 @@ impl Store {
 
     fn set_meta(&self, key: &str, value: UnixTime) -> Result<()> {
         self.db.execute(
-            "INSERT OR REPLACE INTO meta VALUES (?1, ?2)",
+            "INSERT INTO meta VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             params![key, value.0],
         )?;
         Ok(())
@@ -665,15 +679,16 @@ impl History {
         };
         let mut sums: BTreeMap<(i64, String), (u64, u64)> = BTreeMap::new();
 
-        let mut closed = db.prepare(&format!(
-            "SELECT ?1 + (bin - ?1) / ?3 * ?3 AS at, {column}, sum(core_s), sum(wait_s)
-             FROM usage WHERE bin >= ?1 AND bin < ?2 GROUP BY at, {column}"
-        ))?;
-        let rows = closed.query_map([from.0, to.0.min(rolled_to.0), step_s], |row| {
-            Ok(((row.get(0)?, row.get(1)?), (row.get(2)?, row.get(3)?)))
-        })?;
-        for row in rows {
-            let (key, (core_s, wait_s)): (_, (u64, u64)) = row?;
+        let closed: Vec<(_, (u64, u64))> = db.query_map(
+            &format!(
+                "SELECT ?1 + (bin - ?1) / ?3 * ?3 AS at, {column},
+                        CAST(sum(core_s) AS BIGINT), CAST(sum(wait_s) AS BIGINT)
+                 FROM usage WHERE bin >= ?1 AND bin < ?2 GROUP BY at, {column}"
+            ),
+            params![from.0, to.0.min(rolled_to.0), step_s],
+            |row| Ok(((row.get(0)?, row.get(1)?), (row.get(2)?, row.get(3)?))),
+        )?;
+        for (key, (core_s, wait_s)) in closed {
             let sum = sums.entry(key).or_default();
             sum.0 += core_s;
             sum.1 += wait_s;
@@ -727,7 +742,7 @@ impl History {
     pub fn alive(&self, at: UnixTime) -> Result<Vec<Stored>> {
         let db = self.connect()?;
         let by_end = ends_are_fewer(&db, at, at)?;
-        stored(&db, &overlapping(STORED, "<= ?1", by_end), [at.0])
+        stored(&db, &overlapping(STORED, "<= ?1", by_end), params![at.0])
     }
 
     /// Attempts submitted, started or ended after `from` and up to `to`.
@@ -739,13 +754,13 @@ impl History {
         stored(
             &self.connect()?,
             &format!(
-                "SELECT {STORED} FROM attempts WHERE submit > ?1 AND submit <= ?2
-                 UNION
-                 SELECT {STORED} FROM attempts WHERE start > ?1 AND start <= ?2
-                 UNION
-                 SELECT {STORED} FROM attempts WHERE end > ?1 AND end <= ?2"
+                r#"SELECT {STORED} FROM attempts WHERE submit > ?1 AND submit <= ?2
+                   UNION
+                   SELECT {STORED} FROM attempts WHERE start > ?1 AND start <= ?2
+                   UNION
+                   SELECT {STORED} FROM attempts WHERE "end" > ?1 AND "end" <= ?2"#
             ),
-            [from.0, to.0],
+            params![from.0, to.0],
         )
     }
 
@@ -755,39 +770,40 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn node_health(&self, to: UnixTime) -> Result<Vec<NodeHealth>> {
-        let db = self.connect()?;
-        let mut query = db.prepare(
+        self.connect()?.query_map(
             "SELECT node, at, state, reason FROM node_states WHERE at <= ?1 ORDER BY at, node",
-        )?;
-        let rows = query.query_map([to.0], |row| {
-            let health: String = row.get(2)?;
-            let state = health.strip_suffix('*');
-            Ok(NodeHealth {
-                node: NodeName(row.get(0)?),
-                at: UnixTime(row.get(1)?),
-                state: health_state(state.unwrap_or(&health)),
-                not_responding: state.is_some(),
-                reason: row.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+            params![to.0],
+            |row| {
+                let health: String = row.get(2)?;
+                let state = health.strip_suffix('*');
+                Ok(NodeHealth {
+                    node: NodeName(row.get(0)?),
+                    at: UnixTime(row.get(1)?),
+                    state: health_state(state.unwrap_or(&health)),
+                    not_responding: state.is_some(),
+                    reason: row.get(3)?,
+                })
+            },
+        )
     }
 
     fn connect(&self) -> Result<Connection> {
-        Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        rusqlite::Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map(Connection::Sqlite)
             .with_context(|| format!("cannot open {}", self.path.display()))
     }
 }
 
 fn meta(db: &Connection, key: &str) -> Result<Option<UnixTime>> {
-    Ok(db
-        .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
-            row.get(0).map(UnixTime)
-        })
-        .optional()?)
+    let values = db.query_map(
+        "SELECT value FROM meta WHERE key = ?1",
+        params![key],
+        |row| row.get(0).map(UnixTime),
+    )?;
+    Ok(values.first().copied())
 }
 
-fn migrate(db: &mut Connection) -> Result<()> {
+fn migrate(db: &mut rusqlite::Connection) -> Result<()> {
     let done: usize = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if done > MIGRATIONS.len() {
         bail!(
@@ -818,7 +834,7 @@ fn stored_times(attempt: &Attempt) -> (Option<UnixTime>, Option<UnixTime>) {
 /// Inserts an attempt, or updates it while keeping its placement and origin.
 /// A start, end or state already stored survives an update that lacks one.
 fn upsert(
-    tx: &Transaction,
+    tx: &Connection,
     cpus_per_core: &HashMap<NodeName, u32>,
     attempt: &Attempt,
     origin: Origin,
@@ -837,41 +853,44 @@ fn upsert(
         .partitions
         .first()
         .map_or("", |name| name.0.as_str());
-    tx.prepare_cached(
-        "INSERT INTO attempts
-             (job, submit, array_job, task_range, tasks, login, partition, cpus, cores, gpus, mem_mb,
-              start, end, state, nodes, origin)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-         ON CONFLICT (job, submit) DO UPDATE SET
-             array_job = excluded.array_job, task_range = excluded.task_range, tasks = excluded.tasks,
-             login = excluded.login, partition = excluded.partition, cpus = excluded.cpus,
-             cores = coalesce(excluded.cores, cores), gpus = excluded.gpus, mem_mb = excluded.mem_mb,
-             start = coalesce(excluded.start, start), end = coalesce(excluded.end, end),
-             state = coalesce(excluded.state, state),
-             nodes = iif(excluded.nodes = '[]', nodes, excluded.nodes)",
-    )?
-    .execute(params![
-        attempt.key.job.0,
-        attempt.key.submit.0,
-        attempt.array.as_ref().map(|array| array.job.0),
-        attempt.array.as_ref().map(|array| &array.spec),
-        attempt.array.as_ref().map_or(1, |array| array.count),
-        attempt.login.0,
-        partition,
-        attempt.cpus,
-        cores,
-        attempt.gpus,
-        attempt.mem_mb,
-        start.map(|time| time.0),
-        end.map(|time| time.0),
-        state,
-        serde_json::to_string(&attempt.nodes)?,
-        origin
-    ])?;
-    tx.prepare_cached(
-        "INSERT OR IGNORE INTO users (login, color_slot) VALUES (?1, (SELECT count(*) FROM users))",
-    )?
-    .execute([&attempt.login.0])?;
+    tx.execute(
+        r#"INSERT INTO attempts
+               (job, submit, array_job, task_range, tasks, login, partition, cpus, cores, gpus, mem_mb,
+                start, "end", state, nodes, origin)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+           ON CONFLICT (job, submit) DO UPDATE SET
+               array_job = excluded.array_job, task_range = excluded.task_range,
+               tasks = excluded.tasks, login = excluded.login, partition = excluded.partition,
+               cpus = excluded.cpus, cores = coalesce(excluded.cores, attempts.cores),
+               gpus = excluded.gpus, mem_mb = excluded.mem_mb,
+               start = coalesce(excluded.start, attempts.start),
+               "end" = coalesce(excluded."end", attempts."end"),
+               state = coalesce(excluded.state, attempts.state),
+               nodes = CASE WHEN excluded.nodes = '[]' THEN attempts.nodes ELSE excluded.nodes END"#,
+        params![
+            attempt.key.job.0,
+            attempt.key.submit.0,
+            attempt.array.as_ref().map(|array| array.job.0),
+            attempt.array.as_ref().map(|array| &array.spec),
+            attempt.array.as_ref().map_or(1, |array| array.count),
+            &attempt.login.0,
+            partition,
+            attempt.cpus,
+            cores,
+            attempt.gpus,
+            attempt.mem_mb.map(i64::try_from).transpose()?,
+            start.map(|time| time.0),
+            end.map(|time| time.0),
+            state,
+            serde_json::to_string(&attempt.nodes)?,
+            origin
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO users (login, color_slot) VALUES (?1, (SELECT count(*) FROM users))
+         ON CONFLICT (login) DO NOTHING",
+        params![&attempt.login.0],
+    )?;
     Ok(())
 }
 
@@ -893,15 +912,14 @@ fn cores(cpus: u32, nodes: &[NodeName], cpus_per_core: &HashMap<NodeName, u32>) 
 /// Counts the cores of attempts stored with nodes before the run's first node listing. Returns when
 /// the earliest of them started, from where the bins need rolling up again.
 fn count_cores(
-    tx: &Transaction,
+    tx: &Connection,
     cpus_per_core: &HashMap<NodeName, u32>,
 ) -> Result<Option<UnixTime>> {
-    let uncounted: Vec<(u32, i64, u32, String, i64)> = tx
-        .prepare(
-            "SELECT job, submit, cpus, nodes, coalesce(start, submit) FROM attempts
-             WHERE cores IS NULL AND nodes != '[]'",
-        )?
-        .query_map([], |row| {
+    let uncounted: Vec<(u32, i64, u32, String, i64)> = tx.query_map(
+        "SELECT job, submit, cpus, nodes, coalesce(start, submit) FROM attempts
+         WHERE cores IS NULL AND nodes != '[]'",
+        params![],
+        |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -909,13 +927,13 @@ fn count_cores(
                 row.get(3)?,
                 row.get(4)?,
             ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+        },
+    )?;
     for (job, submit, cpus, nodes, _) in &uncounted {
         let nodes: Vec<NodeName> = serde_json::from_str(nodes)?;
         tx.execute(
             "UPDATE attempts SET cores = ?3 WHERE job = ?1 AND submit = ?2",
-            params![job, submit, cores(*cpus, &nodes, cpus_per_core)],
+            params![*job, *submit, cores(*cpus, &nodes, cpus_per_core)],
         )?;
     }
     Ok(uncounted.iter().map(|&(.., start)| UnixTime(start)).min())
@@ -938,13 +956,13 @@ fn usual(cpus_per_core: &HashMap<NodeName, u32>) -> u32 {
 /// once it passes the first.
 fn ends_are_fewer(db: &Connection, from: UnixTime, to: UnixTime) -> Result<bool> {
     let ended: i64 = db.query_row(
-        "SELECT count(*) FROM attempts WHERE end > ?1",
-        [from.0],
+        r#"SELECT count(*) FROM attempts WHERE "end" > ?1"#,
+        params![from.0],
         |row| row.get(0),
     )?;
     let submitted: i64 = db.query_row(
-        "SELECT count(*) FROM (SELECT 1 FROM attempts WHERE submit < ?1 LIMIT ?2)",
-        [to.0, ended + 1],
+        "SELECT count(*) FROM (SELECT 1 FROM attempts WHERE submit < ?1 LIMIT ?2) AS submitted",
+        params![to.0, ended + 1],
         |row| row.get(0),
     )?;
     Ok(ended < submitted)
@@ -955,25 +973,25 @@ fn ends_are_fewer(db: &Connection, from: UnixTime, to: UnixTime) -> Result<bool>
 /// attempts by end when `by_end`, else attempts by submit time.
 fn overlapping(columns: &str, submitted: &str, by_end: bool) -> String {
     let (end, submit) = if by_end {
-        ("end", "+submit")
+        (r#""end""#, "+submit")
     } else {
-        ("+end", "submit")
+        (r#"+"end""#, "submit")
     };
     format!(
-        "SELECT {columns} FROM attempts WHERE {end} > ?1 AND {submit} {submitted}
-         UNION ALL
-         SELECT {columns} FROM attempts WHERE end IS NULL AND submit {submitted}"
+        r#"SELECT {columns} FROM attempts WHERE {end} > ?1 AND {submit} {submitted}
+           UNION ALL
+           SELECT {columns} FROM attempts WHERE "end" IS NULL AND submit {submitted}"#
     )
 }
 
 /// Attempts that waited or ran at some point from `from` up to `to`.
 fn spans(db: &Connection, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
-    let mut query = db.prepare(&overlapping(
-        "login, partition, tasks, coalesce(cores, 0), gpus, submit, start, end, state",
+    let sql = overlapping(
+        r#"login, partition, tasks, coalesce(cores, 0), gpus, submit, start, "end", state"#,
         "< ?2",
         ends_are_fewer(db, from, to)?,
-    ))?;
-    let rows = query.query_map([from.0, to.0], |row| {
+    );
+    db.query_map(&sql, params![from.0, to.0], |row| {
         Ok(Span {
             login: Login(row.get(0)?),
             partition: PartitionName(row.get(1)?),
@@ -981,25 +999,22 @@ fn spans(db: &Connection, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
             cores: row.get(3)?,
             gpus: row.get(4)?,
             submit: UnixTime(row.get(5)?),
-            start: row.get::<_, Option<i64>>(6)?.map(UnixTime),
-            end: row.get::<_, Option<i64>>(7)?.map(UnixTime),
+            start: row.get::<Option<i64>>(6)?.map(UnixTime),
+            end: row.get::<Option<i64>>(7)?.map(UnixTime),
             state: row
-                .get::<_, Option<String>>(8)?
+                .get::<Option<String>>(8)?
                 .and_then(|name| state_from_name(&name)),
         })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    })
 }
 
 /// The columns [`stored`] reads, in its order.
-const STORED: &str =
-    "job, submit, array_job, task_range, tasks, login, partition, cpus, gpus, mem_mb,
-                      start, end, state, nodes, placement";
+const STORED: &str = r#"job, submit, array_job, task_range, tasks, login, partition, cpus, gpus,
+                        mem_mb, start, "end", state, nodes, placement"#;
 
 /// Runs `sql`, which selects [`STORED`], and reads each row.
-fn stored(db: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<Vec<Stored>> {
-    let mut query = db.prepare(sql)?;
-    let rows = query.query_map(params, |row| {
+fn stored(db: &Connection, sql: &str, params: &[Value]) -> Result<Vec<Stored>> {
+    db.query_map(sql, params, |row| {
         let job = JobId(row.get(0)?);
         let partition: String = row.get(6)?;
         let attempt = Attempt {
@@ -1008,11 +1023,11 @@ fn stored(db: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<V
                 submit: UnixTime(row.get(1)?),
             },
             array: row
-                .get::<_, Option<u32>>(2)?
-                .map(|array| -> rusqlite::Result<ArrayTasks> {
+                .get::<Option<u32>>(2)?
+                .map(|array| -> Result<ArrayTasks> {
                     Ok(ArrayTasks {
                         job: JobId(array),
-                        spec: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        spec: row.get::<Option<String>>(3)?.unwrap_or_default(),
                         count: row.get(4)?,
                     })
                 })
@@ -1030,30 +1045,22 @@ fn stored(db: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<V
             time_limit_s: None,
             start: None,
             end: None,
-            nodes: json(13, &row.get::<_, String>(13)?)?,
+            nodes: serde_json::from_str(&row.get::<String>(13)?)?,
             reason: None,
             name: String::new(),
         };
         Ok(Stored {
             attempt,
-            start: row.get::<_, Option<i64>>(10)?.map(UnixTime),
-            end: row.get::<_, Option<i64>>(11)?.map(UnixTime),
+            start: row.get::<Option<i64>>(10)?.map(UnixTime),
+            end: row.get::<Option<i64>>(11)?.map(UnixTime),
             state: row
-                .get::<_, Option<String>>(12)?
+                .get::<Option<String>>(12)?
                 .and_then(|name| state_from_name(&name)),
             placement: row
-                .get::<_, Option<String>>(14)?
-                .map(|text| json(14, &text))
+                .get::<Option<String>>(14)?
+                .map(|text| serde_json::from_str(&text))
                 .transpose()?,
         })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
-/// Reads the JSON text in column `index`.
-fn json<T: serde::de::DeserializeOwned>(index: usize, text: &str) -> rusqlite::Result<T> {
-    serde_json::from_str(text).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, error.into())
     })
 }
 
@@ -1106,7 +1113,7 @@ fn backup(source: &Path, dest: &Path) -> Result<()> {
     if partial.exists() {
         fs::remove_file(&partial)?;
     }
-    Connection::open(source)?.execute("VACUUM INTO ?1", [partial.to_string_lossy()])?;
+    rusqlite::Connection::open(source)?.execute("VACUUM INTO ?1", [partial.to_string_lossy()])?;
     fs::rename(&partial, dest)?;
     Ok(())
 }
@@ -1230,9 +1237,9 @@ mod tests {
         store
             .db
             .query_row(
-                "SELECT start, end, state, cores, tasks, origin, placement IS NOT NULL
-                 FROM attempts WHERE job = ?1",
-                [id],
+                r#"SELECT start, "end", state, cores, tasks, origin, placement IS NOT NULL
+                   FROM attempts WHERE job = ?1"#,
+                params![id],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -1329,7 +1336,7 @@ mod tests {
         assert_eq!(row(&store, 2).2.as_deref(), Some("out_of_memory"));
         let slots: u32 = store
             .db
-            .query_row("SELECT count(*) FROM users", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM users", params![], |row| row.get(0))
             .unwrap();
         assert_eq!(slots, 1);
     }
@@ -1406,11 +1413,11 @@ mod tests {
             .unwrap();
         let states: Vec<(i64, String)> = store
             .db
-            .prepare("SELECT at, state FROM node_states ORDER BY at")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
+            .query_map(
+                "SELECT at, state FROM node_states ORDER BY at",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(
             states,
@@ -1528,9 +1535,11 @@ mod tests {
         assert_eq!(row(&store, 1).1, None, "still running");
         let runaways: u32 = store
             .db
-            .query_row("SELECT count(*) FROM attempts WHERE job = 9", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM attempts WHERE job = 9",
+                params![],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(runaways, 0);
         assert_eq!(
@@ -1645,9 +1654,11 @@ mod tests {
     fn core_s(store: &Store) -> i64 {
         store
             .db
-            .query_row("SELECT coalesce(sum(core_s), 0) FROM usage", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT CAST(coalesce(sum(core_s), 0) AS BIGINT) FROM usage",
+                params![],
+                |row| row.get(0),
+            )
             .unwrap()
     }
 
@@ -1677,9 +1688,11 @@ mod tests {
         assert_eq!(core_s(&store), 4 * 690);
         let starts_and_ends: i64 = store
             .db
-            .query_row("SELECT sum(started) + sum(ended) FROM usage", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT CAST(sum(started) + sum(ended) AS BIGINT) FROM usage",
+                params![],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(starts_and_ends, 2);
     }
@@ -1784,11 +1797,11 @@ mod tests {
         let mut store = open(&dir);
         let plan = |by_end| -> String {
             let sql = format!("EXPLAIN QUERY PLAN {}", overlapping("job", "< ?2", by_end));
-            let mut query = store.db.prepare(&sql).unwrap();
-            let details = query
-                .query_map([0, 0], |row| row.get::<_, String>(3))
+            let details = store
+                .db
+                .query_map(&sql, params![0_i64, 0_i64], |row| row.get::<String>(3))
                 .unwrap();
-            details.map(Result::unwrap).collect::<Vec<_>>().join("; ")
+            details.join("; ")
         };
         let near = plan(true);
         assert!(near.contains("attempts_by_end"), "{near}");
@@ -1824,15 +1837,14 @@ mod tests {
             (T0 + 20_000, T0 + 30_000),
         ] {
             let keys = |by_end| {
-                let mut query = store
+                let mut jobs: Vec<u32> = store
                     .db
-                    .prepare(&overlapping("job", "< ?2", by_end))
+                    .query_map(
+                        &overlapping("job", "< ?2", by_end),
+                        params![from, to],
+                        |row| row.get(0),
+                    )
                     .unwrap();
-                let mut jobs: Vec<u32> = query
-                    .query_map([from, to], |row| row.get(0))
-                    .unwrap()
-                    .map(Result::unwrap)
-                    .collect();
                 jobs.sort_unstable();
                 jobs
             };
@@ -1901,11 +1913,7 @@ mod tests {
         store.prune(UnixTime(T0 - DAY_S)).unwrap();
         let left: Vec<u32> = store
             .db
-            .prepare("SELECT job FROM attempts")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
+            .query_map("SELECT job FROM attempts", params![], |row| row.get(0))
             .unwrap();
         assert_eq!(left, [2]);
     }
@@ -1941,11 +1949,15 @@ mod tests {
         let wait_s = |store: &Store| -> i64 {
             store
                 .db
-                .query_row("SELECT sum(wait_s) FROM usage", [], |row| row.get(0))
+                .query_row(
+                    "SELECT CAST(sum(wait_s) AS BIGINT) FROM usage",
+                    params![],
+                    |row| row.get(0),
+                )
                 .unwrap()
         };
         assert_eq!(wait_s(&store), 890, "the start in 2106 kept it waiting");
-        store.db.pragma_update(None, "user_version", 2).unwrap();
+        store.db.execute_batch("PRAGMA user_version = 2").unwrap();
         drop(store);
 
         let store = open(&dir);
@@ -1958,7 +1970,7 @@ mod tests {
     fn a_store_from_a_newer_glurmo_does_not_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("glurmo.sqlite");
-        Connection::open(&path)
+        rusqlite::Connection::open(&path)
             .unwrap()
             .pragma_update(None, "user_version", 99)
             .unwrap();
@@ -1985,11 +1997,11 @@ mod tests {
         store.prune(UnixTime(T0 - DAY_S)).unwrap();
         let left: Vec<(String, i64)> = store
             .db
-            .prepare("SELECT node, at FROM node_states ORDER BY node, at")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
+            .query_map(
+                "SELECT node, at FROM node_states ORDER BY node, at",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(
             left,
@@ -2012,7 +2024,7 @@ mod tests {
         let dest = dir.path().join("backup/copy.sqlite");
         backup(&store.path, &dest).unwrap();
         backup(&store.path, &dest).unwrap();
-        let copied: u32 = Connection::open(&dest)
+        let copied: u32 = rusqlite::Connection::open(&dest)
             .unwrap()
             .query_row("SELECT count(*) FROM attempts", [], |row| row.get(0))
             .unwrap();
