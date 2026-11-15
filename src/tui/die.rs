@@ -83,20 +83,20 @@ fn lines_of(scene: &Scene, groups: &[Group], width: u16, gauges: bool) -> Vec<Li
 }
 
 /// The nodes in groups. By hardware, CPU nodes group by their features, largest group first, and GPU
-/// nodes follow by GPU model. By partition, a node shows once in each of its partitions.
+/// nodes follow by GPU model and core count. By partition, a node shows once in each of its partitions.
 fn groups<'a>(scene: &'a Scene, grouping: Grouping) -> Vec<Group<'a>> {
     let nodes = &scene.cluster().nodes;
     match grouping {
         Grouping::Hardware => {
             let mut cpu: BTreeMap<String, Vec<&Node>> = BTreeMap::new();
-            let mut gpu: BTreeMap<String, Vec<&Node>> = BTreeMap::new();
+            let mut gpu: BTreeMap<(String, u32), Vec<&Node>> = BTreeMap::new();
             for node in nodes {
                 if node.gpus > 0 {
                     let name = node
                         .gpu_model
                         .as_ref()
                         .map_or_else(|| "gpu".to_owned(), |model| format!("gpu · {model}"));
-                    gpu.entry(name).or_default().push(node);
+                    gpu.entry((name, node.cores)).or_default().push(node);
                 } else {
                     let name = if node.features.is_empty() {
                         "cpu".to_owned()
@@ -113,7 +113,10 @@ fn groups<'a>(scene: &'a Scene, grouping: Grouping) -> Vec<Group<'a>> {
             groups.sort_by_key(|group| {
                 std::cmp::Reverse(group.nodes.iter().map(|node| node.cores).sum::<u32>())
             });
-            groups.extend(gpu.into_iter().map(|(name, nodes)| Group { name, nodes }));
+            groups.extend(
+                gpu.into_iter()
+                    .map(|((name, _), nodes)| Group { name, nodes }),
+            );
             groups
         }
         Grouping::Partition => scene
@@ -274,5 +277,70 @@ fn out(scene: &Scene, node: &Node) -> Option<Color> {
         NodeState::Down | NodeState::Unknown => Some(scene.palette.down),
         NodeState::Draining | NodeState::Drained => Some(scene.palette.drain),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use jiff::tz::TimeZone;
+
+    use super::*;
+    use crate::config::Tui;
+    use crate::library::Library;
+    use crate::model::{Login, NodeName};
+    use crate::tui::app::App;
+
+    fn node(name: &str, cores: u32, gpus: u32) -> Node {
+        Node {
+            name: NodeName(name.into()),
+            partitions: Vec::new(),
+            state: NodeState::Idle,
+            flags: Vec::new(),
+            state_raw: "IDLE".into(),
+            reason: None,
+            cpus: cores * 2,
+            cpus_alloc: 0,
+            sockets: 2,
+            cores,
+            load: None,
+            mem_mb: 0,
+            mem_alloc_mb: 0,
+            mem_free_mb: None,
+            gpus,
+            gpus_used: 0,
+            gpu_model: None,
+            features: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn gpu_nodes_with_no_model_group_by_core_count() {
+        let mut app = App::new(
+            Library::load(Path::new("/nonexistent")),
+            &Tui::default(),
+            Login("otter".into()),
+            TimeZone::UTC,
+        );
+        let mut typed = node("t1", 16, 4);
+        typed.gpu_model = Some("V100".into());
+        app.cluster.nodes = vec![
+            node("c1", 26, 0),
+            node("big", 128, 8),
+            node("g1", 16, 4),
+            typed,
+            node("g2", 16, 4),
+        ];
+        let scene = Scene::new(&app);
+        let groups: Vec<(String, usize)> = groups(&scene, Grouping::Hardware)
+            .iter()
+            .map(|group| (group.name.clone(), group.nodes.len()))
+            .collect();
+        let expected = [("cpu", 1), ("gpu", 2), ("gpu", 1), ("gpu · V100", 1)];
+        assert_eq!(
+            groups,
+            expected.map(|(name, count)| (name.to_owned(), count))
+        );
     }
 }
