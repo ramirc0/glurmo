@@ -211,12 +211,13 @@ impl Store {
                         ],
                     )?;
                 }
-                Event::Nodes(nodes) => {
+                Event::Nodes(nodes) | Event::NodesChanged(nodes) => {
                     let first_listing = self.cpus_per_core.is_empty();
-                    self.cpus_per_core = nodes
-                        .iter()
-                        .map(|node| (node.name.clone(), node.cpus_per_core()))
-                        .collect();
+                    self.cpus_per_core.extend(
+                        nodes
+                            .iter()
+                            .map(|node| (node.name.clone(), node.cpus_per_core())),
+                    );
                     if first_listing {
                         uncounted_since = count_cores(&tx, &self.cpus_per_core)?;
                     }

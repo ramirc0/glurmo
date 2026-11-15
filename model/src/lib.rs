@@ -779,6 +779,9 @@ pub enum Event {
     Dequeued(Vec<AttemptKey>),
     /// Every node.
     Nodes(Vec<Node>),
+    /// Nodes whose records changed, each in place of its old record. The nodes and their order stay as
+    /// the last [`Event::Nodes`] gave them.
+    NodesChanged(Vec<Node>),
     /// Every partition.
     Partitions(Vec<Partition>),
     /// Scheduler counters.
@@ -1010,6 +1013,15 @@ impl Cluster {
                     }
                 }
                 Event::Nodes(nodes) => self.nodes.clone_from(nodes),
+                Event::NodesChanged(changed) => {
+                    let changed: BTreeMap<&NodeName, &Node> =
+                        changed.iter().map(|node| (&node.name, node)).collect();
+                    for node in &mut self.nodes {
+                        if let Some(&new) = changed.get(&node.name) {
+                            node.clone_from(new);
+                        }
+                    }
+                }
                 Event::Partitions(partitions) => self.partitions.clone_from(partitions),
                 Event::Stats(stats) => self.stats = Some(stats.clone()),
                 Event::Users(users) => {
@@ -1344,6 +1356,20 @@ mod tests {
         let running = &cluster.running[&suspended.key];
         assert_eq!(running.attempt, suspended);
         assert!(running.placement.is_some());
+    }
+
+    #[test]
+    fn changed_nodes_replace_their_records_in_place() {
+        let mut busy = node("z2", 4, 0, 4);
+        busy.load = Some(3.9);
+        let cluster = cluster(
+            Vec::new(),
+            vec![
+                Event::Nodes(vec![node("z1", 4, 0, 0), node("z2", 4, 0, 0)]),
+                Event::NodesChanged(vec![busy.clone()]),
+            ],
+        );
+        assert_eq!(cluster.nodes, [node("z1", 4, 0, 0), busy]);
     }
 
     #[test]

@@ -161,12 +161,31 @@ impl Known {
             .collect()
     }
 
-    /// Keeps a node listing, and returns it as an event when it changed.
+    /// Keeps a node listing, and returns what changed: the nodes whose records changed when the
+    /// listing names the same nodes in the same order, else every node.
     pub fn diff_nodes(&mut self, nodes: Vec<Node>) -> Option<Event> {
-        (nodes != self.nodes).then(|| {
-            self.nodes.clone_from(&nodes);
-            Event::Nodes(nodes)
-        })
+        if nodes == self.nodes {
+            return None;
+        }
+        let same_nodes = nodes.len() == self.nodes.len()
+            && nodes
+                .iter()
+                .zip(&self.nodes)
+                .all(|(now, was)| now.name == was.name);
+        let event = if same_nodes {
+            Event::NodesChanged(
+                nodes
+                    .iter()
+                    .zip(&self.nodes)
+                    .filter(|(now, was)| now != was)
+                    .map(|(now, _)| now.clone())
+                    .collect(),
+            )
+        } else {
+            Event::Nodes(nodes.clone())
+        };
+        self.nodes = nodes;
+        Some(event)
     }
 
     /// Keeps a partition listing, and returns it as an event when it changed.
@@ -637,6 +656,39 @@ mod tests {
                 Vec::new(),
             ]
         );
+    }
+
+    #[test]
+    fn a_listing_of_the_same_nodes_sends_only_those_that_changed() {
+        let node = |name: &str, load: f64| Node {
+            name: NodeName(name.into()),
+            partitions: Vec::new(),
+            state: glurmo_model::NodeState::Idle,
+            flags: Vec::new(),
+            state_raw: "IDLE".into(),
+            reason: None,
+            cpus: 4,
+            cpus_alloc: 0,
+            sockets: 1,
+            cores: 4,
+            load: Some(load),
+            mem_mb: 0,
+            mem_alloc_mb: 0,
+            mem_free_mb: None,
+            gpus: 0,
+            gpus_used: 0,
+            gpu_model: None,
+            features: Vec::new(),
+        };
+        let mut known = Known::default();
+        let first = vec![node("z1", 0.0), node("z2", 0.0)];
+        assert_eq!(known.diff_nodes(first.clone()), Some(Event::Nodes(first)));
+        assert_eq!(
+            known.diff_nodes(vec![node("z1", 0.0), node("z2", 1.5)]),
+            Some(Event::NodesChanged(vec![node("z2", 1.5)]))
+        );
+        let added = vec![node("z1", 0.0), node("z2", 1.5), node("z3", 0.0)];
+        assert_eq!(known.diff_nodes(added.clone()), Some(Event::Nodes(added)));
     }
 
     #[test]

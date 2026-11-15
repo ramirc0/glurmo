@@ -517,6 +517,7 @@ mod tests {
                 Event::Queued(attempts) => format!("queued:{}", attempts.len()),
                 Event::Dequeued(keys) => format!("dequeued:{}", keys.len()),
                 Event::Nodes(_) => "nodes".to_owned(),
+                Event::NodesChanged(nodes) => format!("changed nodes:{}", nodes.len()),
                 Event::Partitions(_) => "partitions".to_owned(),
                 Event::Stats(_) => "stats".to_owned(),
                 Event::Users(_) => "users".to_owned(),
