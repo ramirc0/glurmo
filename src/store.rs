@@ -2,6 +2,7 @@
 
 mod connection;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -204,22 +205,35 @@ impl Store {
         Ok(())
     }
 
-    /// Writes one tick's events.
+    /// Writes one tick's events, all of them or none. A tick that fails opens a gap: the next
+    /// [`Store::sampled`] reports one, so accounting fills in what the tick held.
     ///
     /// # Errors
     ///
     /// Fails when a write fails.
     pub fn record(&mut self, at: UnixTime, events: &[Event]) -> Result<()> {
+        let written = self.write_tick(at, events);
+        if written.is_err() {
+            self.coverage = Coverage::Unchecked;
+        }
+        written
+    }
+
+    /// Writes one tick's events in one transaction. What the store remembers of the nodes changes
+    /// only once that commits, so a tick that fails is as if it never came.
+    fn write_tick(&mut self, at: UnixTime, events: &[Event]) -> Result<()> {
+        let mut cpus_per_core = Cow::Borrowed(&self.cpus_per_core);
+        let mut health_changes = Vec::new();
         let tx = self.db.transaction()?;
         let mut uncounted_since = None;
         for event in events {
             match event {
                 Event::Started { attempt } | Event::Withdrawn { attempt } => {
-                    upsert(&tx, &self.cpus_per_core, attempt, Origin::Live)?;
+                    upsert(&tx, &cpus_per_core, attempt, Origin::Live)?;
                 }
                 Event::Queued(attempts) => {
                     for attempt in attempts {
-                        upsert(&tx, &self.cpus_per_core, attempt, Origin::Live)?;
+                        upsert(&tx, &cpus_per_core, attempt, Origin::Live)?;
                     }
                 }
                 Event::Ended { key, at, state } => {
@@ -246,14 +260,14 @@ impl Store {
                     )?;
                 }
                 Event::Nodes(nodes) | Event::NodesChanged(nodes) => {
-                    let first_listing = self.cpus_per_core.is_empty();
-                    self.cpus_per_core.extend(
+                    let first_listing = cpus_per_core.is_empty();
+                    cpus_per_core.to_mut().extend(
                         nodes
                             .iter()
                             .map(|node| (node.name.clone(), node.cpus_per_core())),
                     );
                     if first_listing {
-                        uncounted_since = count_cores(&tx, &self.cpus_per_core)?;
+                        uncounted_since = count_cores(&tx, &cpus_per_core)?;
                     }
                     for node in nodes {
                         let health = (health(node), node.reason.clone());
@@ -264,7 +278,7 @@ impl Store {
                                  SET state = excluded.state, reason = excluded.reason",
                                 params![&node.name.0, at.0, &health.0, health.1.as_deref()],
                             )?;
-                            self.health.insert(node.name.clone(), health);
+                            health_changes.push((node.name.clone(), health));
                         }
                     }
                 }
@@ -276,6 +290,10 @@ impl Store {
             }
         }
         tx.commit()?;
+        if let Cow::Owned(listed) = cpus_per_core {
+            self.cpus_per_core = listed;
+        }
+        self.health.extend(health_changes);
         if let (Some(since), Some(history_from), Some(rolled_to)) = (
             uncounted_since,
             self.meta("history_from")?,
@@ -1442,6 +1460,88 @@ mod tests {
                 (Some(NodeState::Draining), true)
             ]
         );
+    }
+
+    /// Makes every write to `store` fail, or work again.
+    fn refuse_writes(store: &Store, refuse: bool) {
+        let switch = if refuse { "ON" } else { "OFF" };
+        store
+            .db
+            .execute_batch(&format!("PRAGMA query_only = {switch}"))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_failed_write_opens_a_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        assert!(!store.sampled(UnixTime(T0), 300).unwrap());
+        refuse_writes(&store, true);
+        let started = [Event::Started {
+            attempt: running(1),
+        }];
+        assert!(store.record(UnixTime(T0 + 10), &started).is_err());
+        refuse_writes(&store, false);
+        store.record(UnixTime(T0 + 20), &[]).unwrap();
+        assert!(
+            store.sampled(UnixTime(T0 + 20), 300).unwrap(),
+            "the start at +10 s never reached the store"
+        );
+        let gap = store
+            .next_backfill(UnixTime(T0 + 20), 300, DAY_S)
+            .unwrap()
+            .unwrap();
+        assert_eq!((gap.from.0, gap.to.0, gap.gap), (T0 - 300, T0 + 20, true));
+    }
+
+    #[test]
+    fn a_node_health_change_rolled_back_with_its_tick_is_written_by_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        let listing = |state| Event::Nodes(vec![node(state)]);
+        store
+            .record(UnixTime(T0), &[listing(NodeState::Idle)])
+            .unwrap();
+        let unstorable = Attempt {
+            mem_mb: Some(u64::MAX),
+            ..running(1)
+        };
+        let tick = [
+            listing(NodeState::Drained),
+            Event::Started {
+                attempt: unstorable,
+            },
+        ];
+        assert!(store.record(UnixTime(T0 + 10), &tick).is_err());
+        store
+            .record(UnixTime(T0 + 20), &[listing(NodeState::Drained)])
+            .unwrap();
+        let states: Vec<(i64, String)> = store
+            .db
+            .query_map(
+                "SELECT at, state FROM node_states ORDER BY at",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(states, [(T0, "up".into()), (T0 + 20, "drained".into())]);
+    }
+
+    #[test]
+    fn cores_are_counted_by_the_first_node_listing_that_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        let started = [Event::Started {
+            attempt: running(1),
+        }];
+        store.record(UnixTime(T0), &started).unwrap();
+        assert_eq!(row(&store, 1).3, None, "no node listing yet");
+        let listing = [Event::Nodes(vec![node(NodeState::Mixed)])];
+        refuse_writes(&store, true);
+        assert!(store.record(UnixTime(T0 + 10), &listing).is_err());
+        refuse_writes(&store, false);
+        store.record(UnixTime(T0 + 20), &listing).unwrap();
+        assert_eq!(row(&store, 1).3, Some(4));
     }
 
     #[test]

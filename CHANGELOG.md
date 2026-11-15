@@ -8,6 +8,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A logo, the foreman in `docs/media/logo.svg`. Its head and hard hat are the web view's favicon.
 
+### Fixed
+
+- A tick that the store fails to write opens a gap, so accounting fills in what the tick held once writes work again. The tick is written whole or not at all. Before, its starts, ends and placements were lost for good. A node's health change that failed to be written was never written again, and a first node listing that failed left cores uncounted until a restart.
+
 ## [0.4.0] - 2026-11-15
 
 ### Added
