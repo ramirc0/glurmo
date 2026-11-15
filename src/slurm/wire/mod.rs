@@ -13,6 +13,7 @@ pub mod stats;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -126,6 +127,9 @@ pub struct Controller {
     pub addresses: Vec<String>,
     /// How requests are signed, and in which protocol.
     pub session: Session,
+    /// The index of the address that answered last, which each call tries first, so a dead primary
+    /// costs one timeout and not one per call.
+    answered: AtomicUsize,
 }
 
 impl Controller {
@@ -137,10 +141,15 @@ impl Controller {
     /// type, or the controller returns an error code.
     pub async fn call(&self, request: u16, body: &[u8], response: u16) -> Result<Vec<u8>> {
         let request = frame(&self.session, request, 0, body).await?;
+        let first = self.answered.load(Ordering::Relaxed);
         let mut failures = Vec::new();
-        for address in &self.addresses {
+        for i in (0..self.addresses.len()).map(|n| (first + n) % self.addresses.len()) {
+            let address = &self.addresses[i];
             match tokio::time::timeout(TIMEOUT, exchange(address, &request)).await {
-                Ok(Ok(reply)) => return checked(&reply, response, self.session.protocol),
+                Ok(Ok(reply)) => {
+                    self.answered.store(i, Ordering::Relaxed);
+                    return checked(&reply, response, self.session.protocol);
+                }
                 Ok(Err(error)) => failures.push(format!("{address}: {error:#}")),
                 Err(_) => failures.push(format!("{address}: no reply within {TIMEOUT:?}")),
             }
@@ -370,6 +379,7 @@ impl Wire {
                     decoder: None,
                     protocol: Protocol::NEWEST_FIRST[0],
                 },
+                answered: AtomicUsize::new(0),
             },
             cluster: String::new(),
             accounting: Vec::new(),
@@ -625,6 +635,7 @@ mod tests {
                     decoder: None,
                     protocol: Protocol::V23_11,
                 },
+                answered: AtomicUsize::new(0),
             };
             let call = controller.call(1, &[], 2);
             let outcome = tokio::time::timeout(Duration::from_secs(3_600), call).await;
@@ -633,7 +644,7 @@ mod tests {
     }
 
     /// A sack socket that signs one request and reports the UID it was asked to sign for.
-    async fn sack_once(socket: &std::path::Path) -> tokio::task::JoinHandle<u32> {
+    fn sack_once(socket: &std::path::Path) -> tokio::task::JoinHandle<u32> {
         let listener = tokio::net::UnixListener::bind(socket).unwrap();
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -657,11 +668,11 @@ mod tests {
             decoder: Some(500),
             protocol: Protocol::V23_11,
         };
-        let signed = sack_once(&socket).await;
+        let signed = sack_once(&socket);
         frame(&session, 2007, 0, &[]).await.unwrap();
         assert_eq!(signed.await.unwrap(), 500);
         std::fs::remove_file(&socket).unwrap();
-        let signed = sack_once(&socket).await;
+        let signed = sack_once(&socket);
         frame(&session, 6500, GLOBAL_AUTH_KEY | SLURMDBD_CONNECTION, &[])
             .await
             .unwrap();
@@ -720,6 +731,7 @@ mod tests {
                     decoder: None,
                     protocol: Protocol::V23_11,
                 },
+                answered: AtomicUsize::new(0),
             },
             cluster: String::new(),
             accounting: Vec::new(),
@@ -727,6 +739,42 @@ mod tests {
             unknown: HashSet::new(),
             next_placements: None,
         }
+    }
+
+    /// A slurmctld that hangs up on every request, and counts them.
+    async fn controller_hanging_up() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = requests.clone();
+        tokio::spawn(async move {
+            loop {
+                let connection = listener.accept().await.unwrap();
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                drop(connection);
+            }
+        });
+        (address, requests)
+    }
+
+    #[tokio::test]
+    async fn calls_go_first_to_the_controller_that_answered_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let sack = dir.path().join("sack.socket");
+        sack_forever(&sack);
+        let (primary, refused) = controller_hanging_up().await;
+        let mut no_jobs = Pack::default();
+        no_jobs.u32(0).time(0).time(0);
+        let (backup, answered) = controller_answering(jobs::RESPONSE, no_jobs.0).await;
+        let mut wire = wire_to(vec![primary, backup], sack);
+        let count = |requests: &std::sync::atomic::AtomicUsize| {
+            requests.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        wire.answer(&Call::Jobs).await.unwrap();
+        assert_eq!((count(&refused), count(&answered)), (1, 1));
+        wire.answer(&Call::Jobs).await.unwrap();
+        wire.answer(&Call::Jobs).await.unwrap();
+        assert_eq!((count(&refused), count(&answered)), (1, 3));
     }
 
     #[tokio::test]

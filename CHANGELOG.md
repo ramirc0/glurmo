@@ -32,6 +32,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - The protocol backend skips the blank records a controller below 24.11 sends for FUTURE nodes and empty slots, as sinfo does. Before, one such record failed every node listing.
 - The protocol backend reads deleted TRES too, as sacct does, so history counts the GPUs of jobs whose GPU TRES was deleted since. Before, those jobs read as holding none.
 - The protocol backend signs slurmdbd credentials for any UID, as libslurm does. Before, it signed them for slurmctld's `SlurmUser`, so a slurmdbd running as another user refused every history read.
+- The protocol backend sends each call first to the controller that answered last. Before, every call waited up to 15 s on a dead primary before it tried a backup.
 
 ## [0.3.0] - 2026-11-15
 
