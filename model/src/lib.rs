@@ -505,6 +505,30 @@ impl Node {
             _ => None,
         }
     }
+
+    /// Whether the scheduler may start new jobs on the node. A draining node still runs its jobs but
+    /// takes no new ones, so sinfo counts its idle CPUs as "other".
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "name": "z1001", "partitions": ["5days"], "state": "mixed", "flags": [], "state_raw": "MIXED",
+    /// #     "reason": null, "cpus": 8, "cpus_alloc": 4, "sockets": 1, "cores": 4, "load": 2.5,
+    /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
+    /// #     "gpu_model": "V100", "features": ["avx512"]
+    /// # }"#;
+    /// use glurmo_model::{Node, NodeState};
+    ///
+    /// let mut node: Node = serde_json::from_str(json).unwrap();
+    /// assert!(node.takes_new_jobs());
+    /// node.state = NodeState::Draining;
+    /// assert!(node.is_usable());
+    /// assert!(!node.takes_new_jobs());
+    /// ```
+    pub fn takes_new_jobs(&self) -> bool {
+        self.trouble().is_none()
+    }
 }
 
 /// A partition and its nodes.

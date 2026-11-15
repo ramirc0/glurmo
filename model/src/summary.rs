@@ -293,9 +293,9 @@ pub struct PartitionLoad<'a> {
     pub running: u64,
     /// Tasks waiting with it as their first partition.
     pub pending: u64,
-    /// Free cores on its usable nodes.
+    /// Free cores on its nodes that take new jobs.
     pub free_cores: u64,
-    /// Free GPUs on its usable nodes.
+    /// Free GPUs on its nodes that take new jobs.
     pub free_gpus: u64,
 }
 
@@ -344,7 +344,7 @@ pub fn partition_loads<'a>(
             for node in cluster
                 .nodes
                 .iter()
-                .filter(|node| members.contains(&node.name) && node.is_usable())
+                .filter(|node| members.contains(&node.name) && node.takes_new_jobs())
             {
                 if let Some(cells) = occupancy.get(&node.name) {
                     cores.add(&cells.cores);
@@ -641,6 +641,27 @@ mod tests {
             gpu_model: None,
             features: Vec::new(),
         }
+    }
+
+    #[test]
+    fn partitions_count_no_free_cells_on_draining_nodes() {
+        let mut draining = node("d1", 4, 2);
+        draining.state = NodeState::Draining;
+        let partition = Partition {
+            name: PartitionName("5days".into()),
+            nodes: vec![NodeName("i1".into()), NodeName("d1".into())],
+            max_time_s: None,
+            default: true,
+            hidden: false,
+            state_raw: "UP".into(),
+        };
+        let cluster = Cluster {
+            nodes: vec![node("i1", 8, 1), draining],
+            partitions: vec![partition],
+            ..Cluster::default()
+        };
+        let loads = partition_loads(&cluster, &cluster.occupancy());
+        assert_eq!((loads[0].free_cores, loads[0].free_gpus), (8, 1));
     }
 
     #[test]
