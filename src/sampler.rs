@@ -224,7 +224,6 @@ impl Sampler {
             None
         };
 
-        let first = self.cold;
         let listed = jobs.is_some();
         let mut events = Vec::new();
         events.extend(nodes.and_then(|nodes| self.known.diff_nodes(nodes)));
@@ -252,22 +251,17 @@ impl Sampler {
             events.extend(self.settle().await);
         }
         events.extend(stats.map(Event::Stats));
-        if let Err(error) = self.archive(now, &events, listed, first).await {
+        if let Err(error) = self.archive(now, &events, listed).await {
             eprintln!("store at {}: {error:#}", now.0);
         }
         Ok(events)
     }
 
     /// Writes a tick's events to the store. After a jobs tick it also closes attempts that vanished
-    /// while the sampler was down, rolls up closed bins, reads one window of accounting and runs the
-    /// daily upkeep. A failure here never drops the tick.
-    async fn archive(
-        &mut self,
-        now: UnixTime,
-        events: &[Event],
-        listed: bool,
-        first: bool,
-    ) -> Result<()> {
+    /// while no listing came in, because the sampler or the controller was down. Then it rolls up
+    /// closed bins, reads one window of accounting and runs the daily upkeep. A failure here never
+    /// drops the tick.
+    async fn archive(&mut self, now: UnixTime, events: &[Event], listed: bool) -> Result<()> {
         let Some(store) = &mut self.store else {
             return Ok(());
         };
@@ -276,16 +270,15 @@ impl Sampler {
             return Ok(());
         }
         let active = self.known.active();
-        if first {
+        let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
+        if store.sampled(now, min_job_age_s)? {
             let closed = store.recover(&active)?;
             if closed > 0 {
-                eprintln!("{closed} attempts left the queue while the sampler was down");
+                eprintln!("{closed} attempts left the queue while no listing came in");
             }
         }
-        store.sampled(now)?;
         store.roll(now)?;
-        let overlap_s = i64::try_from(self.slurm.site().min_job_age_s)?;
-        if let Some(window) = store.next_backfill(now, overlap_s, self.backfill_span_s)? {
+        if let Some(window) = store.next_backfill(now, min_job_age_s, self.backfill_span_s)? {
             let started = Instant::now();
             let attempts = self.slurm.history(window.from, window.to).await;
             self.backfill_span_s =
@@ -337,8 +330,9 @@ mod tests {
 
     use super::*;
     use crate::model::{AttemptKey, Cluster, Owner};
-    use crate::slurm::source::{Replay, Source};
+    use crate::slurm::source::{Exchange, Replay, Source};
     use crate::store::Settings;
+    use std::io::Write;
 
     /// One line per delta: its time, how many events of each kind it holds, and how the cluster looks after it.
     fn summary(delta: &Delta, start: UnixTime, cluster: &Cluster) -> String {
@@ -378,12 +372,21 @@ mod tests {
 
     /// Connects to a replay of a pseudonymized busy quarter hour on zlurm.
     async fn busy_quarter_hour() -> Slurm {
+        busy_quarter_hour_with(|_| {}).await
+    }
+
+    /// Connects to the busy quarter hour, with each recorded exchange passed through `edit` first.
+    async fn busy_quarter_hour_with(mut edit: impl FnMut(&mut Exchange)) -> Slurm {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/slurm-23.11/busy-15m.jsonl.zst");
         let mut compressed = std::fs::File::open(path).unwrap();
-        let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut compressed).unwrap();
+        let decoder = ruzstd::decoding::StreamingDecoder::new(&mut compressed).unwrap();
         let mut recording = tempfile::NamedTempFile::new().unwrap();
-        std::io::copy(&mut decoder, &mut recording).unwrap();
+        for line in std::io::BufRead::lines(std::io::BufReader::new(decoder)) {
+            let mut exchange: Exchange = serde_json::from_str(&line.unwrap()).unwrap();
+            edit(&mut exchange);
+            writeln!(recording, "{}", serde_json::to_string(&exchange).unwrap()).unwrap();
+        }
         Slurm::connect(Source::Replay(Replay::open(recording.path()).unwrap()))
             .await
             .unwrap()
@@ -391,6 +394,45 @@ mod tests {
 
     #[tokio::test]
     async fn store_agrees_with_the_deltas() {
+        assert_store_agrees_with_the_deltas(busy_quarter_hour().await).await;
+    }
+
+    #[tokio::test]
+    async fn store_agrees_with_the_deltas_after_a_controller_outage() {
+        let mut listings = 0;
+        let slurm = busy_quarter_hour_with(|exchange| {
+            if exchange.argv[0] != "squeue" {
+                return;
+            }
+            listings += 1;
+            // Backoff spaces these seven failures over more than MinJobAge.
+            if (25..32).contains(&listings) {
+                exchange.status = 1;
+                exchange.stdout.clear();
+                exchange.stderr =
+                    "squeue: error: Unable to contact slurm controller (connect failure)\n".into();
+            }
+        })
+        .await;
+        let (dir, last) = assert_store_agrees_with_the_deltas(slurm).await;
+        let covered: i64 = rusqlite::Connection::open(dir.path().join("rtviz.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'complete_to'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            last.0 - covered > 300,
+            "the store waits at the outage for accounting, which this replay lacks"
+        );
+    }
+
+    /// Samples `slurm` into a new store, then checks the store against the deltas: open attempts that
+    /// started are the running ones, every end landed, and open pending attempts hold the queue's tasks.
+    /// Returns the store's directory and the last delta's time.
+    async fn assert_store_agrees_with_the_deltas(slurm: Slurm) -> (tempfile::TempDir, UnixTime) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rtviz.sqlite");
         let settings = Settings {
@@ -399,14 +441,15 @@ mod tests {
             backup: dir.path().join("backup.sqlite"),
         };
         let store = Store::open(&path, settings).unwrap();
-        let mut sampler =
-            Sampler::new(busy_quarter_hour().await, Intervals::default(), Some(store));
+        let mut sampler = Sampler::new(slurm, Intervals::default(), Some(store));
         let mut deltas = sampler.subscribe();
         sampler.run(None).await;
 
         let mut cluster = Cluster::default();
         let mut ended = HashSet::new();
+        let mut last = UnixTime(0);
         while let Ok(delta) = deltas.try_recv() {
+            last = delta.at;
             for event in &delta.events {
                 if let Event::Ended { key, .. } = event {
                     ended.insert((key.job.0, key.submit.0));
@@ -455,6 +498,8 @@ mod tests {
             })
             .unwrap();
         assert!(bins >= 2, "{bins} bins rolled up");
+        drop(db);
+        (dir, last)
     }
 
     #[tokio::test]

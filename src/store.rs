@@ -93,6 +93,17 @@ enum Origin {
     Accounting,
 }
 
+/// Whether accounting covers everything up to the live samples.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Coverage {
+    /// No listing yet in this run.
+    Unchecked,
+    /// Each jobs tick extends the coverage.
+    Current,
+    /// Listings stopped for a while, so accounting must fill the gap first.
+    Behind,
+}
+
 /// The SQLite store. Only one process should write to it.
 pub struct Store {
     db: Connection,
@@ -102,8 +113,7 @@ pub struct Store {
     cpus_per_core: HashMap<NodeName, u32>,
     /// Each node's last recorded health and reason.
     health: HashMap<NodeName, (String, Option<String>)>,
-    /// Whether accounting covers everything up to the live samples, so each jobs tick extends the coverage.
-    caught_up: bool,
+    coverage: Coverage,
 }
 
 impl Store {
@@ -145,7 +155,7 @@ impl Store {
             settings,
             cpus_per_core: HashMap::new(),
             health,
-            caught_up: false,
+            coverage: Coverage::Unchecked,
         })
     }
 
@@ -214,24 +224,39 @@ impl Store {
 
     /// Notes a successful job listing at `at`. A new store starts its history and its bins there.
     ///
+    /// Returns whether the listings have a gap: this is the first listing of a run on an existing store,
+    /// or the last one came more than `max_gap_s` ago, as when the controller was down. Jobs can then
+    /// have started and ended unseen. The caller should run [`Store::recover`], and the next backfills
+    /// read the gap from accounting.
+    ///
     /// # Errors
     ///
-    /// Fails when a write fails.
-    pub fn sampled(&mut self, at: UnixTime) -> Result<()> {
-        if self.meta("complete_to")?.is_none() {
+    /// Fails when a read or write fails.
+    pub fn sampled(&mut self, at: UnixTime, max_gap_s: i64) -> Result<bool> {
+        let Some(last) = self.meta("complete_to")? else {
             self.set_meta("created", at)?;
             self.set_meta("history_from", at)?;
             self.set_meta("rolled_to", bin_of(at))?;
-            self.caught_up = true;
+            self.set_meta("complete_to", at)?;
+            self.coverage = Coverage::Current;
+            return Ok(false);
+        };
+        let gap = match self.coverage {
+            Coverage::Unchecked => true,
+            Coverage::Current => at.0 - last.0 > max_gap_s,
+            Coverage::Behind => false,
+        };
+        if gap {
+            self.coverage = Coverage::Behind;
         }
-        if self.caught_up {
+        if self.coverage == Coverage::Current {
             self.set_meta("complete_to", at)?;
         }
-        Ok(())
+        Ok(gap)
     }
 
-    /// Ends every open attempt that the scheduler no longer lists as `lost`, when the store last sampled.
-    /// Run it once after the first listing of a run. A backfill of the gap then replaces these ends with
+    /// Ends every open attempt that is not `active` as `lost`, when the listings stopped.
+    /// Run it when [`Store::sampled`] finds a gap. A backfill of the gap then replaces these ends with
     /// the ones accounting holds.
     ///
     /// # Errors
@@ -282,7 +307,7 @@ impl Store {
         ) else {
             return Ok(None);
         };
-        if !self.caught_up {
+        if self.coverage != Coverage::Current {
             return Ok(Some(Window {
                 from: UnixTime(to.0 - overlap_s),
                 to: UnixTime((to.0 + span_s).min(now.0)),
@@ -316,11 +341,13 @@ impl Store {
             upsert(&tx, &self.cpus_per_core, attempt, Origin::Accounting)?;
         }
         tx.commit()?;
-        if self.caught_up {
+        if self.coverage == Coverage::Current {
             self.set_meta("history_from", window.from)?;
         } else {
             self.set_meta("complete_to", window.to)?;
-            self.caught_up = window.to >= now;
+            if window.to >= now {
+                self.coverage = Coverage::Current;
+            }
         }
         let rolled_to = self.meta("rolled_to")?.unwrap_or(now);
         let to = UnixTime((bin_of(window.to).0 + BIN_S).min(rolled_to.0));
@@ -851,7 +878,7 @@ mod tests {
         let mut store = open(&dir);
         let now = UnixTime(T0);
         assert_eq!(store.next_backfill(now, 300, DAY_S).unwrap(), None);
-        store.sampled(now).unwrap();
+        store.sampled(now, 300).unwrap();
         let mut windows = Vec::new();
         while let Some(window) = store.next_backfill(now, 300, DAY_S).unwrap() {
             store.backfill(window, &[], &HashSet::new(), now).unwrap();
@@ -881,7 +908,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        store.sampled(UnixTime(T0)).unwrap();
+        store.sampled(UnixTime(T0), 300).unwrap();
         while let Some(window) = store.next_backfill(UnixTime(T0), 300, DAY_S).unwrap() {
             store
                 .backfill(window, &[], &HashSet::new(), UnixTime(T0))
@@ -902,11 +929,11 @@ mod tests {
                 ],
             )
             .unwrap();
+        assert!(store.sampled(restart, 300).unwrap(), "a restart is a gap");
         let active = HashSet::from([key(1)]);
         assert_eq!(store.recover(&active).unwrap(), 2);
         assert_eq!(row(&store, 2).1, Some(T0));
         assert_eq!(row(&store, 2).2.as_deref(), Some("lost"));
-        store.sampled(restart).unwrap();
 
         let gap = store.next_backfill(restart, 300, DAY_S).unwrap().unwrap();
         assert_eq!((gap.from.0, gap.to), (T0 - 300, restart));
@@ -946,10 +973,55 @@ mod tests {
             None,
             "caught up, and the history already reaches the horizon"
         );
-        store.sampled(UnixTime(restart.0 + 10)).unwrap();
+        store.sampled(UnixTime(restart.0 + 10), 300).unwrap();
         assert_eq!(
             store.meta("complete_to").unwrap(),
             Some(UnixTime(restart.0 + 10))
+        );
+    }
+
+    #[test]
+    fn a_controller_outage_longer_than_min_job_age_reopens_the_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        store
+            .record(
+                UnixTime(T0),
+                &[
+                    Event::Nodes(vec![node(NodeState::Mixed)]),
+                    Event::Started {
+                        attempt: running(1),
+                    },
+                    Event::Started {
+                        attempt: running(2),
+                    },
+                ],
+            )
+            .unwrap();
+        assert!(!store.sampled(UnixTime(T0), 300).unwrap());
+        while let Some(window) = store.next_backfill(UnixTime(T0), 300, DAY_S).unwrap() {
+            store
+                .backfill(window, &[], &HashSet::new(), UnixTime(T0))
+                .unwrap();
+        }
+        assert!(!store.sampled(UnixTime(T0 + 290), 300).unwrap());
+
+        let back = UnixTime(T0 + 290 + 3 * 3_600);
+        assert!(store.sampled(back, 300).unwrap(), "squeue failed for 3 h");
+        assert_eq!(store.recover(&HashSet::from([key(1)])).unwrap(), 1);
+        assert_eq!(row(&store, 2).1, Some(T0 + 290));
+        let gap = store.next_backfill(back, 300, DAY_S).unwrap().unwrap();
+        assert_eq!((gap.from.0, gap.to), (T0 - 10, back));
+        let later = UnixTime(back.0 + 10);
+        assert!(!store.sampled(later, 300).unwrap(), "already behind");
+        assert_eq!(store.meta("complete_to").unwrap(), Some(UnixTime(T0 + 290)));
+
+        store.backfill(gap, &[], &HashSet::new(), back).unwrap();
+        assert_eq!(store.next_backfill(later, 300, DAY_S).unwrap(), None);
+        assert!(!store.sampled(UnixTime(later.0 + 10), 300).unwrap());
+        assert_eq!(
+            store.meta("complete_to").unwrap(),
+            Some(UnixTime(later.0 + 10))
         );
     }
 
@@ -981,7 +1053,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        store.sampled(UnixTime(T0)).unwrap();
+        store.sampled(UnixTime(T0), 300).unwrap();
         store.roll(UnixTime(T0 + 300 + GRACE_S - 1)).unwrap();
         assert_eq!(core_s(&store), 0, "the first bin is still in its grace");
         store.roll(UnixTime(T0 + 900 + GRACE_S)).unwrap();
