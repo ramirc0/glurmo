@@ -888,13 +888,21 @@ fn usual(cpus_per_core: &HashMap<NodeName, u32>) -> u32 {
         .map_or(1, |(per_core, _)| per_core)
 }
 
-/// Whether fewer attempts ended after `from` than were submitted before `to`, taking attempts as
-/// spread evenly over history. That decides which index finds the attempts alive between the two.
+/// Whether fewer attempts ended after `from` than were submitted before `to`. That decides which index
+/// finds the attempts alive between the two. Both counts run on their own index, and the second stops
+/// once it passes the first.
 fn ends_are_fewer(db: &Connection, from: UnixTime, to: UnixTime) -> Result<bool> {
-    let (Some(first), Some(last)) = (meta(db, "history_from")?, meta(db, "complete_to")?) else {
-        return Ok(true);
-    };
-    Ok(last.0 - from.0 < to.0 - first.0)
+    let ended: i64 = db.query_row(
+        "SELECT count(*) FROM attempts WHERE end > ?1",
+        [from.0],
+        |row| row.get(0),
+    )?;
+    let submitted: i64 = db.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM attempts WHERE submit < ?1 LIMIT ?2)",
+        [to.0, ended + 1],
+        |row| row.get(0),
+    )?;
+    Ok(ended < submitted)
 }
 
 /// Selects `columns` of the attempts submitted `submitted`, such as `< ?2`, that had not ended by `?1`.
@@ -1678,6 +1686,42 @@ mod tests {
             assert_eq!(keys(true), keys(false), "{from}..{to}");
             assert!(!keys(true).is_empty(), "{from}..{to}");
         }
+    }
+
+    #[test]
+    fn the_index_follows_where_attempts_are_dense() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        let ended = |id: u32, submit: i64| Attempt {
+            key: AttemptKey {
+                job: JobId(id),
+                submit: UnixTime(submit),
+            },
+            ..attempt(
+                id,
+                JobState::Ended(EndState::Completed),
+                Some(submit + 60),
+                Some(submit + 600),
+            )
+        };
+        let old = (0..5).map(|id| ended(id, T0 - 90 * DAY_S));
+        let recent = (5..500).map(|id| ended(id, T0 - DAY_S + i64::from(id)));
+        let events: Vec<Event> = old
+            .chain(recent)
+            .map(|attempt| Event::Started { attempt })
+            .collect();
+        store.record(UnixTime(T0), &events).unwrap();
+        store
+            .set_meta("history_from", UnixTime(T0 - 100 * DAY_S))
+            .unwrap();
+        store.set_meta("complete_to", UnixTime(T0)).unwrap();
+        let at = UnixTime(T0 - 45 * DAY_S);
+        assert!(
+            !ends_are_fewer(&store.db, at, at).unwrap(),
+            "5 old, 495 recent"
+        );
+        let near = UnixTime(T0 - 600);
+        assert!(ends_are_fewer(&store.db, near, near).unwrap());
     }
 
     #[test]
