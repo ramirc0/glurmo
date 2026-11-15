@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::fields::{
-    gpu_indices, gres, integer, is_placeholder, job_state, megabytes, seconds, time,
+    Read, gpu_indices, gres, integer, is_placeholder, job_state, megabytes, read, seconds, time,
 };
 use super::hostlist::{expand_hosts, expand_ids};
 use super::{Site, Version, rate_limit};
@@ -149,25 +149,23 @@ impl CpuMap {
 /// Parses the output of [`jobs_argv`], with or without a job ID.
 ///
 /// Each job starts on a line that begins with `JobId=`. `SubmitLine` keeps the newlines of an `sbatch --wrap` script, so a
-/// job can run over several lines.
-///
-/// # Errors
-///
-/// Fails on a job without the job fields, a bad value, or a node that sinfo did not list.
-pub fn parse_jobs(stdout: &str, map: &CpuMap) -> Result<Vec<Placed>> {
-    if stdout.trim_end() == "No jobs in the system" {
-        return Ok(Vec::new());
-    }
+/// job can run over several lines. A job without the job fields, with a bad value, or on a node that
+/// sinfo did not list is set aside. So is one whose name hides keys or starts a line with `JobId=`.
+pub fn parse_jobs(stdout: &str, map: &CpuMap) -> Read<Placed> {
+    let stdout = if stdout.trim_end() == "No jobs in the system" {
+        ""
+    } else {
+        stdout
+    };
     let starts: Vec<usize> = std::iter::once(0)
         .chain(stdout.match_indices("\nJobId=").map(|(i, _)| i + 1))
         .chain([stdout.len()])
         .collect();
-    starts
+    let jobs = starts
         .windows(2)
         .map(|pair| stdout[pair[0]..pair[1]].trim_end())
-        .filter(|job| !job.is_empty())
-        .map(|job| placed(job, map).with_context(|| format!("scontrol job {job:?}")))
-        .collect()
+        .filter(|job| !job.is_empty());
+    read(jobs, |job| placed(job, map))
 }
 
 struct Group<'a> {
@@ -180,6 +178,12 @@ struct Group<'a> {
 
 fn placed(line: &str, map: &CpuMap) -> Result<Placed> {
     let record = Record::parse(line);
+    let user_ids = record.iter().filter(|(key, _)| *key == "UserId").count();
+    if record.get("JobName").is_none() || user_ids != 1 {
+        bail!(
+            "a job name hides keys: expected one JobName= and one UserId=, found {user_ids} UserId="
+        );
+    }
     let pairs: Vec<(&str, &str)> = record
         .iter()
         .take_while(|(key, _)| *key != "MinCPUsNode")
@@ -376,7 +380,7 @@ mod tests {
     }
 
     fn one(line: &str) -> Placed {
-        parse_jobs(line, &zlurm()).unwrap().remove(0)
+        parse_jobs(line, &zlurm()).records.remove(0)
     }
 
     #[test]
@@ -431,7 +435,8 @@ mod tests {
 
     #[test]
     fn an_empty_queue_holds_no_jobs() {
-        assert_eq!(parse_jobs("No jobs in the system\n", &zlurm()).unwrap(), []);
+        let read = parse_jobs("No jobs in the system\n", &zlurm());
+        assert_eq!((read.records.len(), read.unreadable.len()), (0, 0));
     }
 
     #[test]
@@ -461,7 +466,7 @@ mod tests {
             "Power= ",
             "Power= SubmitLine=sbatch --wrap='cd /x\nexport NumCPUs=8\nJobs=2 python run.py' TresPerTask=cpu=1",
         );
-        let jobs = parse_jobs(&format!("{wrapped}\n{GPU}\n"), &zlurm()).unwrap();
+        let jobs = parse_jobs(&format!("{wrapped}\n{GPU}\n"), &zlurm()).records;
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].placement, one(RUNNING).placement);
         assert_eq!(jobs[1].job, JobId(3_923_677));
@@ -503,7 +508,7 @@ mod tests {
             full.join(",")
         );
         let placement = parse_jobs(&line, &map(&[("z028", 2)], Version(25, 11, 0)))
-            .unwrap()
+            .records
             .remove(0)
             .placement;
         assert!(placement.is_exact());
@@ -511,9 +516,34 @@ mod tests {
     }
 
     #[test]
-    fn nodes_missing_from_sinfo_fail() {
+    fn a_job_on_a_node_missing_from_sinfo_is_set_aside() {
         let line = RUNNING.replace("z1054", "z9999");
-        assert!(parse_jobs(&line, &zlurm()).is_err());
+        let read = parse_jobs(&format!("{line}\n{GPU}\n"), &zlurm());
+        assert_eq!(read.records.len(), 1);
+        assert_eq!(read.records[0].job, JobId(3_923_677));
+        assert_eq!(read.unreadable.len(), 1);
+        assert!(read.unreadable[0].error.contains("z9999"));
+    }
+
+    #[test]
+    fn a_job_name_that_forges_keys_is_set_aside() {
+        let forged = RUNNING.replace(
+            "JobName=bash",
+            "JobName=x UserId=root(0) NumCPUs=1 StartTime=5",
+        );
+        let read = parse_jobs(&format!("{forged}\n{GPU}\n"), &zlurm());
+        assert_eq!(read.records.len(), 1);
+        assert_eq!(read.records[0].job, JobId(3_923_677));
+        assert_eq!(read.unreadable.len(), 1);
+    }
+
+    #[test]
+    fn a_job_name_that_forges_a_job_is_set_aside() {
+        let forged = RUNNING.replace("JobName=bash", "JobName=x\nJobId=77");
+        let read = parse_jobs(&format!("{forged}\n{GPU}\n"), &zlurm());
+        let jobs: Vec<JobId> = read.records.iter().map(|placed| placed.job).collect();
+        assert_eq!(jobs, [JobId(3_923_677)]);
+        assert_eq!(read.unreadable.len(), 2);
     }
 
     #[test]

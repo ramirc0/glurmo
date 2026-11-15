@@ -116,16 +116,19 @@ impl Cli {
                 Answer::Nodes(self.nodes.clone())
             }
             Call::Partitions => Answer::Partitions(scontrol::parse_partitions(stdout)?),
-            Call::Placements => Answer::Placements(scontrol::parse_jobs(
-                stdout,
-                &CpuMap::new(&self.nodes, version),
-            )?),
+            Call::Placements => {
+                let read = scontrol::parse_jobs(stdout, &CpuMap::new(&self.nodes, version));
+                Answer::Placements(self.readable(exchange, read))
+            }
             Call::Lookup { .. } => {
-                let mut jobs = scontrol::parse_jobs(stdout, &CpuMap::new(&self.nodes, version))?;
-                if jobs.is_empty() {
-                    bail!("scontrol printed no job for {command}");
+                let read = scontrol::parse_jobs(stdout, &CpuMap::new(&self.nodes, version));
+                if let Some(unreadable) = read.unreadable.first() {
+                    bail!("scontrol job {:?}: {}", unreadable.text, unreadable.error);
                 }
-                Answer::Lookup(Lookup::Found(jobs.swap_remove(0)))
+                let Some(job) = read.records.into_iter().next() else {
+                    bail!("scontrol printed no job for {command}");
+                };
+                Answer::Lookup(Lookup::Found(job))
             }
             Call::Outcomes(_) => Answer::Outcomes(self.readable(exchange, sacct::parse(stdout))),
             Call::History { .. } => {
