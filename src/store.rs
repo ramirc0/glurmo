@@ -92,6 +92,8 @@ pub struct Window {
     pub from: UnixTime,
     /// The end.
     pub to: UnixTime,
+    /// Whether it fills the gap since the last sample, rather than going back toward the horizon.
+    pub gap: bool,
 }
 
 /// Where a row first came from.
@@ -108,8 +110,11 @@ enum Coverage {
     Unchecked,
     /// Each jobs tick extends the coverage.
     Current,
-    /// Listings stopped for a while, so accounting must fill the gap first.
-    Behind,
+    /// Listings stopped for a while, so accounting must fill the gap up to the listing that found it.
+    Behind {
+        /// When listings came back.
+        since: UnixTime,
+    },
 }
 
 /// The SQLite store. Only one process should write to it.
@@ -315,10 +320,10 @@ impl Store {
         let gap = match self.coverage {
             Coverage::Unchecked => true,
             Coverage::Current => at.0 - last.0 > max_gap_s,
-            Coverage::Behind => false,
+            Coverage::Behind { .. } => false,
         };
         if gap {
-            self.coverage = Coverage::Behind;
+            self.coverage = Coverage::Behind { since: at };
         }
         if self.coverage == Coverage::Current {
             self.set_meta("complete_to", at)?;
@@ -382,17 +387,21 @@ impl Store {
             return Ok(Some(Window {
                 from: UnixTime(to.0 - overlap_s),
                 to: UnixTime((to.0 + span_s).min(now.0)),
+                gap: true,
             }));
         }
         let horizon = created.0 - i64::from(self.settings.backfill_days) * DAY_S;
         Ok((from.0 > horizon).then(|| Window {
             from: UnixTime((from.0 - span_s).max(horizon)),
             to: from,
+            gap: false,
         }))
     }
 
     /// Writes what accounting holds for `window`, as [`Store::next_backfill`] gave it, and rolls up its bins again.
     /// A record with no end whose attempt is not `active` is a runaway that the scheduler forgot, and is skipped.
+    /// `now` is the time of the last listing, which may come well after the window was given. A gap
+    /// window that reaches the listing that found the gap closes it, since listings have run since then.
     ///
     /// # Errors
     ///
@@ -412,12 +421,14 @@ impl Store {
             upsert(&tx, &self.cpus_per_core, attempt, Origin::Accounting)?;
         }
         tx.commit()?;
-        if self.coverage == Coverage::Current {
+        if !window.gap {
             self.set_meta("history_from", window.from)?;
-        } else {
-            self.set_meta("complete_to", window.to)?;
-            if window.to >= now {
+        } else if let Coverage::Behind { since } = self.coverage {
+            if window.to >= since {
                 self.coverage = Coverage::Current;
+                self.set_meta("complete_to", now)?;
+            } else {
+                self.set_meta("complete_to", window.to)?;
             }
         }
         let rolled_to = self.meta("rolled_to")?.unwrap_or(now);
@@ -1508,6 +1519,58 @@ mod tests {
         assert_eq!(
             store.meta("complete_to").unwrap(),
             Some(UnixTime(later.0 + 10))
+        );
+    }
+
+    #[test]
+    fn a_gap_window_applied_after_min_job_age_still_closes_the_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        store.sampled(UnixTime(T0), 300).unwrap();
+        while let Some(window) = store.next_backfill(UnixTime(T0), 300, DAY_S).unwrap() {
+            store
+                .backfill(window, &[], &HashSet::new(), UnixTime(T0))
+                .unwrap();
+        }
+        let back = UnixTime(T0 + 3 * 3_600);
+        assert!(store.sampled(back, 300).unwrap());
+        let gap = store.next_backfill(back, 300, DAY_S).unwrap().unwrap();
+        let late = UnixTime(back.0 + 900);
+        for tick in (back.0..=late.0).step_by(10) {
+            assert!(!store.sampled(UnixTime(tick), 300).unwrap());
+        }
+
+        store.backfill(gap, &[], &HashSet::new(), late).unwrap();
+        assert_eq!(store.next_backfill(late, 300, DAY_S).unwrap(), None);
+        assert!(!store.sampled(UnixTime(late.0 + 10), 300).unwrap());
+        assert_eq!(
+            store.meta("complete_to").unwrap(),
+            Some(UnixTime(late.0 + 10))
+        );
+    }
+
+    #[test]
+    fn a_window_toward_the_horizon_applied_after_a_gap_opens_moves_only_the_horizon() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open(&dir);
+        store.sampled(UnixTime(T0), 300).unwrap();
+        store.sampled(UnixTime(T0 + 290), 300).unwrap();
+        let past = store
+            .next_backfill(UnixTime(T0 + 290), 300, DAY_S)
+            .unwrap()
+            .unwrap();
+        let back = UnixTime(T0 + 3 * 3_600);
+        assert!(store.sampled(back, 300).unwrap());
+
+        store.backfill(past, &[], &HashSet::new(), back).unwrap();
+        let gap = store.next_backfill(back, 300, DAY_S).unwrap().unwrap();
+        assert_eq!((gap.from.0, gap.to), (T0 - 10, back));
+        store.backfill(gap, &[], &HashSet::new(), back).unwrap();
+        let next = store.next_backfill(back, 300, DAY_S).unwrap().unwrap();
+        assert_eq!(
+            (next.from.0, next.to.0),
+            (T0 - 2 * DAY_S, T0 - DAY_S),
+            "the horizon window moved the history back a day"
         );
     }
 
