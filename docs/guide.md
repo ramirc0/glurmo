@@ -31,10 +31,25 @@ Config(
 
 * `slurm` picks the backend. `Wire` speaks Slurm's protocol. `Cli` runs `squeue`, `sinfo`, `scontrol`, `sdiag` and `sacct` instead, for a cluster newer than the protocol glurmo knows. `controller` overrides the addresses in slurm.conf.
 * `sample` sets how often each kind of data is read. `lookups` caps placement lookups per tick, and only the `Cli` backend makes them.
-* `store` must sit on a local disk, such as `/scratch`. SQLite locks are unreliable on NFS, Ceph or Lustre. `backfill` reads that much history from accounting into a new store.
+* `store` keeps history in a SQLite file, which must sit on a local disk, such as `/scratch`. SQLite locks are unreliable on NFS, Ceph or Lustre. `backfill` reads that much history from accounting into a new store. A TimescaleDB server can hold history in place of the file, as described below.
 * `tui` picks the server the terminal view follows and its first layout and theme. `me` names whose jobs `m` and the `Mine` panel show, in place of `$USER`.
 * `names` shows full names from the account database, or logins with `Login`.
 * `gpu_models` names the GPUs in each partition, for clusters whose GRES lists no GPU type.
+
+### History on TimescaleDB
+
+`timescale` takes the place of `path` and names the server with a PostgreSQL connection string. Setting both is an error.
+
+```ron
+store: (timescale: "host=db user=glurmo dbname=glurmo", keep: Forever, backfill: Days(30)),
+```
+
+* The server needs PostgreSQL 16 to 18 with `shared_preload_libraries = 'timescaledb'`. glurmo is tested with TimescaleDB 2.31.
+* glurmo creates its tables at its first start, and the `timescaledb` extension when the database lacks it. The extension is trusted, so the owner of the database can create it without superuser rights.
+* Attempts and usage bins are hypertables in 30-day chunks. Chunks older than 7 days are compressed where the server's license covers compression. The Apache-licensed build keeps them uncompressed, and glurmo says so once.
+* The connection uses no TLS. Keep it on a Unix socket or a network you trust.
+* glurmo makes no nightly copy of this store. Back it up with the server's tools.
+* `glurmo copy STORE.sqlite "host=db user=glurmo dbname=glurmo"` copies an existing SQLite store into an empty database and prints each table's row count on both sides. The server on SQLite may keep running meanwhile. A server started on the copy fills the time since the copy from accounting.
 
 ## Run
 
