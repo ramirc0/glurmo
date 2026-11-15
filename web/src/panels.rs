@@ -7,7 +7,7 @@ use glurmo_model::units::{percent, since, span, thousands};
 use glurmo_model::{Attempt, Login, NodeName, NodeState, PartitionName};
 use leptos::prelude::*;
 
-use crate::paint::{Rgb, clock, display_name, now, user_color};
+use crate::paint::{Rgb, clock, display_name, user_color};
 use crate::state::{Highlight, Link, State};
 
 /// The CSS color of `login` in the current theme.
@@ -176,12 +176,12 @@ fn Trouble() -> impl IntoView {
                 let at = glurmo_model::UnixTime((at_ms / 1_000.0) as i64);
                 Some(format!(
                     "server unreachable for {}, reconnecting",
-                    since(at, now())
+                    since(at, state.now.get())
                 ))
             }
             (Link::Live, Some(outage)) => Some(format!(
                 "no answer from Slurm for {}: {}",
-                since(outage.since, now()),
+                since(outage.since, state.now.get()),
                 outage.error.lines().next().unwrap_or_default()
             )),
             (Link::Live, None) => None,
