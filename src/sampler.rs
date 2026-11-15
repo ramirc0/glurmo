@@ -196,6 +196,7 @@ pub struct Sampler {
     lookups: VecDeque<Attempt>,
     budget: u64,
     /// Whether no jobs tick has succeeded yet, so one listing of every placement replaces the lookups.
+    /// A source that places every job cheaply lists them on every jobs tick instead.
     cold: bool,
     /// Whether an outage is on.
     in_outage: bool,
@@ -325,7 +326,7 @@ impl Sampler {
         } else {
             None
         };
-        let placements = if jobs.is_some() && self.cold {
+        let placements = if jobs.is_some() && (self.cold || self.slurm.places_every_tick()) {
             Some(self.placing.time(self.slurm.placements()).await.0?)
         } else {
             None
@@ -356,6 +357,8 @@ impl Sampler {
                             events.extend(placed(&attempt, found));
                         }
                     }
+                    // The listing holds every job the controller knows, so the rest have gone.
+                    self.lookups.clear();
                     self.cold = false;
                 }
                 None => events.extend(self.look_up().await),
@@ -655,6 +658,68 @@ mod tests {
         assert_eq!(usize::try_from(users).unwrap(), cluster.users.len());
         drop(db);
         (dir, deltas)
+    }
+
+    #[tokio::test]
+    async fn a_source_that_lists_placements_each_tick_places_starts_without_lookups() {
+        use crate::slurm::Source;
+        use crate::slurm::recording::{Answer, Exchange, Replay, read};
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/slurm-23.11/quiet.jsonl");
+        let mut exchanges = read(&path).unwrap();
+        let answer = |call: &Call| {
+            exchanges
+                .iter()
+                .find(|exchange| exchange.call == *call)
+                .and_then(|exchange| exchange.answer.clone().ok())
+                .unwrap()
+        };
+        let (Answer::Jobs(mut jobs), Answer::Placements(mut placements)) =
+            (answer(&Call::Jobs), answer(&Call::Placements))
+        else {
+            panic!("the fixture lacks jobs or placements");
+        };
+        let at = exchanges.last().unwrap().at.0 + 10;
+        let running = jobs
+            .iter()
+            .position(|job| job.state == glurmo_model::JobState::Running)
+            .unwrap();
+        let mut started = jobs[running].clone();
+        started.key.job = glurmo_model::JobId(99_999_999);
+        started.start = Some(UnixTime(at - 5));
+        let mut found = placements
+            .iter()
+            .find(|placed| placed.job == jobs[running].key.job)
+            .unwrap()
+            .clone();
+        found.job = started.key.job;
+        found.start = started.start;
+        jobs.push(started.clone());
+        placements.push(found);
+        for (call, answer) in [
+            (Call::Jobs, Answer::Jobs(jobs)),
+            (Call::Placements, Answer::Placements(placements)),
+        ] {
+            exchanges.push(Exchange {
+                at: UnixTime(at),
+                call,
+                answer: Ok(answer),
+            });
+        }
+        let slurm = Slurm::connect(Source::Replay(Replay::new(exchanges)), None)
+            .await
+            .unwrap();
+        assert!(slurm.places_every_tick());
+        let hub = Hub::new(slurm.site().clone());
+        Sampler::new(slurm, &zlurm_config(), None, hub.clone())
+            .run(None)
+            .await;
+        let placed = hub
+            .deltas()
+            .iter()
+            .flat_map(|delta| &delta.events)
+            .any(|event| matches!(event, Event::Placed { key, .. } if *key == started.key));
+        assert!(placed, "the start was not placed from the listing");
     }
 
     #[tokio::test]

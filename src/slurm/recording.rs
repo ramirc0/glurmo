@@ -246,6 +246,13 @@ impl Replay {
         self.now = self.now.max(time);
     }
 
+    /// Whether an answer to `call` is left.
+    pub fn holds(&self, call: &Call) -> bool {
+        self.answers
+            .get(call)
+            .is_some_and(|answers| !answers.is_empty())
+    }
+
     /// The next recorded answer to `call`.
     ///
     /// # Errors

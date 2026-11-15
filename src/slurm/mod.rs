@@ -271,6 +271,16 @@ impl Slurm {
         }
     }
 
+    /// Whether listing every job's placement is cheap enough for each jobs tick, in place of lookups.
+    /// The protocol lists them in one call. A replay does whatever its recording did.
+    pub fn places_every_tick(&self) -> bool {
+        match &self.source {
+            Source::Wire(_) => true,
+            Source::Cli(_) => false,
+            Source::Replay(replay) => replay.holds(&Call::Placements),
+        }
+    }
+
     /// Asks one question and records it and its answer.
     ///
     /// # Errors
