@@ -17,6 +17,9 @@ use crate::state::{Highlight, State};
 /// The most attempts an open group lists.
 const OPEN_ROWS: usize = 100;
 
+/// How long the search waits after the last key before it filters, so typing never waits on the list.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// What the list's controls pick.
 #[derive(Clone, Copy)]
 struct Picks {
@@ -102,7 +105,7 @@ pub fn Jobs() -> impl IntoView {
 }
 
 /// The search field and the filter chips. They are built once, so the field keeps focus as the list
-/// changes.
+/// changes. The field holds its own text, and the list follows it once typing pauses.
 #[component]
 fn Controls(picks: Picks) -> impl IntoView {
     let state = expect_context::<State>();
@@ -121,6 +124,9 @@ fn Controls(picks: Picks) -> impl IntoView {
         )
     };
     let flip = |flag: RwSignal<bool>| Callback::new(move |()| flag.update(|on| *on = !*on));
+    let mut settle = debounce(SETTLE, move |text: String| {
+        picks.text.try_set(text);
+    });
     view! {
         <span class="controls">
             <input
@@ -128,8 +134,7 @@ fn Controls(picks: Picks) -> impl IntoView {
                 type="text"
                 spellcheck="false"
                 placeholder="user, job, name, node…"
-                prop:value=move || picks.text.get()
-                on:input=move |event| picks.text.set(event_target_value(&event))
+                on:input=move |event| settle(event_target_value(&event))
             />
         </span>
         <span class="controls">

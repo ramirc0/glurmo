@@ -6,6 +6,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Changed
 
+- The jobs search filters 150 ms after the last key, so typing no longer waits on the list. On AICR each key rebuilt 1,300 rows before, which took 113 ms.
 - History reads near now find running attempts through the index on ends. On zlurm's store a rollup of the open bins took 150 ms and now takes under 6 ms.
 - Each tick publishes its changes before it reads accounting, so a slow history read no longer delays live updates. The backfill grows its window after each read that works, up to a day, and waits a minute after one that fails. On zlurm it read 15 minutes at a time before.
 
