@@ -160,9 +160,13 @@ fn passwd_reply(reply: &[u8]) -> Result<Option<Entry>> {
         return Ok(None);
     }
     let uid = word(2)?;
-    let mut strings = reply[16..].split(|&byte| byte == 0);
+    let mut strings = reply
+        .get(16..)
+        .context("short passwd reply")?
+        .split(|&byte| byte == 0);
     let mut next = || strings.next().map(String::from_utf8_lossy);
     let login = next()
+        .filter(|login| !login.is_empty())
         .context("a passwd reply without a login")?
         .into_owned();
     let _password = next();
@@ -262,6 +266,14 @@ mod tests {
         );
         let none: Vec<u8> = [0_u32, 0].iter().flat_map(|w| w.to_ne_bytes()).collect();
         assert!(passwd_reply(&none).unwrap().is_none());
+    }
+
+    #[test]
+    fn short_sssd_passwd_replies_are_errors() {
+        for words in [&[1_u32, 0, 1001][..], &[1, 0, 1001, 1001]] {
+            let reply: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
+            assert!(passwd_reply(&reply).is_err(), "{} bytes", reply.len());
+        }
     }
 
     #[tokio::test]
