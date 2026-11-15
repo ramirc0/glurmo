@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- The history chart's queue depth sums every user's waiting tasks before it rounds. Before, many short waits each rounded down to nothing.
 - The protocol backend gives up on munged or sack after 15 s. Before, a daemon that accepted and never answered hung the sampler without an error.
 - The command backend saves unparsed output to `unparsed.jsonl` once per kind of call in a run. Before, a listing that failed every tick appended its whole output each time, about 11 GB a day on zlurm.
 - The command backend reads scontrol's `Job ... not found` as a job gone, and a lookup that fails moves to the back of the queue. Before, one array task the controller had dropped blocked every later lookup. With `lookups: 0`, starts no longer pile up in the queue.

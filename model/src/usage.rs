@@ -120,30 +120,31 @@ impl Usage {
     /// ```
     pub fn columns(&self, from: i64, span_s: i64, count: u16) -> Vec<Column<'_>> {
         let step_s = u64::try_from(self.step_s.max(1)).unwrap_or(1);
-        let mut by_time: BTreeMap<i64, Column> = BTreeMap::new();
+        let mut by_time: BTreeMap<i64, Vec<(&str, u64)>> = BTreeMap::new();
+        let mut wait_s: HashMap<i64, u64> = HashMap::new();
         let mut totals: HashMap<&str, u64> = HashMap::new();
         for step in &self.steps {
-            let column = by_time.entry(step.at.0).or_default();
-            column.cores.push((&step.key, step.core_s / step_s));
-            column.waiting += step.wait_s / step_s;
+            let cores = by_time.entry(step.at.0).or_default();
+            cores.push((&step.key, step.core_s / step_s));
+            *wait_s.entry(step.at.0).or_default() += step.wait_s;
             *totals.entry(&step.key).or_default() += step.core_s;
         }
         let count = i64::from(count);
         (0..count)
             .map(|i| {
                 let time = from + (2 * i + 1) * span_s / (2 * count);
-                let Some((_, step)) = by_time
+                let Some((at, cores)) = by_time
                     .range(..=time)
                     .next_back()
                     .filter(|(at, _)| **at + self.step_s > time)
                 else {
                     return Column::default();
                 };
-                let mut cores = step.cores.clone();
+                let mut cores = cores.clone();
                 cores.sort_by_key(|(login, _)| (std::cmp::Reverse(totals[login]), *login));
                 Column {
                     cores,
-                    waiting: step.waiting,
+                    waiting: wait_s[at] / step_s,
                 }
             })
             .collect()
@@ -153,6 +154,27 @@ impl Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waiting_sums_every_login_before_it_rounds() {
+        let step = |key: &str| Step {
+            at: UnixTime(0),
+            key: key.into(),
+            core_s: 0,
+            gpu_s: 0,
+            wait_s: 200,
+            started: 0,
+            ended: 0,
+            failed: None,
+        };
+        let usage = Usage {
+            from: UnixTime(0),
+            to: UnixTime(300),
+            step_s: 300,
+            steps: vec![step("heron"), step("otter")],
+        };
+        assert_eq!(usage.columns(0, 300, 1)[0].waiting, 1);
+    }
 
     #[test]
     fn steps_are_whole_bins_and_at_most_about_600() {
