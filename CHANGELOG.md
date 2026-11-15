@@ -13,6 +13,9 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- A short reply from SSSD fails the name lookup instead of panicking.
+- A host or ID range over 65,536 values fails its listing instead of exhausting memory.
+- The web view no longer crashes when a lit job row would be scrolled into view after its list was rebuilt.
 - The editor turns accented letters in a name into plain ones for its file name, so `Rosé Pine Dawn` saves as `rose-pine-dawn`. Before, it dropped them.
 - A replay that nears now no longer skips the changes past the server's clock. It asks only up to 15 s before now, where the live view takes over.
 - The web view's banner counts up while the server or Slurm stays unreachable. Before, it showed how long it had been when the trouble began.
