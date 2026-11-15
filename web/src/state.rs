@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use leptos::prelude::*;
 
 use crate::replay::{Engine, Playhead};
+use crate::tree::Path;
 use rtviz_model::layout::{Layout, Pane};
 use rtviz_model::summary::Ticker;
 use rtviz_model::theme::Theme;
@@ -92,6 +93,10 @@ pub struct State {
     pub replay: RwSignal<Option<Playhead>>,
     /// What a replay keeps between frames, including the live view it set aside.
     pub engine: StoredValue<Engine>,
+    /// The panel filling the stage in place of the layout, if any.
+    pub filled: RwSignal<Option<Path>>,
+    /// The panel under the pointer, which `f` fills.
+    pub pointed: StoredValue<Option<Path>>,
     /// Whether this is a wall display: no cursor, and the highlight cycles through users.
     pub tv: bool,
 }
@@ -186,6 +191,8 @@ impl State {
             timeline: RwSignal::new(Timeline::default()),
             replay: RwSignal::new(None),
             engine: StoredValue::new(Engine::default()),
+            filled: RwSignal::new(None),
+            pointed: StoredValue::new(None),
             tv: address.tv,
         }
     }

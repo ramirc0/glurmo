@@ -671,6 +671,10 @@ pub fn Keys() -> impl IntoView {
                 <kbd>"e"</kbd>
                 " edit"
             </span>
+            <span>
+                <kbd>"f"</kbd>
+                " fill the screen"
+            </span>
             <span>"hover a row to light up its cores, or a core for its job"</span>
         </footer>
     }

@@ -81,8 +81,11 @@ fn App() -> impl IntoView {
         }
         let editing = state.draft_layout.with_untracked(Option::is_some);
         let replaying = state.replay.with_untracked(Option::is_some);
+        let filled = state.filled.with_untracked(Option::is_some);
         match event.key().as_str() {
             "e" | "Escape" if editing => Editor::close(state),
+            "f" | "Escape" if filled => state.filled.set(None),
+            "f" if !editing => state.filled.set(state.pointed.get_value()),
             "Escape" if replaying => replay::live(state),
             "0" if replaying => replay::play(state, None),
             key @ ("1" | "2" | "3" | "4") if replaying => {
@@ -92,13 +95,19 @@ fn App() -> impl IntoView {
                     .and_then(|n| replay::SPEEDS.get(n - 1));
                 replay::play(state, speed.copied());
             }
-            "e" if !state.tv => editor.open(state),
+            "e" if !state.tv => {
+                state.filled.set(None);
+                editor.open(state);
+            }
             "t" if !editing => state
                 .themes
                 .with_untracked(|themes| advance(state.theme_name, themes)),
-            "l" if !editing => state
-                .layouts
-                .with_untracked(|layouts| advance(state.layout_name, layouts)),
+            "l" if !editing => {
+                state.filled.set(None);
+                state
+                    .layouts
+                    .with_untracked(|layouts| advance(state.layout_name, layouts));
+            }
             _ => {}
         }
     });
@@ -111,7 +120,15 @@ fn App() -> impl IntoView {
             <div class="stage">
                 {move || {
                     let editing = state.editing();
-                    state.layout.get().map(|layout| pane::pane(layout.root, Path::root(), editing))
+                    let layout = state.layout.get()?;
+                    let filled = state
+                        .filled
+                        .get()
+                        .and_then(|path| Some((tree::at(&layout.root, &path)?.clone(), path)));
+                    Some(match filled {
+                        Some((pane, path)) => pane::pane(pane, path, false),
+                        None => pane::pane(layout.root, Path::root(), editing),
+                    })
                 }}
             </div>
             {move || state.editing().then(|| view! { <Sidebar/> })}

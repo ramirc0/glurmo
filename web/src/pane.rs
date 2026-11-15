@@ -1,5 +1,6 @@
-//! A layout's split tree as nested flexbox. While the editor is open, each panel wears a cover to pick
-//! and drag it by, and each gap between panes a grip to resize them by.
+//! A layout's split tree as nested flexbox. Each panel notes when the pointer enters it, so `f` can fill
+//! the stage with it. While the editor is open, each panel wears a cover to pick and drag it by, and
+//! each gap between panes a grip to resize them by.
 
 use leptos::prelude::*;
 use rtviz_model::layout::{Direction, Pane, Size};
@@ -8,19 +9,18 @@ use crate::builder::{Cover, Grip, label};
 use crate::die::Die;
 use crate::history::History;
 use crate::panels::{Header, Keys, Mine, Nodes, Partitions, Queue, Ticker, Users};
+use crate::state::State;
 use crate::tree::Path;
 
 /// The view of `pane`, at `path` in its layout, and everything inside it.
 pub fn pane(pane: Pane, path: Path, editing: bool) -> AnyView {
     let Pane::Split(direction, children) = pane else {
-        let panel = panel(&pane);
-        if !editing {
-            return panel;
-        }
+        let state = expect_context::<State>();
+        let cover = editing.then(|| view! { <Cover tag=label(&pane) path=path.clone()/> });
         return view! {
-            <div class="leaf">
-                {panel}
-                <Cover tag=label(&pane) path=path/>
+            <div class="leaf" on:pointerenter=move |_| state.pointed.set_value(Some(path.clone()))>
+                {panel(&pane)}
+                {cover}
             </div>
         }
         .into_any();
