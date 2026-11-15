@@ -368,16 +368,12 @@ fn fetch_ahead(state: State, at: f64, speed: u32, now: f64) {
     let window = (AHEAD_S * f64::from(speed)).clamp(WINDOW_S.0, WINDOW_S.1);
     let mut next = None;
     state.engine.update_value(|engine| {
-        if engine.loading || engine.fetching || engine.fetched_to >= now {
+        if engine.loading || engine.fetching {
             return;
         }
-        if engine.fetched_to - at < window / 2.0 {
+        if let Some((from, to)) = next_window(engine.fetched_to, at, window, now) {
             engine.fetching = true;
-            next = Some((
-                engine.generation,
-                engine.fetched_to,
-                engine.fetched_to + window,
-            ));
+            next = Some((engine.generation, from, to));
         }
     });
     let Some((generation, from, to)) = next else {
@@ -411,9 +407,33 @@ fn fetch_ahead(state: State, at: f64, speed: u32, now: f64) {
     });
 }
 
+/// The next window of changes to fetch after `fetched_to`, once the playhead at `at` comes within half
+/// a `window` of it. It stops short of `now` by [`CAUGHT_UP_S`], because the server answers only up to
+/// its own clock, and the live view takes over there anyway.
+fn next_window(fetched_to: f64, at: f64, window: f64, now: f64) -> Option<(f64, f64)> {
+    let to = (fetched_to + window).min(now - CAUGHT_UP_S).floor();
+    (fetched_to - at < window / 2.0 && to > fetched_to).then_some((fetched_to, to))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_come_when_the_playhead_nears_their_end_and_stop_short_of_now() {
+        let now = 10_000.0;
+        assert_eq!(next_window(5_000.0, 4_000.0, 600.0, now), None, "far ahead");
+        assert_eq!(
+            next_window(5_000.0, 4_800.0, 600.0, now),
+            Some((5_000.0, 5_600.0))
+        );
+        assert_eq!(
+            next_window(9_800.0, 9_700.0, 600.0, now),
+            Some((9_800.0, now - CAUGHT_UP_S)),
+            "the server cannot answer past its own now"
+        );
+        assert_eq!(next_window(now - CAUGHT_UP_S, 9_980.0, 600.0, now), None);
+    }
 
     fn note_ten(cluster: &mut Cluster, _: &mut Ticker) {
         cluster.at = Some(UnixTime(10));

@@ -13,6 +13,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- A replay that nears now no longer skips the changes past the server's clock. It asks only up to 15 s before now, where the live view takes over.
 - The web view's banner counts up while the server or Slurm stays unreachable. Before, it showed how long it had been when the trouble began.
 - Typing a layout's name in the editor keeps the field's focus. Before, each letter rebuilt the editor, and the next `e` closed it and dropped the draft.
 - Hovering in the web view no longer slows down the longer a page stays open. Table rows read a copy of the highlight that goes away with them. Before, each rebuild of a table left its rows subscribed, and on AICR a hover took 7 ms on a fresh page and 385 ms after 120 rebuilds, as after a replay.
