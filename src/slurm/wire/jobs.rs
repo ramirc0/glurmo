@@ -765,6 +765,7 @@ fn reason_name(reason: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glurmo_model::NodeName;
 
     fn pending(id: u32, task: u32, tasks: Option<&str>, name: &str, reason: u32) -> Job {
         Job {
@@ -792,6 +793,36 @@ mod tests {
             tres_alloc: None,
             tres_req: None,
         }
+    }
+
+    #[test]
+    fn placement_splits_the_core_bitmap_by_host() {
+        let mut job = pending(20, NO_VAL, None, "n", 0);
+        assert_eq!(job.placement().unwrap(), Placement(Vec::new()));
+        job.resources = Some(Resources {
+            hosts: "n[1-2]".into(),
+            memory_mb: vec![1_000, 2_000],
+            cores_per_host: vec![(4, 2)],
+            cores: Some(Bitmap {
+                size: 8,
+                set: vec![0, 1, 6],
+            }),
+        });
+        job.gres_detail = vec![Some("gpu:1(IDX:0)".into()), None];
+        let cells = |node: &str, cores: &[u32], gpus: &[u32], mem_mb| NodeCells {
+            node: NodeName(node.into()),
+            cores: cores.to_vec(),
+            unplaced: 0,
+            gpus: gpus.to_vec(),
+            mem_mb: Some(mem_mb),
+        };
+        assert_eq!(
+            job.placement().unwrap(),
+            Placement(vec![
+                cells("n1", &[0, 1], &[0], 1_000),
+                cells("n2", &[2], &[], 2_000),
+            ])
+        );
     }
 
     #[test]

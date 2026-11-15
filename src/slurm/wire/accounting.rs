@@ -486,6 +486,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tres_strings_give_cpus_memory_and_gpus() {
+        let counts = Tres { gpu: Some(1001) }
+            .counts(Some("1=8,2=16000,4=1,1001=2"))
+            .unwrap();
+        assert_eq!(
+            (counts.cpus, counts.mem_mb, counts.gpus),
+            (Some(8), Some(16_000), 2)
+        );
+        assert!(Tres { gpu: None }.counts(Some("1:8")).is_err());
+    }
+
+    #[test]
+    fn a_pending_record_counts_what_it_requested() {
+        let record = Record {
+            id: JobId(7),
+            array_base: 0,
+            array_task: NO_VAL,
+            array_range: None,
+            array_max_tasks: 0,
+            user_id: 20_001,
+            user: None,
+            partition: Some("4hours,long".into()),
+            state: 0,
+            req_cpus: 4,
+            tres_alloc: Some(String::new()),
+            tres_req: Some("1=4,2=8000,1001=1".into()),
+            time_limit: 60,
+            submit: 1_794_000_000,
+            start: 0,
+            end: 0,
+            nodes: None,
+        };
+        let logins = HashMap::from([(20_001, Login("otter".into()))]);
+        let attempt = record.attempt(Tres { gpu: Some(1001) }, &logins).unwrap();
+        assert_eq!(
+            (attempt.cpus, attempt.mem_mb, attempt.gpus),
+            (4, Some(8_000), 1)
+        );
+        assert_eq!(attempt.login, Login("otter".into()));
+        assert_eq!(attempt.partitions.len(), 2);
+        assert_eq!(attempt.time_limit_s, Some(3_600));
+        assert_eq!((attempt.start, attempt.end), (None, None));
+    }
+
+    #[test]
     fn a_never_started_job_has_no_start() {
         assert_eq!(epoch(0), None);
         assert_eq!(

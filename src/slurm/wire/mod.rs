@@ -567,6 +567,44 @@ mod tests {
         assert_eq!(readable(converted.into_iter()), [1, 3]);
     }
 
+    /// A reply frame without its length prefix, as `exchange` returns it, with a munge credential.
+    fn reply(kind: u16, body: &[u8]) -> Vec<u8> {
+        let mut frame = Pack::default();
+        frame
+            .u16(Protocol::V23_11.number())
+            .u16(0)
+            .u16(kind)
+            .u32(u32::try_from(body.len()).unwrap())
+            .u16(0)
+            .u16(0)
+            .u16(0)
+            .u32(AUTH_MUNGE)
+            .str(Some("MUNGE:credential"));
+        frame.0.extend(body);
+        frame.0
+    }
+
+    #[test]
+    fn replies_give_their_body_or_their_return_code() {
+        let ok = reply(2008, b"body");
+        assert_eq!(checked(&ok, 2008, Protocol::V23_11).unwrap(), b"body");
+        assert!(checked(&ok, 2009, Protocol::V23_11).is_err());
+        assert!(checked(&ok, 2008, Protocol::V25_11).is_err());
+        let mut code = Pack::default();
+        code.u32(2017);
+        let refused = checked(&reply(RESPONSE_SLURM_RC, &code.0), 2008, Protocol::V23_11);
+        assert_eq!(
+            refused.unwrap_err().downcast_ref::<ReturnCode>(),
+            Some(&INVALID_JOB_ID)
+        );
+        for len in 0..ok.len() {
+            assert!(
+                checked(&ok[..len], 2008, Protocol::V23_11).is_err(),
+                "{len} bytes"
+            );
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_credential_daemon_that_never_answers_fails_the_call() {
         let dir = tempfile::tempdir().unwrap();
