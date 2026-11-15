@@ -157,6 +157,25 @@ const TIMESCALE_COMPRESSION: &str = "
     SELECT add_compression_policy('usage', compress_after => 604800);
 ";
 
+/// The store's tables and their columns, in the order a copy fills them. `attempts` and `usage` also
+/// name the column whose days split their copy.
+const TABLES: [(&str, &str, Option<&str>); 5] = [
+    ("users", "login, full_name, color_slot", None),
+    ("node_states", "node, at, state, reason", None),
+    ("meta", "key, value", None),
+    (
+        "attempts",
+        r#"job, submit, array_job, task_range, tasks, login, partition, cpus, cores, gpus, mem_mb,
+           start, "end", state, nodes, placement, exact, origin"#,
+        Some("submit"),
+    ),
+    (
+        "usage",
+        "bin, login, partition, core_s, gpu_s, wait_s, started, ended, failed",
+        Some("bin"),
+    ),
+];
+
 /// How much history to fetch and keep.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -909,6 +928,124 @@ impl History {
     }
 }
 
+/// How many rows of one table each side holds after a copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Copied {
+    /// The table.
+    pub table: &'static str,
+    /// Its rows in the SQLite store.
+    pub source: u64,
+    /// Its rows in the TimescaleDB database.
+    pub target: u64,
+}
+
+/// Copies the SQLite store at `source` into the TimescaleDB database that `url` names, which must hold
+/// no history yet. A store opened on the copy carries on where the SQLite one stood: its first listing
+/// finds a gap, and accounting fills it.
+///
+/// The source is read in one transaction, so a sampler may keep writing to it. Each day of attempts
+/// and of usage is written in a transaction of its own.
+///
+/// # Errors
+///
+/// Fails when the source cannot be opened or has another schema version than this glurmo's, the
+/// server cannot be reached, the database already holds history, or a read or write fails.
+pub fn copy(source: &Path, url: &str) -> Result<Vec<Copied>> {
+    let mut source = Location::Sqlite(source.to_owned()).read()?;
+    let version: usize = source.query_row("PRAGMA user_version", params![], |row| row.get(0))?;
+    if version != SQLITE_MIGRATIONS.len() {
+        bail!(
+            "the SQLite store has schema version {version}, and this glurmo copies version {}",
+            SQLITE_MIGRATIONS.len()
+        );
+    }
+    let snapshot = source.transaction()?;
+    let mut target = Connection::Timescale(Timescale::connect(&timescale::parse(url)?)?);
+    migrate_timescale(&mut target)?;
+    for (table, ..) in TABLES {
+        if history_rows(&target, table)? > 0 {
+            bail!("the TimescaleDB database already holds history in {table}");
+        }
+    }
+    for (table, columns, day_column) in TABLES {
+        let Some(day_column) = day_column else {
+            let tx = target.transaction()?;
+            copy_rows(&snapshot, &tx, table, columns, "")?;
+            tx.commit()?;
+            continue;
+        };
+        let (first, last): (Option<i64>, Option<i64>) = snapshot.query_row(
+            &format!("SELECT min({day_column}), max({day_column}) FROM {table}"),
+            params![],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let (Some(first), Some(last)) = (first, last) else {
+            continue;
+        };
+        let mut day = first.div_euclid(DAY_S) * DAY_S;
+        while day <= last {
+            let next = day + DAY_S;
+            let within = format!("WHERE {day_column} >= {day} AND {day_column} < {next}");
+            let tx = target.transaction()?;
+            copy_rows(&snapshot, &tx, table, columns, &within)?;
+            tx.commit()?;
+            day = next;
+        }
+    }
+    // The planner knows nothing of the new rows until the server analyzes them, which can take a while.
+    target.execute_batch("ANALYZE")?;
+    TABLES
+        .iter()
+        .map(|&(table, ..)| {
+            Ok(Copied {
+                table,
+                source: history_rows(&snapshot, table)?,
+                target: history_rows(&target, table)?,
+            })
+        })
+        .collect()
+}
+
+/// How many rows of history `table` holds. The `schema` key in `meta` counts migrations, and only
+/// TimescaleDB has it.
+fn history_rows(db: &Connection, table: &str) -> Result<u64> {
+    let filter = if table == "meta" {
+        "WHERE key != 'schema'"
+    } else {
+        ""
+    };
+    db.query_row(
+        &format!("SELECT count(*) FROM {table} {filter}"),
+        params![],
+        |row| row.get(0),
+    )
+}
+
+/// Copies the rows of `table` that `filter` selects, which may be empty or a `WHERE` clause.
+fn copy_rows(
+    from: &Connection,
+    to: &Connection,
+    table: &str,
+    columns: &str,
+    filter: &str,
+) -> Result<()> {
+    let width = columns.split(',').count();
+    let rows: Vec<Vec<Value>> = from.query_map(
+        &format!("SELECT {columns} FROM {table} {filter}"),
+        params![],
+        |row| (0..width).map(|index| row.get(index)).collect(),
+    )?;
+    let places: Vec<String> = (1..=width).map(|number| format!("?{number}")).collect();
+    let insert = format!(
+        "INSERT INTO {table} ({columns}) VALUES ({})",
+        places.join(", ")
+    );
+    for row in &rows {
+        to.execute(&insert, row)?;
+    }
+    Ok(())
+}
+
 fn meta(db: &Connection, key: &str) -> Result<Option<UnixTime>> {
     let values = db.query_map(
         "SELECT value FROM meta WHERE key = ?1",
@@ -1320,6 +1457,7 @@ fn mount_kind<'a>(path: &Path, mounts: &'a str) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::fixture::{StoreHome, busy_store_in};
+    use crate::hub::Hub;
     use glurmo_model::NodeCells;
 
     const T0: i64 = 1_794_614_400;
@@ -2278,6 +2416,47 @@ mod tests {
     async fn timescale_reads_back_what_sqlite_does_after_the_busy_quarter_hour() {
         let (_sqlite_home, hub, sqlite) = busy_store_in(StoreHome::sqlite()).await;
         let (_timescale_home, _, timescale) = busy_store_in(StoreHome::timescale()).await;
+        assert_timescale_reads_what_sqlite_does(&hub, &sqlite, &timescale);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    async fn a_copy_into_timescale_reads_back_what_the_sqlite_store_does_and_carries_on() {
+        let (sqlite_home, hub, sqlite) = busy_store_in(StoreHome::sqlite()).await;
+        let timescale_home = StoreHome::timescale();
+        let server = timescale_home.server().unwrap();
+        let copied = copy(&sqlite_home.path(), &server).unwrap();
+        let tables: Vec<&str> = copied.iter().map(|rows| rows.table).collect();
+        assert_eq!(
+            tables,
+            ["users", "node_states", "meta", "attempts", "usage"]
+        );
+        for rows in copied {
+            assert!(rows.source > 0, "{rows:?}");
+            assert_eq!(rows.source, rows.target, "{rows:?}");
+        }
+
+        let mut store = timescale_home.open(0);
+        assert_timescale_reads_what_sqlite_does(&hub, &sqlite, &store.history());
+        assert_eq!(
+            store.new_users().unwrap(),
+            sqlite_home.open(0).new_users().unwrap(),
+            "everyone keeps their color"
+        );
+        let last = hub.deltas().last().unwrap().at;
+        assert!(
+            store.sampled(UnixTime(last.0 + 10), 300).unwrap(),
+            "the copy resumes with a gap for accounting to fill"
+        );
+        let refused = copy(&sqlite_home.path(), &server).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("already holds"),
+            "{refused:#}"
+        );
+    }
+
+    /// Checks that both histories of the busy quarter hour that `hub` published give the same answers.
+    fn assert_timescale_reads_what_sqlite_does(hub: &Hub, sqlite: &History, timescale: &History) {
         let ticks: Vec<UnixTime> = hub.deltas().iter().map(|delta| delta.at).collect();
         let (first, last) = (ticks[0], *ticks.last().unwrap());
         let by_key = |mut attempts: Vec<Stored>| {

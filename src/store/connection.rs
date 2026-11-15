@@ -134,6 +134,12 @@ impl FromValue for String {
     }
 }
 
+impl FromValue for Value {
+    fn from_value(value: Value) -> Result<Self> {
+        Ok(value)
+    }
+}
+
 impl<T: FromValue> FromValue for Option<T> {
     fn from_value(value: Value) -> Result<Self> {
         match value {

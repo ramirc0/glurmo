@@ -8,6 +8,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A logo, the foreman in `docs/media/logo.svg`. Its head and hard hat are the web view's favicon.
 - History can live on a TimescaleDB server in place of the SQLite file. `store: (timescale: "host=db user=glurmo dbname=glurmo")` in the config picks it. Attempts and usage bins become hypertables in 30-day chunks, compressed once they are 7 days old where the server's license covers compression. SQLite stays the default, and its file does not change.
+- `glurmo copy SQLITE URL` copies a SQLite store's history into an empty TimescaleDB database, and prints each table's row count on both sides. A server may keep writing to the SQLite store meanwhile. A server started on the copy carries on from it: users keep their colors, and accounting fills the gap since the copy.
 
 ### Fixed
 

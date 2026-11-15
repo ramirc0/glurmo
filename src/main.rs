@@ -74,6 +74,13 @@ enum Command {
     },
     /// Print site facts, capabilities, each command's cost, and suggested intervals.
     Probe,
+    /// Copy the history in a SQLite store into a TimescaleDB database that holds none yet.
+    Copy {
+        /// The SQLite store. A server may be writing to it.
+        sqlite: PathBuf,
+        /// The TimescaleDB server, as a connection string such as `host=db user=glurmo dbname=glurmo`.
+        timescale: String,
+    },
     /// Sample the cluster and print each tick's changes as a line of JSON.
     Sample {
         /// Read everything once, print it as JSON and exit.
@@ -136,6 +143,18 @@ async fn main() -> Result<()> {
         Command::Probe => {
             let mut slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
             print!("{}", slurm::probe::probe(&mut slurm).await?);
+        }
+        Command::Copy { sqlite, timescale } => {
+            let copied = store::copy(&sqlite, &timescale)?;
+            for rows in &copied {
+                println!(
+                    "{}: {} rows in SQLite, {} in TimescaleDB",
+                    rows.table, rows.source, rows.target
+                );
+            }
+            if copied.iter().any(|rows| rows.source != rows.target) {
+                anyhow::bail!("the copy does not hold what the SQLite store held");
+            }
         }
         Command::Sample {
             once,
