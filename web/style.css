@@ -241,27 +241,31 @@ td.share {
   overflow: hidden;
 }
 
+/* The header fills a two-line slot, so each of its columns is two rows of --line. */
 .header .brand {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: var(--line) var(--line);
 }
 
 .header .site {
-  font: 700 22px/1.1 var(--sans);
+  font: 700 19px/var(--line) var(--sans);
 }
 
 .header .when {
-  font: 500 12px var(--mono);
+  font: 500 12px/var(--line) var(--mono);
   color: var(--subtle);
 }
 
 .header .stat {
-  display: flex;
-  flex-direction: column;
-  min-width: 120px;
+  display: grid;
+  grid-template-rows: var(--line) var(--line);
+  grid-template-columns: auto 64px;
+  column-gap: 10px;
+  align-items: center;
 }
 
 .header .caption {
+  grid-column: 1 / -1;
   font: 700 10px var(--sans);
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -269,11 +273,16 @@ td.share {
 }
 
 .header .value {
-  font: 500 20px/1.2 var(--mono);
+  font: 500 18px/var(--line) var(--mono);
+}
+
+.header .stat .bar {
+  display: block;
 }
 
 .header .value small {
   font-size: 13px;
+  line-height: 1;
   color: var(--muted);
 }
 
