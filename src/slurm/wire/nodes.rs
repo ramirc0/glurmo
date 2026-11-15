@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 
+use super::Protocol;
 use super::pack::{INFINITE, NO_VAL, NO_VAL64, Pack, Unpack};
 use crate::slurm::fields::{gpu_count, gpu_model, gres, node_state};
 use crate::slurm::hostlist::expand_hosts;
@@ -46,18 +47,19 @@ pub struct PartitionRecord {
 /// # Errors
 ///
 /// Fails when the body does not follow Slurm 23.11's layout.
-pub fn partitions(body: &[u8]) -> Result<Vec<PartitionRecord>> {
+pub fn partitions(body: &[u8], protocol: Protocol) -> Result<Vec<PartitionRecord>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
     let _last_update = u.time()?;
     (0..count)
-        .map(|i| partition(u).with_context(|| format!("partition {i}")))
+        .map(|i| partition(u, protocol).with_context(|| format!("partition {i}")))
         .collect()
 }
 
-fn partition(u: &mut Unpack) -> Result<PartitionRecord> {
-    const DEFAULT: u16 = 1;
-    const HIDDEN: u16 = 1 << 1;
+fn partition(u: &mut Unpack, protocol: Protocol) -> Result<PartitionRecord> {
+    const DEFAULT: u32 = 1;
+    const HIDDEN: u32 = 1 << 1;
+    let v25_11 = protocol == Protocol::V25_11;
     let name = u.str()?.unwrap_or_default();
     let _cpu_bind = u.u32()?;
     let _grace_time = u.u32()?;
@@ -71,7 +73,11 @@ fn partition(u: &mut Unpack) -> Result<PartitionRecord> {
     let _max_cpus_per_node = u.u32()?;
     let _max_cpus_per_socket = u.u32()?;
     let _max_mem_per_cpu = u.u64()?;
-    let flags = u.u16()?;
+    let flags = if v25_11 {
+        u.u32()?
+    } else {
+        u32::from(u.u16()?)
+    };
     let _max_share = u.u16()?;
     let _over_time_limit = u.u16()?;
     let _preempt_mode = u.u16()?;
@@ -87,6 +93,9 @@ fn partition(u: &mut Unpack) -> Result<PartitionRecord> {
     let _nodesets = u.str()?;
     let node_indices = u.bitmap()?.map_or_default(|bitmap| bitmap.set);
     let _billing_weights = u.str()?;
+    if v25_11 {
+        let _topology_name = u.str()?;
+    }
     let _tres = u.str()?;
     u.list(|u| {
         let _type = u.u16()?;
@@ -123,26 +132,66 @@ fn partition_state(state: u16) -> &'static str {
 /// # Errors
 ///
 /// Fails when the body does not follow Slurm 23.11's layout or a GRES string does not parse.
-pub fn nodes(body: &[u8], partitions: &[PartitionRecord]) -> Result<Vec<Node>> {
+pub fn nodes(body: &[u8], partitions: &[PartitionRecord], protocol: Protocol) -> Result<Vec<Node>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
     let _last_update = u.time()?;
+    let hidden = match protocol {
+        Protocol::V23_11 => Vec::new(),
+        Protocol::V25_11 => u.bitmap()?.map_or_default(|bitmap| bitmap.set),
+    };
     let mut nodes = (0..count)
-        .map(|i| node(u).with_context(|| format!("node {i}")))
+        .map(|i| {
+            if hidden.contains(&i) {
+                return Ok(None);
+            }
+            let raw = match protocol {
+                Protocol::V23_11 => v23_11(u),
+                Protocol::V25_11 => v25_11(u),
+            };
+            raw.and_then(|raw| raw.node(protocol))
+                .map(Some)
+                .with_context(|| format!("node {i}"))
+        })
         .collect::<Result<Vec<_>>>()?;
     for record in partitions {
         for &i in &record.node_indices {
-            let node = nodes
+            let slot = nodes
                 .get_mut(i as usize)
                 .with_context(|| format!("partition node index {i} past {count} nodes"))?;
-            node.partitions.push(record.partition.name.clone());
+            if let Some(node) = slot {
+                node.partitions.push(record.partition.name.clone());
+            }
         }
     }
-    nodes.retain(|node| !node.partitions.is_empty());
-    Ok(nodes)
+    Ok(nodes
+        .into_iter()
+        .flatten()
+        .filter(|node| !node.partitions.is_empty())
+        .collect())
 }
 
-fn node(u: &mut Unpack) -> Result<Node> {
+/// The fields glurmo reads from one node record.
+struct Raw {
+    name: String,
+    state: u32,
+    cpus: u16,
+    sockets: u16,
+    cores_per_socket: u16,
+    real_memory: u64,
+    cpus_effective: u16,
+    cpu_load: u32,
+    free_mem: u64,
+    alloc_cpus: u16,
+    alloc_memory: u64,
+    alloc_tres: Option<String>,
+    features: Option<String>,
+    gres_total: String,
+    gres_used: String,
+    reason: Option<String>,
+}
+
+fn v23_11(u: &mut Unpack) -> Result<Raw> {
     let name = u.str()?.context("a node without a name")?;
     u.skip_strs(3)?;
     let _port = u.u16()?;
@@ -191,33 +240,135 @@ fn node(u: &mut Unpack) -> Result<Node> {
     let _power_cap = u.u32()?;
     let _tres = u.str()?;
     let _reservation = u.str()?;
-
-    let state = mixed(state, cpus_effective, alloc_cpus, alloc_tres.as_deref());
-    let state_raw = state_complete(state);
-    let (state, flags) = node_state(&state_raw);
-    let gres_total = gres(&gres_total)?;
-    Ok(Node {
-        name: NodeName(name),
-        partitions: Vec::new(),
+    Ok(Raw {
+        name,
         state,
-        flags,
-        state_raw,
-        reason: reason.filter(|reason| !reason.is_empty()),
-        cpus: u32::from(cpus),
-        cpus_alloc: u32::from(alloc_cpus),
-        sockets: u32::from(sockets),
-        cores: u32::from(sockets) * u32::from(cores_per_socket),
-        load: (cpu_load != NO_VAL).then(|| f64::from(cpu_load) / 100.0),
-        mem_mb: real_memory,
-        mem_alloc_mb: alloc_memory,
-        mem_free_mb: (free_mem != NO_VAL64).then_some(free_mem),
-        gpus: gpu_count(&gres_total),
-        gpus_used: gpu_count(&gres(&gres_used)?),
-        gpu_model: gpu_model(&gres_total),
-        features: features
-            .filter(|features| !features.is_empty())
-            .map_or_default(|features| features.split(',').map(str::to_owned).collect()),
+        cpus,
+        sockets,
+        cores_per_socket,
+        real_memory,
+        cpus_effective,
+        cpu_load,
+        free_mem,
+        alloc_cpus,
+        alloc_memory,
+        alloc_tres,
+        features,
+        gres_total,
+        gres_used,
+        reason,
     })
+}
+
+fn v25_11(u: &mut Unpack) -> Result<Raw> {
+    let name = u.str()?.context("a node without a name")?;
+    u.skip_strs(3)?;
+    let _cert_flags = u.u16()?;
+    let _port = u.u16()?;
+    let _next_state = u.u32()?;
+    let state = u.u32()?;
+    let _version = u.str()?;
+    let cpus = u.u16()?;
+    let _boards = u.u16()?;
+    let sockets = u.u16()?;
+    let cores_per_socket = u.u16()?;
+    let _threads = u.u16()?;
+    let real_memory = u.u64()?;
+    let _tmp_disk = u.u32()?;
+    let _gpu_spec = u.str()?;
+    let _mcs_label = u.str()?;
+    let _owner = u.u32()?;
+    let _core_spec_cnt = u.u16()?;
+    let _cpu_bind = u.u32()?;
+    let _mem_spec_limit = u.u64()?;
+    let _cpu_spec_list = u.str()?;
+    let cpus_effective = u.u16()?;
+    let cpu_load = u.u32()?;
+    let free_mem = u.u64()?;
+    let _weight = u.u32()?;
+    let _res_cores_per_gpu = u.u16()?;
+    let _reason_uid = u.u32()?;
+    for _time in 0..6 {
+        u.time()?;
+    }
+    let alloc_cpus = u.u16()?;
+    let alloc_memory = u.u64()?;
+    let alloc_tres = u.str()?;
+    let _arch = u.str()?;
+    let features = u.str()?;
+    let _features_active = u.str()?;
+    let gres_total = u.str()?.unwrap_or_default();
+    let _gres_drain = u.str()?;
+    let gres_used = u.str()?.unwrap_or_default();
+    u.skip_strs(6)?;
+    let reason = u.str()?;
+    let _energy = (
+        u.u64()?,
+        u.u32()?,
+        u.u64()?,
+        u.u32()?,
+        u.u64()?,
+        u.time()?,
+        u.time()?,
+    );
+    let _tres = u.str()?;
+    let _reservation = u.str()?;
+    let _topology = u.str()?;
+    Ok(Raw {
+        name,
+        state,
+        cpus,
+        sockets,
+        cores_per_socket,
+        real_memory,
+        cpus_effective,
+        cpu_load,
+        free_mem,
+        alloc_cpus,
+        alloc_memory,
+        alloc_tres,
+        features,
+        gres_total,
+        gres_used,
+        reason,
+    })
+}
+
+impl Raw {
+    fn node(self, protocol: Protocol) -> Result<Node> {
+        let state = mixed(
+            self.state,
+            self.cpus_effective,
+            self.alloc_cpus,
+            self.alloc_tres.as_deref(),
+        );
+        let state_raw = state_complete(state, protocol);
+        let (state, flags) = node_state(&state_raw);
+        let gres_total = gres(&self.gres_total)?;
+        Ok(Node {
+            name: NodeName(self.name),
+            partitions: Vec::new(),
+            state,
+            flags,
+            state_raw,
+            reason: self.reason.filter(|reason| !reason.is_empty()),
+            cpus: u32::from(self.cpus),
+            cpus_alloc: u32::from(self.alloc_cpus),
+            sockets: u32::from(self.sockets),
+            cores: u32::from(self.sockets) * u32::from(self.cores_per_socket),
+            load: (self.cpu_load != NO_VAL).then(|| f64::from(self.cpu_load) / 100.0),
+            mem_mb: self.real_memory,
+            mem_alloc_mb: self.alloc_memory,
+            mem_free_mb: (self.free_mem != NO_VAL64).then_some(self.free_mem),
+            gpus: gpu_count(&gres_total),
+            gpus_used: gpu_count(&gres(&self.gres_used)?),
+            gpu_model: gpu_model(&gres_total),
+            features: self
+                .features
+                .filter(|features| !features.is_empty())
+                .map_or_default(|features| features.split(',').map(str::to_owned).collect()),
+        })
+    }
 }
 
 const CONS_TRES: u32 = 109;
@@ -238,7 +389,7 @@ fn mixed(state: u32, cpus_effective: u16, alloc_cpus: u16, alloc_tres: Option<&s
 }
 
 /// Spells a node state as sinfo's `StateComplete` does: the base state, then each flag, in lowercase.
-fn state_complete(state: u32) -> String {
+fn state_complete(state: u32, protocol: Protocol) -> String {
     const BASES: [&str; 7] = [
         "unknown",
         "down",
@@ -248,7 +399,7 @@ fn state_complete(state: u32) -> String {
         "mixed",
         "future",
     ];
-    const FLAGS: [(u32, &str); 20] = [
+    const FLAGS_23_11: [(u32, &str); 20] = [
         (1 << 7, "cloud"),
         (1 << 10, "completing"),
         (1 << 9, "drain"),
@@ -270,6 +421,33 @@ fn state_complete(state: u32) -> String {
         (1 << 14, "powering_up"),
         (1 << 18, "powering_down"),
     ];
+    const FLAGS_25_11: [(u32, &str); 21] = [
+        (1 << 27, "blocked"),
+        (1 << 7, "cloud"),
+        (1 << 10, "completing"),
+        (1 << 9, "drain"),
+        (1 << 19, "dynamic_future"),
+        (1 << 26, "dynamic_norm"),
+        (1 << 4, "external"),
+        (1 << 22, "invalid_reg"),
+        (1 << 13, "fail"),
+        (1 << 15, "maintenance"),
+        (1 << 23, "power_down"),
+        (1 << 24, "power_up"),
+        (1 << 12, "powered_down"),
+        (1 << 16, "reboot_requested"),
+        (1 << 20, "reboot_issued"),
+        (1 << 5, "reserved"),
+        (1 << 8, "resume"),
+        (1 << 11, "not_responding"),
+        (1 << 21, "planned"),
+        (1 << 14, "powering_up"),
+        (1 << 18, "powering_down"),
+    ];
+    let flags_in_order: &[(u32, &str)] = match protocol {
+        Protocol::V23_11 => &FLAGS_23_11,
+        Protocol::V25_11 => &FLAGS_25_11,
+    };
     let mut text = BASES
         .get((state & STATE_BASE) as usize)
         .copied()
@@ -277,7 +455,7 @@ fn state_complete(state: u32) -> String {
         .to_owned();
     let mut flags = state & !STATE_BASE;
     while flags != 0 {
-        let flag = FLAGS
+        let flag = flags_in_order
             .iter()
             .find(|(bit, _)| flags & bit != 0)
             .map_or((flags.isolate_lowest_one(), "?"), |&flag| flag);
@@ -295,12 +473,26 @@ mod tests {
     #[test]
     fn states_spell_like_sinfo() {
         assert_eq!(
-            state_complete(2 | 1 << 9 | 1 << 22),
+            state_complete(2 | 1 << 9 | 1 << 22, Protocol::V23_11),
             "idle+drain+invalid_reg"
         );
-        assert_eq!(state_complete(1 | 1 << 11), "down+not_responding");
-        assert_eq!(state_complete(2 | 1 << 10), "idle+completing");
-        assert_eq!(state_complete(3 | 1 << 31), "allocated+?");
+        assert_eq!(
+            state_complete(1 | 1 << 11, Protocol::V23_11),
+            "down+not_responding"
+        );
+        assert_eq!(
+            state_complete(2 | 1 << 10, Protocol::V23_11),
+            "idle+completing"
+        );
+        assert_eq!(
+            state_complete(2 | 1 << 4, Protocol::V23_11),
+            "idle+perfctrs"
+        );
+        assert_eq!(
+            state_complete(2 | 1 << 4 | 1 << 27, Protocol::V25_11),
+            "idle+blocked+external"
+        );
+        assert_eq!(state_complete(3 | 1 << 31, Protocol::V23_11), "allocated+?");
     }
 
     #[test]

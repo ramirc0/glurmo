@@ -197,9 +197,9 @@ impl Source {
     pub fn live(reach: &Reach) -> Result<Self> {
         Ok(match reach.backend {
             Backend::Wire if reach.controller.is_empty() => {
-                Self::Wire(Wire::new(wire::controllers()?))
+                Self::Wire(Wire::new(wire::controllers()?)?)
             }
-            Backend::Wire => Self::Wire(Wire::new(reach.controller.clone())),
+            Backend::Wire => Self::Wire(Wire::new(reach.controller.clone())?),
             Backend::Cli => Self::Cli(Cli::default()),
         })
     }

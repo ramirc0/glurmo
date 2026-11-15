@@ -1,8 +1,9 @@
-//! Job state reasons as squeue spells them, indexed by Slurm 23.11's `enum job_state_reason`.
-//! Generated from `job_reason_string`. An empty entry is a retired value, which Slurm prints as its number.
+//! Job state reasons as squeue spells them, indexed by `enum job_state_reason`. Generated from Slurm
+//! 23.11's `job_reason_string` and 25.11's `job_state_reason.c`, which number reasons alike. 25.11's names
+//! win, and an empty entry is a value neither names.
 
 /// Each reason's name.
-pub const REASONS: [&str; 201] = [
+pub const REASONS: [&str; 221] = [
     "None",
     "Priority",
     "Dependency",
@@ -20,7 +21,7 @@ pub const REASONS: [&str; 201] = [
     "Reservation",
     "ReqNodeNotAvail",
     "JobHeldUser",
-    "FrontEndDown",
+    "NvidiaImexChannels",
     "SchedDefer",
     "PartitionDown",
     "NodeDown",
@@ -204,4 +205,24 @@ pub const REASONS: [&str; 201] = [
     "ReservationDeleted",
     "ReservationInvalid",
     "Constraints",
+    "MaxBBRunMinsPerAccount",
+    "MaxBillingRunMinsPerAccount",
+    "MaxCpuRunMinsPerAccount",
+    "MaxEnergyRunMinsPerAccount",
+    "MaxGRESRunMinsPerAccount",
+    "MaxNodeRunMinsPerAccount",
+    "MaxLicenseRunMinsPerAccount",
+    "MaxMemoryRunMinsPerAccount",
+    "MaxUnknownRunMinsPerAccount",
+    "MaxBBRunMinsPerUser",
+    "MaxBillingRunMinsPerUser",
+    "MaxCpuRunMinsPerUser",
+    "MaxEnergyRunMinsPerUser",
+    "MaxGRESRunMinsPerUser",
+    "MaxNodeRunMinsPerUser",
+    "MaxLicenseRunMinsPerUser",
+    "MaxMemoryRunMinsPerUser",
+    "MaxUnknownRunMinsPerUser",
+    "MaxPoweredUpNodes",
+    "MpiPortsBusy",
 ];

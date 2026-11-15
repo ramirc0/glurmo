@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
+use super::Protocol;
 use super::pack::Unpack;
 use crate::slurm::{Site, rate_limit};
 
@@ -25,17 +26,66 @@ pub struct Config {
     pub munge: Option<PathBuf>,
 }
 
-/// Decodes a `RESPONSE_BUILD_INFO` body.
+/// Decodes a `RESPONSE_BUILD_INFO` body in `protocol`'s layout.
 ///
 /// # Errors
 ///
-/// Fails when the body is shorter than Slurm 23.11's layout or a needed value is missing.
+/// Fails when the body is shorter than the layout or a needed value is missing.
+pub fn decode(body: &[u8], protocol: Protocol) -> Result<Config> {
+    let u = &mut Unpack::new(body);
+    match protocol {
+        Protocol::V23_11 => v23_11(u)?,
+        Protocol::V25_11 => v25_11(u)?,
+    }
+    .config()
+}
+
+/// The settings glurmo reads, as the controller packed them.
+struct Raw {
+    accounting_backup: Option<String>,
+    accounting_host: Option<String>,
+    accounting_port: u16,
+    accounting_type: Option<String>,
+    auth_info: Option<String>,
+    cluster: Option<String>,
+    min_job_age: u32,
+    private_data: u16,
+    slurm_uid: u32,
+    slurmctld_params: Option<String>,
+    version: Option<String>,
+}
+
+impl Raw {
+    fn config(self) -> Result<Config> {
+        let accounting = if self.accounting_type.as_deref() == Some("accounting_storage/slurmdbd") {
+            [self.accounting_host, self.accounting_backup]
+                .into_iter()
+                .flatten()
+                .map(|host| format!("{host}:{}", self.accounting_port))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(Config {
+            site: Site {
+                cluster: self.cluster.context("no ClusterName")?,
+                version: self.version.context("no SLURM_VERSION")?.parse()?,
+                min_job_age_s: u64::from(self.min_job_age),
+                private_data: private_data_names(self.private_data),
+                rate_limit: rate_limit(self.slurmctld_params.as_deref().unwrap_or_default())?,
+            },
+            slurm_uid: self.slurm_uid,
+            accounting,
+            munge: self.auth_info.as_deref().and_then(munge_socket),
+        })
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "it walks Slurm's layout field by field"
 )]
-pub fn decode(body: &[u8]) -> Result<Config> {
-    let u = &mut Unpack::new(body);
+fn v23_11(u: &mut Unpack) -> Result<Raw> {
     let _last_update = u.time()?;
     let _accounting_storage_enforce = u.u16()?;
     let accounting_backup = u.str()?;
@@ -63,7 +113,7 @@ pub fn decode(body: &[u8]) -> Result<Config> {
     let _bcast_parameters = u.str()?;
     key_pairs(u)?;
     let _cli_filter_plugins = u.str()?;
-    let cluster = u.str()?.context("no ClusterName")?;
+    let cluster = u.str()?;
     let _comm_params = u.str()?;
     let _complete_wait = u.u16()?;
     let _conf_flags = u.u32()?;
@@ -108,10 +158,7 @@ pub fn decode(body: &[u8]) -> Result<Config> {
     let _job_comp_type = u.str()?;
     let _job_comp_user = u.str()?;
     let _job_container_plugin = u.str()?;
-    u.list(|u| {
-        let _type = u.u16()?;
-        u.u64().map(drop)
-    })?;
+    job_defaults(u)?;
     let _job_file_append = u.u16()?;
     let _job_requeue = u.u16()?;
     let _job_submit_plugins = u.str()?;
@@ -139,10 +186,7 @@ pub fn decode(body: &[u8]) -> Result<Config> {
     let _mpi_params = u.str()?;
     let _msg_timeout = u.u16()?;
     let _next_job_id = u.u32()?;
-    u.list(|u| {
-        let _name = u.str()?;
-        key_pairs(u)
-    })?;
+    plugin_params(u)?;
     let _node_features_plugins = u.str()?;
     let _node_prefix = u.str()?;
     let _over_time_limit = u.u16()?;
@@ -244,29 +288,271 @@ pub fn decode(body: &[u8]) -> Result<Config> {
     let _tree_width = u.u16()?;
     let _unkillable_program = u.str()?;
     let _unkillable_timeout = u.u16()?;
-    let version = u.str()?.context("no SLURM_VERSION")?;
+    let version = u.str()?;
 
-    let accounting = if accounting_type.as_deref() == Some("accounting_storage/slurmdbd") {
-        [accounting_host, accounting_backup]
-            .into_iter()
-            .flatten()
-            .map(|host| format!("{host}:{accounting_port}"))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    Ok(Config {
-        site: Site {
-            cluster,
-            version: version.parse()?,
-            min_job_age_s: u64::from(min_job_age),
-            private_data: private_data_names(private_data),
-            rate_limit: rate_limit(slurmctld_params.as_deref().unwrap_or_default())?,
-        },
+    Ok(Raw {
+        accounting_backup,
+        accounting_host,
+        accounting_port,
+        accounting_type,
+        auth_info,
+        cluster,
+        min_job_age,
+        private_data,
         slurm_uid,
-        accounting,
-        munge: auth_info.as_deref().and_then(munge_socket),
+        slurmctld_params,
+        version,
     })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "it walks Slurm's layout field by field, generated from 25.11's pack code"
+)]
+fn v25_11(u: &mut Unpack) -> Result<Raw> {
+    let _last_update = u.time()?;
+    let _accounting_storage_enforce = u.u16()?;
+    let accounting_backup = u.str()?;
+    let accounting_host = u.str()?;
+    let _accounting_storage_ext_host = u.str()?;
+    let _accounting_storage_params = u.str()?;
+    let accounting_port = u.u16()?;
+    let _accounting_storage_tres = u.str()?;
+    let accounting_type = u.str()?;
+    key_pairs(u)?;
+    let _acct_gather_energy_type = u.str()?;
+    let _acct_gather_filesystem_type = u.str()?;
+    let _acct_gather_interconnect_type = u.str()?;
+    let _acct_gather_node_freq = u.u16()?;
+    let _acct_gather_profile_type = u.str()?;
+    let _authalttypes = u.str()?;
+    let _authalt_params = u.str()?;
+    let auth_info = u.str()?;
+    let _authtype = u.str()?;
+    let _batch_start_timeout = u.u16()?;
+    let _boot_time = u.time()?;
+    let _bb_type = u.str()?;
+    let _bcast_exclude = u.str()?;
+    let _bcast_parameters = u.str()?;
+    let _certmgr_params = u.str()?;
+    let _certmgr_type = u.str()?;
+    key_pairs(u)?;
+    let _cli_filter_params = u.str()?;
+    let _cli_filter_plugins = u.str()?;
+    let cluster = u.str()?;
+    let _comm_params = u.str()?;
+    let _complete_wait = u.u16()?;
+    let _conf_flags = u.u32()?;
+    let _control_addr = u.str_array()?;
+    let _control_machine = u.str_array()?;
+    let _cpu_freq_def = u.u32()?;
+    let _cpu_freq_govs = u.u32()?;
+    let _cred_type = u.str()?;
+    let _data_parser_parameters = u.str()?;
+    let _def_mem_per_cpu = u.u64()?;
+    let _debug_flags = u.u64()?;
+    let _dependency_params = u.str()?;
+    let _eio_timeout = u.u16()?;
+    let _enforce_part_limits = u.u16()?;
+    let _epilog = u.str_array()?;
+    let _epilog_msg_time = u.u32()?;
+    let _epilog_slurmctld = u.str_array()?;
+    let _epilog_timeout = u.u16()?;
+    let _fed_params = u.str()?;
+    let _first_job_id = u.u32()?;
+    let _fs_dampening_factor = u.u16()?;
+    let _gres_plugins = u.str()?;
+    let _group_time = u.u16()?;
+    let _group_force = u.u16()?;
+    let _gpu_freq_def = u.str()?;
+    let _hash_plugin = u.str()?;
+    let _hash_val = u.u32()?;
+    let _health_check_interval = u.u16()?;
+    let _health_check_node_state = u.u16()?;
+    let _health_check_program = u.str()?;
+    let _http_parser_type = u.str()?;
+    let _inactive_limit = u.u16()?;
+    let _interactive_step_opts = u.str()?;
+    let _job_acct_gather_freq = u.str()?;
+    let _job_acct_gather_type = u.str()?;
+    let _job_acct_gather_params = u.str()?;
+    let _job_comp_host = u.str()?;
+    let _job_comp_loc = u.str()?;
+    let _job_comp_params = u.str()?;
+    let _job_comp_port = u.u32()?;
+    let _job_comp_type = u.str()?;
+    let _job_comp_user = u.str()?;
+    let _namespace_plugin = u.str()?;
+    job_defaults(u)?;
+    let _job_file_append = u.u16()?;
+    let _job_requeue = u.u16()?;
+    let _job_submit_plugins = u.str()?;
+    let _kill_on_bad_exit = u.u16()?;
+    let _kill_wait = u.u16()?;
+    let _launch_params = u.str()?;
+    let _licenses = u.str()?;
+    let _log_fmt = u.u16()?;
+    let _max_array_sz = u.u32()?;
+    let _max_batch_requeue = u.u32()?;
+    let _max_dbd_msgs = u.u32()?;
+    let _mail_domain = u.str()?;
+    let _mail_prog = u.str()?;
+    let _max_job_cnt = u.u32()?;
+    let _max_job_id = u.u32()?;
+    let _max_mem_per_cpu = u.u64()?;
+    let _max_node_cnt = u.u32()?;
+    let _max_step_cnt = u.u32()?;
+    let _max_tasks_per_node = u.u16()?;
+    let _mcs_plugin = u.str()?;
+    let _mcs_plugin_params = u.str()?;
+    let _metrics_type = u.str()?;
+    let min_job_age = u.u32()?;
+    key_pairs(u)?;
+    let _mpi_default = u.str()?;
+    let _mpi_params = u.str()?;
+    let _msg_timeout = u.u16()?;
+    let _next_job_id = u.u32()?;
+    plugin_params(u)?;
+    let _node_features_plugins = u.str()?;
+    let _over_time_limit = u.u16()?;
+    let _plugindir = u.str()?;
+    let _plugstack = u.str()?;
+    let _preempt_mode = u.u16()?;
+    let _preempt_params = u.str()?;
+    let _preempt_type = u.str()?;
+    let _preempt_exempt_time = u.u32()?;
+    let _prep_params = u.str()?;
+    let _prep_plugins = u.str()?;
+    let _priority_decay_hl = u.u32()?;
+    let _priority_calc_period = u.u32()?;
+    let _priority_favor_small = u.u16()?;
+    let _priority_flags = u.u16()?;
+    let _priority_max_age = u.u32()?;
+    let _priority_params = u.str()?;
+    let _priority_reset_period = u.u16()?;
+    let _priority_type = u.str()?;
+    let _priority_weight_age = u.u32()?;
+    let _priority_weight_assoc = u.u32()?;
+    let _priority_weight_fs = u.u32()?;
+    let _priority_weight_js = u.u32()?;
+    let _priority_weight_part = u.u32()?;
+    let _priority_weight_qos = u.u32()?;
+    let _priority_weight_tres = u.str()?;
+    let private_data = u.u16()?;
+    let _proctrack_type = u.str()?;
+    let _prolog = u.str_array()?;
+    let _prolog_slurmctld = u.str_array()?;
+    let _prolog_timeout = u.u16()?;
+    let _prolog_flags = u.u16()?;
+    let _propagate_prio_process = u.u16()?;
+    let _propagate_rlimits = u.str()?;
+    let _propagate_rlimits_except = u.str()?;
+    let _reboot_program = u.str()?;
+    let _reconfig_flags = u.u16()?;
+    let _requeue_exit = u.str()?;
+    let _requeue_exit_hold = u.str()?;
+    let _resume_fail_program = u.str()?;
+    let _resume_program = u.str()?;
+    let _resume_rate = u.u16()?;
+    let _resume_timeout = u.u16()?;
+    let _resv_epilog = u.str()?;
+    let _resv_over_run = u.u16()?;
+    let _resv_prolog = u.str()?;
+    let _ret2service = u.u16()?;
+    let _sched_params = u.str()?;
+    let _sched_logfile = u.str()?;
+    let _sched_log_level = u.u16()?;
+    let _sched_time_slice = u.u16()?;
+    let _schedtype = u.str()?;
+    let _scron_params = u.str()?;
+    let _select_type = u.str()?;
+    key_pairs(u)?;
+    let _select_type_param = u.u16()?;
+    let _slurm_conf = u.str()?;
+    let slurm_uid = u.u32()?;
+    let _slurm_user_name = u.str()?;
+    let _slurmd_user_id = u.u32()?;
+    let _slurmd_user_name = u.str()?;
+    let _slurmctld_addr = u.str()?;
+    let _slurmctld_debug = u.u16()?;
+    let _slurmctld_logfile = u.str()?;
+    let slurmctld_params = u.str()?;
+    let _slurmctld_pidfile = u.str()?;
+    let _slurmctld_port = u.u32()?;
+    let _slurmctld_port_count = u.u16()?;
+    let _slurmctld_primary_off_prog = u.str()?;
+    let _slurmctld_primary_on_prog = u.str()?;
+    let _slurmctld_syslog_debug = u.u16()?;
+    let _slurmctld_timeout = u.u16()?;
+    let _slurmd_debug = u.u16()?;
+    let _slurmd_logfile = u.str()?;
+    let _slurmd_params = u.str()?;
+    let _slurmd_pidfile = u.str()?;
+    let _slurmd_port = u.u32()?;
+    let _slurmd_spooldir = u.str()?;
+    let _slurmd_syslog_debug = u.u16()?;
+    let _slurmd_timeout = u.u16()?;
+    let _srun_epilog = u.str()?;
+    let _srun_port_range_0 = u.u16()?;
+    let _srun_port_range_1 = u.u16()?;
+    let _srun_prolog = u.str()?;
+    let _state_save_location = u.str()?;
+    let _suspend_exc_nodes = u.str()?;
+    let _suspend_exc_parts = u.str()?;
+    let _suspend_exc_states = u.str()?;
+    let _suspend_program = u.str()?;
+    let _suspend_rate = u.u16()?;
+    let _suspend_time = u.u32()?;
+    let _suspend_timeout = u.u16()?;
+    let _switch_param = u.str()?;
+    let _switch_type = u.str()?;
+    let _task_epilog = u.str()?;
+    let _task_prolog = u.str()?;
+    let _task_plugin = u.str()?;
+    let _task_plugin_param = u.u32()?;
+    let _tcp_timeout = u.u16()?;
+    let _tls_params = u.str()?;
+    let _tls_type = u.str()?;
+    let _tmp_fs = u.str()?;
+    let _topology_param = u.str()?;
+    let _topology_plugin = u.str()?;
+    let _tree_width = u.u16()?;
+    let _unkillable_program = u.str()?;
+    let _unkillable_timeout = u.u16()?;
+    let _url_parser_type = u.str()?;
+    let version = u.str()?;
+    let _vsize_factor = u.u16()?;
+    let _wait_time = u.u16()?;
+    let _x11_params = u.str()?;
+    Ok(Raw {
+        accounting_backup,
+        accounting_host,
+        accounting_port,
+        accounting_type,
+        auth_info,
+        cluster,
+        min_job_age,
+        private_data,
+        slurm_uid,
+        slurmctld_params,
+        version,
+    })
+}
+
+fn job_defaults(u: &mut Unpack) -> Result<()> {
+    u.list(|u| {
+        let _type = u.u16()?;
+        u.u64().map(drop)
+    })
+    .map(drop)
+}
+
+fn plugin_params(u: &mut Unpack) -> Result<()> {
+    u.list(|u| {
+        let _name = u.str()?;
+        key_pairs(u)
+    })
+    .map(drop)
 }
 
 fn key_pairs(u: &mut Unpack) -> Result<()> {

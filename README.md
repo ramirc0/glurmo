@@ -24,8 +24,8 @@ Full-resolution videos: [web replay](docs/media/web-replay.mp4), [TV mode](docs/
 
 ### Dependencies
 
-* Linux on x86-64, with munged and the cluster's munge key.
-* A Slurm controller from 23.11 through 25.05. glurmo is tested on 23.11.
+* Linux on x86-64, on a host that can sign Slurm requests: with munged and the cluster's key for `auth/munge`, or with slurmd or sackd for `auth/slurm`.
+* A Slurm controller from 23.11 through 27.05. glurmo is tested on 23.11 and 25.11.
 
 ### Installing
 

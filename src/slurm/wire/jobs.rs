@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
+use super::Protocol;
 use super::pack::{Bitmap, INFINITE, NO_VAL, Pack, Unpack};
 use super::reasons::REASONS;
 use crate::slurm::fields::{gpu_indices, gres, job_state, tres};
@@ -30,10 +31,15 @@ pub fn request() -> Vec<u8> {
     body.0
 }
 
-/// The body of a request for job `id`, with its cores.
-pub fn single_request(id: JobId) -> Vec<u8> {
+/// The body of a request for job `id`, with its cores. 25.11 names the job by a whole step ID.
+pub fn single_request(id: JobId, protocol: Protocol) -> Vec<u8> {
     let mut body = Pack::default();
-    body.u32(id.0).u16(SHOW_ALL | SHOW_DETAIL);
+    if protocol == Protocol::V25_11 {
+        body.u64(0).u32(id.0).u32(NO_VAL).u32(NO_VAL);
+    } else {
+        body.u32(id.0);
+    }
+    body.u16(SHOW_ALL | SHOW_DETAIL);
     body.0
 }
 
@@ -79,14 +85,20 @@ struct Resources {
 ///
 /// # Errors
 ///
-/// Fails when the body does not follow Slurm 23.11's layout.
-pub fn decode(body: &[u8]) -> Result<Vec<Job>> {
+/// Fails when the body does not follow `protocol`'s layout.
+pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Job>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
     let _last_update = u.time()?;
     let _last_backfill = u.time()?;
     (0..count)
-        .map(|i| job(u).with_context(|| format!("job {i}")))
+        .map(|i| {
+            match protocol {
+                Protocol::V23_11 => v23_11(u),
+                Protocol::V25_11 => v25_11(u),
+            }
+            .with_context(|| format!("job {i}"))
+        })
         .collect()
 }
 
@@ -94,7 +106,7 @@ pub fn decode(body: &[u8]) -> Result<Vec<Job>> {
     clippy::too_many_lines,
     reason = "it walks Slurm's layout field by field"
 )]
-fn job(u: &mut Unpack) -> Result<Job> {
+fn v23_11(u: &mut Unpack) -> Result<Job> {
     let array_base = u.u32()?;
     let array_task = u.u32()?;
     let array_tasks = u.str()?;
@@ -150,7 +162,7 @@ fn job(u: &mut Unpack) -> Result<Job> {
     let _exit_code = u.u32()?;
     let _derived_ec = u.u32()?;
     let _gres_total = u.str()?;
-    let resources = resources(u)?;
+    let resources = resources(u, Protocol::V23_11)?;
     let gres_detail = u.str_array()?;
     let name = u.str()?;
     let user_name = u.str()?;
@@ -226,12 +238,154 @@ fn job(u: &mut Unpack) -> Result<Job> {
     })
 }
 
-fn resources(u: &mut Unpack) -> Result<Option<Resources>> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "it walks Slurm's layout field by field"
+)]
+fn v25_11(u: &mut Unpack) -> Result<Job> {
+    let _sluid = u.u64()?;
+    let id = u.u32()?;
+    let _step = (u.u32()?, u.u32()?);
+    u.skip_strs(3)?;
+    let _alloc_sid = u.u32()?;
+    let array_base = u.u32()?;
+    let array_task = u.u32()?;
+    let _assoc_id = u.u32()?;
+    let _batch_features = u.str()?;
+    let _batch_flag = u.u16()?;
+    let _batch_host = u.str()?;
+    let _bitflags = u.u64()?;
+    u.skip_strs(2)?;
+    let _billable_tres = u.double()?;
+    u.skip_strs(4)?;
+    let _deadline = u.time()?;
+    let _delay_boot = u.u32()?;
+    let _exit_codes = (u.u32()?, u.u32()?);
+    u.skip_strs(2)?;
+    if u.u8()? != 0 {
+        let _fed_origin = u.str()?;
+        let _fed_siblings_active = (u.u64()?, u.str()?);
+        let _fed_siblings_viable = (u.u64()?, u.str()?);
+    }
+    let _gres_total = u.str()?;
+    let _group_id = u.u32()?;
+    let _het_job_id = u.u32()?;
+    let _het_job_id_set = u.str()?;
+    let _het_job_offset = u.u32()?;
+    let state = u.u32()?;
+    let _last_sched_eval = u.time()?;
+    u.skip_strs(2)?;
+    let _mail_type = u.u16()?;
+    u.skip_strs(3)?;
+    let name = u.str()?;
+    let _network = u.str()?;
+    let _times = (u.time()?, u.time()?);
+    let _priority = u.u32()?;
+    let _profile = u.u32()?;
+    let _reboot = u.u8()?;
+    let _req_switch = u.u32()?;
+    let _resize_time = u.time()?;
+    let _restart_cnt = u.u16()?;
+    u.skip_strs(3)?;
+    let _site_factor = u.u32()?;
+    let _start_protocol_ver = u.u16()?;
+    let state_desc = u.str()?;
+    let state_reason = u.u32()?;
+    let _suspend_time = u.time()?;
+    let _system_comment = u.str()?;
+    let _time_min = u.u32()?;
+    let _tres_bind = u.str()?;
+    let tres_alloc = u.str()?;
+    let tres_req = u.str()?;
+    u.skip_strs(5)?;
+    let user_id = u.u32()?;
+    let user_name = u.str()?;
+    let _wait4switch = u.u32()?;
+    let _wckey = u.str()?;
+    let array_tasks = u.str()?;
+    let array_max_tasks = u.u32()?;
+    let time_limit = u.u32()?;
+    let start = u.time()?;
+    let end = u.time()?;
+    let _priority_array = u.u32_array()?;
+    let _priority_array_names = u.str()?;
+    let _cluster = u.str()?;
+    let nodes = u.str()?;
+    let _sched_nodes = u.str()?;
+    let partition = u.str()?;
+    let _qos = u.str()?;
+    let _preemptable_time = u.time()?;
+    let resources = resources(u, Protocol::V25_11)?;
+    let gres_detail = u.str_array()?;
+    let _node_inx = u.bitmap()?;
+    let (submit, cpus) = if u.u8()? == 0 {
+        let cpus = u.u32()?;
+        let _num_nodes_nice = (u.u32()?, u.u32()?);
+        (0, cpus)
+    } else {
+        let _accrue_eligible = (u.time()?, u.time()?);
+        let _cluster_features = u.str()?;
+        let _cpu_freq = (u.u32()?, u.u32()?, u.u32()?);
+        let _dependency = u.str()?;
+        let _job_size = u.bitmap()?;
+        let _nice = u.u32()?;
+        let _ntasks_requeue_segment = (u.u16()?, u.u16()?, u.u16()?, u.u16()?);
+        let submit = u.time()?;
+        u.skip_strs(5)?;
+        let cpus = u.u32()?;
+        let _sizes = (u.u32()?, u.u32()?, u.u32()?, u.u32()?);
+        let _shared = u.u16()?;
+        let _cronspec = u.str()?;
+        (submit, cpus)
+    };
+    let _contiguous_spec_cpus = (u.u16()?, u.u16()?, u.u16()?, u.u16()?);
+    let _pn_min_memory = u.u64()?;
+    let _pn_min_tmp_disk = u.u32()?;
+    let _oom_kill_step = u.u16()?;
+    let _req_nodes = (u.str()?, u.bitmap()?);
+    let _exc_nodes = (u.str()?, u.bitmap()?);
+    u.skip_strs(3)?;
+    if u.u8()? == 0xff {
+        for _field in 0..9 {
+            u.u16()?;
+        }
+    }
+    Ok(Job {
+        id: JobId(id),
+        array_base,
+        array_task,
+        array_tasks: array_tasks.as_deref().map(hex_tasks).transpose()?,
+        array_max_tasks,
+        combined: false,
+        user_id,
+        user_name,
+        state,
+        state_reason,
+        state_desc,
+        time_limit,
+        submit,
+        start,
+        end,
+        nodes,
+        partition,
+        resources,
+        gres_detail,
+        name,
+        cpus,
+        tres_alloc,
+        tres_req,
+    })
+}
+
+fn resources(u: &mut Unpack, protocol: Protocol) -> Result<Option<Resources>> {
     let hosts = u.u32()?;
     if hosts == NO_VAL {
         return Ok(None);
     }
     let _ncpus = u.u32()?;
+    if protocol == Protocol::V25_11 {
+        let _next_step_node_inx = u.u32()?;
+    }
     let _node_req = u.u32()?;
     let names = u.str()?.unwrap_or_default();
     let _whole_node = u.u8()?;
@@ -248,6 +402,9 @@ fn resources(u: &mut Unpack) -> Result<Option<Resources>> {
     let repeats = u.u32_array()?;
     let cores = u.bitmap()?;
     let _cores_used = u.bitmap()?;
+    if protocol == Protocol::V25_11 {
+        let _node_bitmap = u.bitmap()?;
+    }
     let cores_per_host = sockets
         .iter()
         .zip(&cores_per_socket)
@@ -285,6 +442,12 @@ impl Job {
     /// The job's ID.
     pub fn id(&self) -> JobId {
         self.id
+    }
+
+    /// Whether the controller sent the job's submit time. 25.11 leaves it out of a job without details,
+    /// and an attempt is keyed on it.
+    pub fn submitted(&self) -> bool {
+        self.submit != 0
     }
 
     /// The UID of the job's owner.
@@ -551,10 +714,11 @@ fn base_state(state: u32) -> u32 {
 
 /// `job_state_string`: a flag wins over the base state.
 pub(super) fn state_name(state: u32) -> &'static str {
-    const FLAGS: [(u32, &str); 12] = [
+    const FLAGS: [(u32, &str); 13] = [
         (1 << 15, "COMPLETING"),
         (1 << 23, "STAGE_OUT"),
         (1 << 14, "CONFIGURING"),
+        (1 << 24, "EXPEDITING"),
         (1 << 13, "RESIZING"),
         (1 << 10, "REQUEUED"),
         (1 << 20, "REQUEUE_FED"),

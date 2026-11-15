@@ -2,6 +2,7 @@
 
 use anyhow::{Result, bail};
 
+use super::Protocol;
 use super::pack::{Pack, Unpack};
 use super::rpcs::RPCS;
 use glurmo_model::{RpcCount, Stats};
@@ -24,11 +25,12 @@ pub fn request() -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// Fails when the body does not follow Slurm 23.11's layout.
-pub fn decode(body: &[u8]) -> Result<Stats> {
+/// Fails when the body does not follow `protocol`'s layout.
+pub fn decode(body: &[u8], protocol: Protocol) -> Result<Stats> {
     let u = &mut Unpack::new(body);
     let mut stats = Stats::default();
-    if u.u32()? != 0 {
+    let v25_11 = protocol == Protocol::V25_11;
+    if v25_11 || u.u32()? != 0 {
         let _req_time = (u.time()?, u.time()?);
         stats.server_threads = Some(u.u32()?.into());
         stats.agent_queue = Some(u.u32()?.into());
@@ -41,12 +43,16 @@ pub fn decode(body: &[u8]) -> Result<Stats> {
         let _jobs_canceled_failed_pending_running = (u.u32()?, u.u32()?, u.u32()?, u.u32()?);
         let _job_states_ts = u.time()?;
         let _schedule_cycle_max_last = (u.u32()?, u.u32()?);
-        let cycle_sum = u.u32()?;
+        let cycle_sum = if v25_11 {
+            u.u64()?
+        } else {
+            u64::from(u.u32()?)
+        };
         let cycles = u.u32()?;
         let _schedule_cycle_depth = u.u32()?;
         let _schedule_exit = u.u32_array()?;
         stats.main_queue_last = Some(u.u32()?.into());
-        stats.main_cycle_mean_us = (cycles > 0).then(|| u64::from(cycle_sum / cycles));
+        stats.main_cycle_mean_us = (cycles > 0).then(|| cycle_sum / u64::from(cycles));
         stats.backfilled_jobs = Some(u.u32()?.into());
         let _bf_last_backfilled_jobs = u.u32()?;
         let bf_cycles = u.u32()?;

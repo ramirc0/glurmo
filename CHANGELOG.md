@@ -4,12 +4,19 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- Slurm 25.11's protocol beside 23.11's, so the protocol backend reaches controllers from 23.11 through 27.05. glurmo tries the newest first.
+- `auth/slurm` sites: requests are signed through slurmd's or sackd's sack socket when munged does not run.
+
 ### Changed
 
 - A drag on the history timeline highlights a stretch and zooms to it, instead of panning. The wheel still pans.
 
 ### Fixed
 
+- The protocol backend folds pending tasks split out of an array back into the array's pending record, as squeue does.
+- Accounting reads a job cancelled while pending as never started. Before, its start read as a date in 2106.
 - The command backend counts the tasks of a stepped array range such as `3-15:2`. Before, one such job in `sacct` or `squeue` failed the whole read, and the history backfill retried that window forever.
 - Release builds embed the web view when `web/dist` appears or changes after an earlier build. Before, they could serve an empty page.
 - The command backend reads jobs whose `SubmitLine` spans several lines, as an `sbatch --wrap` script with newlines does. Before, one such job failed every placement read.

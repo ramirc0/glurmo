@@ -1,7 +1,6 @@
 //! What slurmdbd holds about jobs, read over its persistent connection as sacct reads it.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::AsyncWriteExt;
@@ -9,7 +8,7 @@ use tokio::net::TcpStream;
 
 use super::jobs::{array_tasks, hex_tasks, state_name};
 use super::pack::{INFINITE, NO_VAL, NO_VAL64, Pack, Unpack};
-use super::{GLOBAL_AUTH_KEY, PROTOCOL, SLURMDBD_CONNECTION, TIMEOUT, frame, read_frame};
+use super::{GLOBAL_AUTH_KEY, Protocol, SLURMDBD_CONNECTION, Session, TIMEOUT, frame, read_frame};
 use crate::slurm::fields::job_state;
 use crate::slurm::hostlist::expand_hosts;
 use crate::slurm::sacct::Outcome;
@@ -69,8 +68,7 @@ pub struct Record {
 /// Fails when no address answers, slurmdbd refuses, or a reply is malformed.
 pub async fn records(
     addresses: &[String],
-    munge: &Path,
-    decoder: Option<u32>,
+    session: &Session,
     cluster: &str,
     query: &Query<'_>,
     now: UnixTime,
@@ -78,17 +76,17 @@ pub async fn records(
     let mut failures = Vec::new();
     for address in addresses {
         let session = async {
-            let mut stream = open(address, munge, decoder, cluster).await?;
+            let mut stream = open(address, session, cluster).await?;
             let tres =
                 Tres::decode(&call(&mut stream, GET_TRES, &tres_condition(), GOT_TRES).await?)?;
             let body = call(
                 &mut stream,
                 GET_JOBS,
-                &job_condition(cluster, query, now),
+                &job_condition(cluster, query, now, session.protocol),
                 GOT_JOBS,
             )
             .await?;
-            anyhow::Ok((decode(&body)?, tres))
+            anyhow::Ok((decode(&body, session.protocol)?, tres))
         };
         match tokio::time::timeout(TIMEOUT * 4, session).await {
             Ok(Ok(found)) => return Ok(found),
@@ -100,21 +98,15 @@ pub async fn records(
 }
 
 /// Opens a persistent connection.
-async fn open(
-    address: &str,
-    munge: &Path,
-    decoder: Option<u32>,
-    cluster: &str,
-) -> Result<TcpStream> {
+async fn open(address: &str, session: &Session, cluster: &str) -> Result<TcpStream> {
     let mut stream = TcpStream::connect(address).await?;
     let mut body = Pack::default();
-    body.u16(PROTOCOL)
+    body.u16(session.protocol.number())
         .str(Some(cluster))
         .u16(PERSIST_TYPE_DBD)
         .u16(0);
     let request = frame(
-        munge,
-        decoder,
+        session,
         PERSIST_INIT,
         GLOBAL_AUTH_KEY | SLURMDBD_CONNECTION,
         &body.0,
@@ -174,7 +166,7 @@ fn tres_condition() -> Vec<u8> {
 
 /// A `slurmdb_job_cond_t` as `sacct -X -D` builds it: allocations only, every requeued attempt,
 /// on this cluster, for every user.
-fn job_condition(cluster: &str, query: &Query, now: UnixTime) -> Vec<u8> {
+fn job_condition(cluster: &str, query: &Query, now: UnixTime, protocol: Protocol) -> Vec<u8> {
     let (jobs, from, to): (&[JobId], i64, i64) = match *query {
         Query::Jobs(jobs) => (jobs, 0, now.0 + 1),
         Query::Window(from, to) => {
@@ -211,11 +203,17 @@ fn job_condition(cluster: &str, query: &Query, now: UnixTime) -> Vec<u8> {
     } else {
         body.u32(u32::try_from(jobs.len()).expect("a short list"));
         for job in jobs {
+            if protocol == Protocol::V25_11 {
+                body.u64(0);
+            }
             body.u32(job.0)
                 .u32(NO_VAL)
                 .u32(NO_VAL)
                 .u32(NO_VAL)
                 .u32(NO_VAL);
+            if protocol == Protocol::V25_11 {
+                body.u32(NO_VAL);
+            }
         }
     }
     none(&mut body);
@@ -229,10 +227,10 @@ fn job_condition(cluster: &str, query: &Query, now: UnixTime) -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// Fails when the body does not follow Slurm 23.11's layout, or holds steps.
-pub fn decode(body: &[u8]) -> Result<Vec<Record>> {
+/// Fails when the body does not follow `protocol`'s layout, or holds steps.
+pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Record>> {
     let u = &mut Unpack::new(body);
-    let records = u.list(|u| record(u))?;
+    let records = u.list(|u| record(u, protocol))?;
     let code = u.u32()?;
     if code != 0 {
         bail!("slurmdbd error {code}");
@@ -244,7 +242,8 @@ pub fn decode(body: &[u8]) -> Result<Vec<Record>> {
     clippy::too_many_lines,
     reason = "it walks Slurm's layout field by field"
 )]
-fn record(u: &mut Unpack) -> Result<Record> {
+fn record(u: &mut Unpack, protocol: Protocol) -> Result<Record> {
+    let v25_11 = protocol == Protocol::V25_11;
     let _account = u.str()?;
     let _admin_comment = u.str()?;
     let _alloc_nodes = u.u32()?;
@@ -273,11 +272,20 @@ fn record(u: &mut Unpack) -> Result<Record> {
     let partition = u.str()?;
     let _priority = u.u32()?;
     let _qosid = u.u32()?;
+    if v25_11 {
+        let _qos_req = u.str()?;
+    }
     let req_cpus = u.u32()?;
     let _req_mem = u.u64()?;
     let _requid = u.u32()?;
+    if v25_11 {
+        let _restart_cnt = u.u16()?;
+    }
     let _resv_name = u.str()?;
     let _resvid = u.u32()?;
+    if v25_11 {
+        let _resv_req = u.str()?;
+    }
     let _script = u.str()?;
     let _show_full = u.u32()?;
     let start = u.time()?;
@@ -286,6 +294,10 @@ fn record(u: &mut Unpack) -> Result<Record> {
     let steps = u.u32()?;
     if steps != 0 && steps != NO_VAL {
         bail!("job {id} came with {steps} steps despite the request for none");
+    }
+    if v25_11 {
+        let _segment_size = u.u16()?;
+        u.skip_strs(3)?;
     }
     let submit = u.time()?;
     let _submit_line = u.str()?;

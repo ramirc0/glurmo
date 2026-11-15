@@ -8,10 +8,11 @@ pub mod nodes;
 pub mod pack;
 pub mod reasons;
 pub mod rpcs;
+pub mod sack;
 pub mod stats;
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -23,10 +24,91 @@ use super::recording::{Answer, Call};
 use glurmo_model::{Attempt, Login, UnixTime};
 use pack::{Pack, Unpack};
 
-/// The protocol version glurmo speaks: Slurm 23.11's. Controllers accept it through 25.05.
-pub const PROTOCOL: u16 = 40 << 8;
+/// A version of Slurm's protocol that glurmo decodes. A controller answers in the client's version
+/// and, per Slurm's source, accepts clients up to three releases older than itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    /// Slurm 23.11's, which controllers from 23.11 through 25.05 accept.
+    V23_11,
+    /// Slurm 25.11's, which controllers from 25.11 through 27.05 accept.
+    V25_11,
+}
+
+impl Protocol {
+    /// Every version glurmo speaks, newest first, as it tries them.
+    pub const NEWEST_FIRST: [Self; 2] = [Self::V25_11, Self::V23_11];
+
+    /// The version as Slurm numbers it.
+    pub fn number(self) -> u16 {
+        match self {
+            Self::V23_11 => 40 << 8,
+            Self::V25_11 => 44 << 8,
+        }
+    }
+}
+
+/// Where glurmo gets the credential that signs each request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Issuer {
+    /// munged, for `auth/munge`.
+    Munge(PathBuf),
+    /// slurmd's or sackd's sack socket, for `auth/slurm`.
+    Sack(PathBuf),
+}
+
+impl Issuer {
+    /// munged when it runs here, else a sack socket.
+    ///
+    /// # Errors
+    ///
+    /// Fails when neither runs.
+    pub fn find() -> Result<Self> {
+        let munge = PathBuf::from(munge::SOCKET);
+        if munge.exists() {
+            return Ok(Self::Munge(munge));
+        }
+        sack::socket().map(Self::Sack).with_context(|| {
+            format!(
+                "neither munged ({}) nor a sack socket ({}) runs here",
+                munge::SOCKET,
+                sack::SOCKETS.join(", ")
+            )
+        })
+    }
+
+    /// A credential for a message whose hash payload is `payload`, as the auth plugin's ID and token.
+    async fn credential(
+        &self,
+        decoder: Option<u32>,
+        payload: &[u8],
+        protocol: Protocol,
+    ) -> Result<(u32, String)> {
+        match self {
+            Self::Munge(socket) => Ok((
+                AUTH_MUNGE,
+                munge::credential(socket, decoder, payload).await?,
+            )),
+            Self::Sack(socket) => Ok((
+                AUTH_SLURM,
+                sack::token(socket, protocol.number(), decoder, payload).await?,
+            )),
+        }
+    }
+}
+
+/// How glurmo signs its requests and which protocol it speaks to one cluster.
+#[derive(Clone, Debug)]
+pub struct Session {
+    /// Where credentials come from.
+    pub issuer: Issuer,
+    /// The UID that may decode our credentials: `SlurmUser`, once known.
+    pub decoder: Option<u32>,
+    /// The protocol version.
+    pub protocol: Protocol,
+}
 
 const AUTH_MUNGE: u32 = 101;
+const AUTH_SLURM: u32 = 103;
 const HASH_NONE: u8 = 1;
 const NO_AUTH_CRED: u16 = 1 << 6;
 const GLOBAL_AUTH_KEY: u16 = 1;
@@ -41,10 +123,8 @@ const MAX_MESSAGE: usize = 1 << 30;
 pub struct Controller {
     /// `host:port` addresses to try in order: the primary, then backups.
     pub addresses: Vec<String>,
-    /// munged's socket.
-    pub munge: PathBuf,
-    /// The UID that may decode our credentials: `SlurmUser`, once known.
-    pub decoder: Option<u32>,
+    /// How requests are signed, and in which protocol.
+    pub session: Session,
 }
 
 impl Controller {
@@ -52,14 +132,14 @@ impl Controller {
     ///
     /// # Errors
     ///
-    /// Fails when no address answers, munged refuses, the reply is malformed or of another type, or
-    /// the controller returns an error code.
+    /// Fails when no address answers, no credential can be had, the reply is malformed or of another
+    /// type, or the controller returns an error code.
     pub async fn call(&self, request: u16, body: &[u8], response: u16) -> Result<Vec<u8>> {
-        let request = frame(&self.munge, self.decoder, request, 0, body).await?;
+        let request = frame(&self.session, request, 0, body).await?;
         let mut failures = Vec::new();
         for address in &self.addresses {
             match tokio::time::timeout(TIMEOUT, exchange(address, &request)).await {
-                Ok(Ok(reply)) => return checked(&reply, response),
+                Ok(Ok(reply)) => return checked(&reply, response, self.session.protocol),
                 Ok(Err(error)) => failures.push(format!("{address}: {error:#}")),
                 Err(_) => failures.push(format!("{address}: no reply within {TIMEOUT:?}")),
             }
@@ -68,24 +148,21 @@ impl Controller {
     }
 }
 
-/// Frames a request: its length, a header, a munge credential and the body. A slurmdbd connection
-/// puts the message type before the header too.
-async fn frame(
-    munge: &Path,
-    decoder: Option<u32>,
-    kind: u16,
-    flags: u16,
-    body: &[u8],
-) -> Result<Vec<u8>> {
+/// Frames a request: its length, a header, a credential and the body. A slurmdbd connection puts the
+/// message type before the header too.
+async fn frame(session: &Session, kind: u16, flags: u16, body: &[u8]) -> Result<Vec<u8>> {
     let mut hash = vec![HASH_NONE];
     hash.extend(kind.to_be_bytes());
-    let credential = munge::credential(munge, decoder, &hash).await?;
+    let (plugin, credential) = session
+        .issuer
+        .credential(session.decoder, &hash, session.protocol)
+        .await?;
     let mut header = Pack::default();
     if flags & SLURMDBD_CONNECTION != 0 {
         header.u16(kind);
     }
     header
-        .u16(PROTOCOL)
+        .u16(session.protocol.number())
         .u16(flags)
         .u16(kind)
         .u32(u32::try_from(body.len())?)
@@ -93,7 +170,7 @@ async fn frame(
         .u16(0)
         .u16(0);
     let mut auth = Pack::default();
-    auth.u32(AUTH_MUNGE).str(Some(&credential));
+    auth.u32(plugin).str(Some(&credential));
     let len = header.0.len() + auth.0.len() + body.len();
     let mut frame = Pack::default();
     frame.u32(u32::try_from(len)?);
@@ -122,11 +199,14 @@ async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
 
 /// Strips the header and credential, and turns a nonzero return code or a reply of another type than
 /// `response` into an error.
-fn checked(frame: &[u8], response: u16) -> Result<Vec<u8>> {
+fn checked(frame: &[u8], response: u16, protocol: Protocol) -> Result<Vec<u8>> {
     let mut unpack = Unpack::new(frame);
     let version = unpack.u16()?;
-    if version != PROTOCOL {
-        bail!("slurmctld replied in protocol {version:#x}, not {PROTOCOL:#x}");
+    if version != protocol.number() {
+        bail!(
+            "slurmctld replied in protocol {version:#x}, not {:#x}",
+            protocol.number()
+        );
     }
     let flags = unpack.u16()?;
     let kind = unpack.u16()?;
@@ -254,19 +334,59 @@ pub struct Wire {
 }
 
 impl Wire {
-    /// A backend for the slurmctld at `addresses`, primary first.
-    pub fn new(addresses: Vec<String>) -> Self {
-        Self {
+    /// A backend for the slurmctld at `addresses`, primary first, signing with munge or sack as this
+    /// host offers.
+    ///
+    /// # Errors
+    ///
+    /// Fails when this host runs neither munged nor a sack socket.
+    pub fn new(addresses: Vec<String>) -> Result<Self> {
+        Ok(Self {
             controller: Controller {
                 addresses,
-                munge: PathBuf::from(munge::SOCKET),
-                decoder: None,
+                session: Session {
+                    issuer: Issuer::find()?,
+                    decoder: None,
+                    protocol: Protocol::NEWEST_FIRST[0],
+                },
             },
             cluster: String::new(),
             accounting: Vec::new(),
             logins: HashMap::new(),
             unknown: HashSet::new(),
+        })
+    }
+
+    /// Reads the configuration in the newest protocol the controller accepts, and keeps that protocol.
+    async fn connect(&mut self) -> Result<super::Site> {
+        let mut failures = Vec::new();
+        for protocol in Protocol::NEWEST_FIRST {
+            self.controller.session.protocol = protocol;
+            match self.config().await {
+                Ok(site) => return Ok(site),
+                Err(error) => failures.push(format!("{protocol:?}: {error:#}")),
+            }
         }
+        bail!("no protocol glurmo speaks worked: {}", failures.join("; "))
+    }
+
+    async fn config(&mut self) -> Result<super::Site> {
+        let mut body = Pack::default();
+        body.time(0);
+        let protocol = self.controller.session.protocol;
+        let reply = self
+            .controller
+            .call(config::REQUEST, &body.0, config::RESPONSE)
+            .await?;
+        let config = config::decode(&reply, protocol)?;
+        let session = &mut self.controller.session;
+        session.decoder = Some(config.slurm_uid);
+        if let (Issuer::Munge(socket), Some(named)) = (&mut session.issuer, config.munge) {
+            *socket = named;
+        }
+        self.cluster.clone_from(&config.site.cluster);
+        self.accounting = config.accounting;
+        Ok(config.site)
     }
 
     /// Answers one call. The config call must come first, because it says who may decode our
@@ -277,22 +397,7 @@ impl Wire {
     /// Fails when slurmctld or slurmdbd does not answer, refuses, or sends a reply that does not decode.
     pub async fn answer(&mut self, call: &Call) -> Result<Answer> {
         Ok(match call {
-            Call::Config => {
-                let mut body = Pack::default();
-                body.time(0);
-                let reply = self
-                    .controller
-                    .call(config::REQUEST, &body.0, config::RESPONSE)
-                    .await?;
-                let config = config::decode(&reply)?;
-                self.controller.decoder = Some(config.slurm_uid);
-                if let Some(socket) = config.munge {
-                    self.controller.munge = socket;
-                }
-                self.cluster.clone_from(&config.site.cluster);
-                self.accounting = config.accounting;
-                Answer::Config(config.site)
-            }
+            Call::Config => Answer::Config(self.connect().await?),
             Call::Jobs => Answer::Jobs(self.attempts().await?),
             Call::Nodes => {
                 let partitions = self.partitions().await?;
@@ -304,7 +409,11 @@ impl Wire {
                         nodes::NODE_RESPONSE,
                     )
                     .await?;
-                Answer::Nodes(nodes::nodes(&reply, &partitions)?)
+                Answer::Nodes(nodes::nodes(
+                    &reply,
+                    &partitions,
+                    self.controller.session.protocol,
+                )?)
             }
             Call::Partitions => Answer::Partitions(
                 self.partitions()
@@ -322,7 +431,10 @@ impl Wire {
             ),
             Call::Lookup { key, .. } => {
                 let found = match self
-                    .jobs(jobs::SINGLE_REQUEST, &jobs::single_request(key.job))
+                    .jobs(
+                        jobs::SINGLE_REQUEST,
+                        &jobs::single_request(key.job, self.controller.session.protocol),
+                    )
                     .await
                 {
                     Ok(jobs) => jobs.into_iter().find(|job| job.id() == key.job),
@@ -362,7 +474,7 @@ impl Wire {
                     .controller
                     .call(stats::REQUEST, &stats::request(), stats::RESPONSE)
                     .await?;
-                Answer::Stats(stats::decode(&reply)?)
+                Answer::Stats(stats::decode(&reply, self.controller.session.protocol)?)
             }
         })
     }
@@ -374,13 +486,14 @@ impl Wire {
         self.learn_logins(jobs.iter().map(jobs::Job::user_id)).await;
         let now = UnixTime::now();
         jobs.iter()
+            .filter(|job| job.submitted())
             .map(|job| job.attempt(now, &self.logins))
             .collect()
     }
 
     async fn jobs(&self, kind: u16, request: &[u8]) -> Result<Vec<jobs::Job>> {
         let reply = self.controller.call(kind, request, jobs::RESPONSE).await?;
-        jobs::decode(&reply)
+        jobs::decode(&reply, self.controller.session.protocol)
     }
 
     async fn partitions(&self) -> Result<Vec<nodes::PartitionRecord>> {
@@ -392,7 +505,7 @@ impl Wire {
                 nodes::PARTITION_RESPONSE,
             )
             .await?;
-        nodes::partitions(&reply)
+        nodes::partitions(&reply, self.controller.session.protocol)
     }
 
     async fn accounting(
@@ -404,8 +517,7 @@ impl Wire {
         }
         accounting::records(
             &self.accounting,
-            &self.controller.munge,
-            self.controller.decoder,
+            &self.controller.session,
             &self.cluster,
             query,
             UnixTime::now(),
@@ -452,7 +564,7 @@ mod tests {
     /// Both backends, connected. The live tests compare them on zlurm, where the cluster can change
     /// between the two answers.
     async fn backends() -> (Wire, Cli) {
-        let mut wire = Wire::new(controllers().unwrap());
+        let mut wire = Wire::new(controllers().unwrap()).unwrap();
         let mut cli = Cli::default();
         let (Answer::Config(wired), Answer::Config(printed)) = (
             wire.answer(&Call::Config).await.unwrap(),
@@ -509,12 +621,15 @@ mod tests {
             panic!("not jobs");
         };
         let printed = by_id(&printed);
-        let differ = wired
+        let key = |job: &Attempt| (job.key.job, job.array.as_ref().map(|a| a.spec.clone()));
+        let differing: Vec<_> = wired
             .iter()
-            .filter(|job| {
-                printed.get(&(job.key.job, job.array.as_ref().map(|a| a.spec.clone()))) != Some(job)
-            })
-            .count();
+            .filter(|job| printed.get(&key(job)) != Some(job))
+            .collect();
+        for job in differing.iter().take(3) {
+            eprintln!("wire    {job:?}\ncommand {:?}\n", printed.get(&key(job)));
+        }
+        let differ = differing.len();
         eprintln!("{} jobs, {differ} differ", wired.len());
         assert!(differ * 100 <= wired.len());
 
@@ -599,7 +714,17 @@ mod tests {
         let order = |a: &Attempt| (a.key, a.array.as_ref().map(|t| t.spec.clone()));
         wired.sort_by_key(order);
         printed.sort_by_key(order);
-        assert_eq!(wired, printed);
+        assert_eq!(wired.len(), printed.len());
+        let differ: Vec<_> = wired.iter().zip(&printed).filter(|(w, p)| w != p).collect();
+        for (w, p) in differ.iter().take(3) {
+            eprintln!("wire    {w:?}\ncommand {p:?}\n");
+        }
+        assert!(
+            differ.is_empty(),
+            "{} of {} differ",
+            differ.len(),
+            wired.len()
+        );
 
         let ids = printed.iter().take(20).map(|a| a.key.job).collect();
         let (Answer::Outcomes(mut wired), Answer::Outcomes(mut printed)) =

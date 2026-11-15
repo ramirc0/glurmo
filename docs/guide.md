@@ -11,7 +11,7 @@ cp target/x86_64-unknown-linux-musl/release/glurmo ~/.local/bin/
 
 The binary is static and runs on any x86-64 Linux host. Building needs Rust 1.100 with the `x86_64-unknown-linux-musl` and `wasm32-unknown-unknown` targets, [just](https://github.com/casey/just) and [trunk](https://trunkrs.dev). `rust-toolchain.toml` pins the version. `just static` builds the web view first and embeds it in the binary.
 
-The host needs munged with the cluster's munge key, as any Slurm client does. glurmo finds the controller in slurm.conf, as Slurm's own tools do. A host without slurm.conf can name the controller in the config.
+The host must be able to sign requests as any Slurm client does: with munged and the cluster's key under `auth/munge`, or through slurmd's or sackd's socket under `auth/slurm`. glurmo finds the controller in slurm.conf, as Slurm's own tools do. A host without slurm.conf can name the controller in the config.
 
 ## Configure
 
@@ -138,5 +138,5 @@ A file in `~/.config/glurmo/themes/` or `~/.config/glurmo/layouts/` adds one, or
 ## Troubleshooting
 
 * A red banner in the header means the server or Slurm stopped answering. It says since when and why. The web view reconnects on its own and catches up without reloading.
-* A controller newer than Slurm 25.05 rejects glurmo's protocol, so `glurmo probe` fails there. Set `slurm: (backend: Cli)`.
-* Without munged, or without the cluster's munge key, every call fails with a munge error.
+* A controller older than 23.11 or newer than 27.05 rejects glurmo's protocols, so `glurmo probe` fails there. Set `slurm: (backend: Cli)`.
+* Without munged or a sack socket, glurmo cannot sign requests and exits at once. With munged but the wrong key, every call fails with a munge error.

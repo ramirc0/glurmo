@@ -289,7 +289,7 @@ pub fn job_state(raw: &str) -> Result<JobState> {
         "PENDING" | "REQUEUE_HOLD" | "REQUEUE_FED" | "RESV_DEL_HOLD" => JobState::Pending,
         "RUNNING" | "CONFIGURING" | "RESIZING" | "SIGNALING" | "STOPPED" => JobState::Running,
         "SUSPENDED" => JobState::Suspended,
-        "COMPLETING" | "STAGE_OUT" => JobState::Completing,
+        "COMPLETING" | "STAGE_OUT" | "EXPEDITING" => JobState::Completing,
         "COMPLETED" => JobState::Ended(Completed),
         "FAILED" | "BOOT_FAIL" | "SPECIAL_EXIT" => JobState::Ended(Failed),
         "CANCELLED" | "REVOKED" => JobState::Ended(Cancelled),
