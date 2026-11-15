@@ -83,7 +83,7 @@ enum Command {
     },
     /// Sample the cluster and save every call and its answer as JSON lines.
     Record {
-        /// Rewrite logins, IDs, job names and paths, so the recording can become a test fixture.
+        /// Rewrite logins and job names, so the recording can become a test fixture.
         #[arg(long)]
         pseudonymize: bool,
         /// How long to keep sampling after the first tick.

@@ -341,7 +341,7 @@ pub fn node_state(raw: &str) -> (NodeState, Vec<NodeFlag>) {
                 Some(NodeFlag::PowerSaving)
             }
             "reserved" => Some(NodeFlag::Reserved),
-            "maint" => Some(NodeFlag::Maintenance),
+            "maint" | "maintenance" => Some(NodeFlag::Maintenance),
             _ => None,
         })
         .collect();
@@ -473,7 +473,7 @@ mod tests {
     fn neutral_states_cover_draining_and_power_saving() {
         assert_eq!(node_state("mixed+drain"), (NodeState::Draining, Vec::new()));
         assert_eq!(
-            node_state("idle+powered_down+reserved+maint"),
+            node_state("idle+powered_down+reserved+maintenance"),
             (
                 NodeState::Idle,
                 vec![

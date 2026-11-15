@@ -208,7 +208,7 @@ impl Source {
 /// How glurmo reaches a live cluster.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Backend {
-    /// Slurm 23.11's protocol, which controllers through 25.05 accept.
+    /// Slurm's protocol, 25.11's or 23.11's, which controllers from 23.11 through 27.05 accept.
     #[default]
     Wire,
     /// Slurm's commands, for clusters the protocol cannot reach.
