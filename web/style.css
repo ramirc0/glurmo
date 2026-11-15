@@ -116,9 +116,44 @@ main.tv {
 }
 
 .panel.die {
+  position: relative;
   background: none;
   padding: 0;
   overflow: hidden;
+}
+
+.tip {
+  position: absolute;
+  z-index: 3;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--overlay);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+  font: 12px/1.6 var(--mono);
+  pointer-events: none;
+}
+
+.tip .head {
+  margin-bottom: 2px;
+  font: 700 12.5px/1.6 var(--sans);
+}
+
+.tip .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tip .row span:first-child {
+  color: var(--muted);
+}
+
+.tip .row span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel h2 {

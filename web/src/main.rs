@@ -16,6 +16,7 @@ mod paint;
 mod pane;
 mod panels;
 mod state;
+mod tip;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -23,7 +24,7 @@ use std::time::Duration;
 use leptos::prelude::*;
 use rtviz_model::summary::holdings;
 
-use state::{Address, State};
+use state::{Address, Highlight, State};
 
 /// How long a wall display highlights each user.
 const HIGHLIGHT_EVERY: Duration = Duration::from_secs(8);
@@ -101,11 +102,11 @@ fn cycle_highlight(state: State) {
                 .users
                 .into_iter()
                 .filter(|(_, held)| held.cores + held.gpus > 0)
-                .map(|(login, _)| login.clone())
+                .map(|(login, _)| Highlight::User(login.clone()))
                 .collect();
             let current = state.highlight.get_untracked();
             let at = current
-                .and_then(|current| holders.iter().position(|login| *login == current))
+                .and_then(|current| holders.iter().position(|held| *held == current))
                 .map_or(0, |at| at + 1);
             holders.get(at).or_else(|| holders.first()).cloned()
         })

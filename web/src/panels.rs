@@ -5,10 +5,10 @@ use leptos::prelude::*;
 use rtviz_model::layout::QueueBy;
 use rtviz_model::summary::{self, Holding, holdings, partition_loads, waiting};
 use rtviz_model::units::{percent, since, span, thousands};
-use rtviz_model::{Attempt, Login, NodeState};
+use rtviz_model::{Attempt, Login, NodeName, NodeState, PartitionName};
 
 use crate::paint::{Rgb, clock, display_name, now, user_color};
-use crate::state::{Link, State};
+use crate::state::{Highlight, Link, State};
 
 /// The CSS color of `login` in the current theme.
 fn color_of(state: State, login: &Login) -> String {
@@ -29,6 +29,31 @@ fn Bar(part: u64, whole: u64, #[prop(into)] fill: String) -> impl IntoView {
         <span class="bar">
             <span class="fill" style:width=format!("{width}%") style:background=fill></span>
         </span>
+    }
+}
+
+/// A table row that lights `highlight` on the Die while hovered, except on a wall display, where the
+/// highlight cycles on its own. It shows as lit while its highlight is on.
+#[component]
+fn LitRow(highlight: Highlight, children: Children) -> impl IntoView {
+    let state = expect_context::<State>();
+    let lit = StoredValue::new(highlight);
+    view! {
+        <tr
+            class:lit=move || lit.with_value(|lit| state.highlight.with(|on| on.as_ref() == Some(lit)))
+            on:mouseenter=move |_| {
+                if !state.tv {
+                    state.highlight.set(Some(lit.get_value()));
+                }
+            }
+            on:mouseleave=move |_| {
+                if !state.tv {
+                    state.highlight.set(None);
+                }
+            }
+        >
+            {children()}
+        </tr>
     }
 }
 
@@ -195,13 +220,11 @@ pub fn Users() -> impl IntoView {
                     {move || {
                         let (users, hidden, capacity) = rows();
                         let me = state.me.get();
-                        let highlight = state.highlight.get();
                         let mut lines: Vec<AnyView> = users
                             .into_iter()
                             .map(|(login, name, held)| {
                                 let row = UserRow {
                                     you: me.as_ref() == Some(&login),
-                                    lit: highlight.as_ref() == Some(&login),
                                     share: share(&held, capacity),
                                     login,
                                     name,
@@ -243,29 +266,15 @@ struct UserRow {
     held: Holding,
     share: u64,
     you: bool,
-    lit: bool,
 }
 
 impl UserRow {
-    /// The row, which highlights the user's cores while hovered, except on a wall display.
+    /// The row, which highlights the user's cores while hovered.
     fn view(self, state: State) -> AnyView {
         let color = color_of(state, &self.login);
-        let login = self.login;
         let held = self.held;
         view! {
-            <tr
-                class:lit=self.lit
-                on:mouseenter=move |_| {
-                    if !state.tv {
-                        state.highlight.set(Some(login.clone()));
-                    }
-                }
-                on:mouseleave=move |_| {
-                    if !state.tv {
-                        state.highlight.set(None);
-                    }
-                }
-            >
+            <LitRow highlight=Highlight::User(self.login)>
                 <td>
                     <span class="swatch" style:background=color.clone()></span>
                 </td>
@@ -286,7 +295,7 @@ impl UserRow {
                         ></span>
                     </span>
                 </td>
-            </tr>
+            </LitRow>
         }
         .into_any()
     }
@@ -350,12 +359,17 @@ pub fn Queue(by: QueueBy) -> impl IntoView {
                         rows()
                             .into_iter()
                             .map(|(key, jobs, tasks, cpus, gpus, wait, reason)| {
-                                let color = match by {
-                                    QueueBy::Login => color_of(state, &Login(key.clone())),
-                                    QueueBy::Partition => String::new(),
+                                let (color, highlight) = match by {
+                                    QueueBy::Login => {
+                                        let login = Login(key.clone());
+                                        (color_of(state, &login), Highlight::User(login))
+                                    }
+                                    QueueBy::Partition => {
+                                        (String::new(), Highlight::Partition(PartitionName(key.clone())))
+                                    }
                                 };
                                 view! {
-                                    <tr>
+                                    <LitRow highlight=highlight>
                                         <td class="name" style:color=color>{key}</td>
                                         <td>{thousands(jobs)}</td>
                                         <td>{thousands(tasks)}</td>
@@ -363,7 +377,7 @@ pub fn Queue(by: QueueBy) -> impl IntoView {
                                         <td>{thousands(gpus)}</td>
                                         <td>{wait}</td>
                                         <td class="name why">{reason}</td>
-                                    </tr>
+                                    </LitRow>
                                 }
                             })
                             .collect_view()
@@ -411,17 +425,21 @@ pub fn Partitions() -> impl IntoView {
                                                         || "none".to_owned(),
                                                         |limit| span(limit.cast_signed()),
                                                     );
+                                                let name = format!("{}{star}", partition.name.0);
+                                                let running = thousands(load.running);
+                                                let pending = thousands(load.pending);
+                                                let free_cores = thousands(load.free_cores);
+                                                let free_gpus = (load.free_gpus > 0)
+                                                    .then(|| load.free_gpus.to_string());
                                                 view! {
-                                                    <tr>
-                                                        <td class="name">{format!("{}{star}", partition.name.0)}</td>
+                                                    <LitRow highlight=Highlight::Partition(partition.name.clone())>
+                                                        <td class="name">{name}</td>
                                                         <td>{limit}</td>
-                                                        <td>{thousands(load.running)}</td>
-                                                        <td>{thousands(load.pending)}</td>
-                                                        <td>{thousands(load.free_cores)}</td>
-                                                        <td>
-                                                            {(load.free_gpus > 0).then(|| load.free_gpus.to_string())}
-                                                        </td>
-                                                    </tr>
+                                                        <td>{running}</td>
+                                                        <td>{pending}</td>
+                                                        <td>{free_cores}</td>
+                                                        <td>{free_gpus}</td>
+                                                    </LitRow>
                                                 }
                                             })
                                             .collect_view()
@@ -478,13 +496,13 @@ pub fn Nodes() -> impl IntoView {
                                         .into_iter()
                                         .map(|(name, word, drain, reason)| {
                                             view! {
-                                                <tr>
+                                                <LitRow highlight=Highlight::Node(NodeName(name.clone()))>
                                                     <td class="name">{name}</td>
                                                     <td class="name" class:drain=drain class:down=!drain>
                                                         {word}
                                                     </td>
                                                     <td class="name why">{reason}</td>
-                                                </tr>
+                                                </LitRow>
                                             }
                                         })
                                         .collect_view()}
@@ -639,7 +657,7 @@ pub fn Keys() -> impl IntoView {
                 <kbd>"l"</kbd>
                 " layout"
             </span>
-            <span>"hover a user to light up their cores"</span>
+            <span>"hover a row to light up its cores, or a core for its job"</span>
         </footer>
     }
 }

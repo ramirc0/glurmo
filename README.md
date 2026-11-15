@@ -64,7 +64,7 @@ Config(
   http://js029:8765/?layout=tv&theme=rose-pine-dawn
   http://js029:8765/?me=otter
   ```
-  `me` fills the `Mine` panel. The `tv` layout, or `tv` in the address, hides the cursor and lights up each user's cores in turn. Elsewhere, hovering a user lights up theirs. `t` and `l` cycle themes and layouts.
+  `me` fills the `Mine` panel. The `tv` layout, or `tv` in the address, hides the cursor and lights up each user's cores in turn. Elsewhere, hovering a user, partition, or node row lights up its cores, and hovering the Die shows the job on a core or the state of a node. `t` and `l` cycle themes and layouts.
 
 The terminal view takes these keys:
 

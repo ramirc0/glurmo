@@ -8,7 +8,7 @@ use rtviz_model::layout::{Layout, Pane};
 use rtviz_model::summary::Ticker;
 use rtviz_model::theme::Theme;
 use rtviz_model::usage::Usage;
-use rtviz_model::{Cluster, Login, Occupancies};
+use rtviz_model::{Cluster, Login, Node, NodeName, Occupancies, PartitionName};
 
 /// The state of the stream from the server.
 #[derive(Clone, Debug, PartialEq)]
@@ -19,6 +19,28 @@ pub enum Link {
     Live,
     /// The stream broke at this many milliseconds since the epoch, and the browser is reconnecting.
     Lost(f64),
+}
+
+/// What the Die lights up while everything else fades.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Highlight {
+    /// One user's cores and GPUs.
+    User(Login),
+    /// The nodes in one partition.
+    Partition(PartitionName),
+    /// One node.
+    Node(NodeName),
+}
+
+impl Highlight {
+    /// Whether `node`'s whole tile fades. A user highlight fades cores, not tiles.
+    pub fn fades(&self, node: &Node) -> bool {
+        match self {
+            Self::User(_) => false,
+            Self::Partition(partition) => !node.partitions.contains(partition),
+            Self::Node(name) => node.name != *name,
+        }
+    }
 }
 
 /// The page's state. Every field is a signal, so the whole is `Copy` and panels take it from context.
@@ -48,8 +70,8 @@ pub struct State {
     pub theme: Memo<Option<Theme>>,
     /// The layout shown, once layouts have loaded.
     pub layout: Memo<Option<Layout>>,
-    /// A user whose cores stand out while everyone else's fade.
-    pub highlight: RwSignal<Option<Login>>,
+    /// What stands out on the Die while the rest fades.
+    pub highlight: RwSignal<Option<Highlight>>,
     /// Whoever the address names with `me`.
     pub me: RwSignal<Option<Login>>,
     /// Counts fonts finished loading, so canvases redraw in them.

@@ -11,11 +11,14 @@ use rtviz_model::layout::Grouping;
 use rtviz_model::summary::{NodeGroup, node_groups};
 use rtviz_model::theme::Theme;
 use rtviz_model::units::{load, thousands};
-use rtviz_model::{Cluster, Login, Node, NodeFlag, NodeState, Occupancies, Owner};
+use rtviz_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use web_sys::CanvasRenderingContext2d;
 
+use wasm_bindgen::JsCast;
+
 use crate::paint::{Rgb, Surface, user_color};
-use crate::state::State;
+use crate::state::{Highlight, State};
+use crate::tip::Tip;
 
 /// The largest and smallest core pitch tried, in CSS pixels, and the smallest that keeps gauges.
 const PITCHES: std::ops::RangeInclusive<u32> = 5..=18;
@@ -54,6 +57,8 @@ const TITLE_CHAR: f64 = 8.5;
 const NOTE_CHAR: f64 = 6.7;
 /// How much of its color a faded core keeps when someone else is highlighted.
 const FADED: f64 = 0.22;
+/// How opaque a node's tile stays when a highlight leaves it out.
+const FADED_TILE: f64 = 0.3;
 /// How much of the down or drain color the free cores of a node that is out keep.
 const OUT: f64 = 0.4;
 
@@ -68,6 +73,42 @@ pub struct Rect {
     pub w: f64,
     /// Height.
     pub h: f64,
+}
+
+impl Rect {
+    /// Whether `(x, y)` lies inside, or within `slop` of an edge.
+    fn holds(&self, x: f64, y: f64, slop: f64) -> bool {
+        x >= self.x - slop
+            && x <= self.x + self.w + slop
+            && y >= self.y - slop
+            && y <= self.y + self.h + slop
+    }
+}
+
+/// The part of a tile under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spot {
+    /// A core, by index.
+    Core(usize),
+    /// A GPU, by index.
+    Gpu(usize),
+    /// Anywhere else on the tile.
+    Tile,
+}
+
+/// The node whose tile holds `(x, y)` on `board`, and what part of it the point is on. A point in the
+/// gap between two cores counts as the nearer one.
+pub fn spot_at<'a>(board: &Board<'a>, x: f64, y: f64) -> Option<(&'a Node, Spot)> {
+    let tile = board
+        .tiles
+        .iter()
+        .find(|tile| tile.frame.holds(x, y, 0.0))?;
+    let near = |rects: &[Rect]| rects.iter().position(|rect| rect.holds(x, y, 1.0));
+    let spot = near(&tile.cores)
+        .map(Spot::Core)
+        .or_else(|| near(&tile.gpus).map(Spot::Gpu))
+        .unwrap_or(Spot::Tile);
+    Some((tile.node, spot))
 }
 
 /// Where one node's tile, cores and GPUs go.
@@ -457,10 +498,32 @@ fn place<'a>(node: &'a Node, frame: Rect, pitch: &Pitch) -> Tile<'a> {
     }
 }
 
-/// The die panel.
+/// The die panel. Hovering a core shows the job that holds it, and hovering elsewhere on a tile shows
+/// the node.
 #[component]
 pub fn Die(group: Grouping) -> impl IntoView {
     let state = expect_context::<State>();
+    let tip = RwSignal::new(None::<Tip>);
+    let point = move |event: web_sys::MouseEvent| {
+        let Some(panel) = event
+            .current_target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let frame = panel.get_bounding_client_rect();
+        let x = f64::from(event.client_x()) - frame.left();
+        let y = f64::from(event.client_y()) - frame.top();
+        let found = state.cluster.with_untracked(|cluster| {
+            state.occupancy.with_untracked(|occupancy| {
+                let groups = node_groups(cluster, group);
+                let board = board(&groups, frame.width(), frame.height());
+                let (node, spot) = spot_at(&board, x, y)?;
+                Some(Tip::of(cluster, occupancy, node, spot))
+            })
+        });
+        tip.set(found.map(|tip| tip.at(x, y, frame.width(), frame.height())));
+    };
     let draw = move |context: &CanvasRenderingContext2d, width: f64, height: f64| {
         let Some(theme) = state.theme.get() else {
             return;
@@ -482,8 +545,17 @@ pub fn Die(group: Grouping) -> impl IntoView {
         });
     };
     view! {
-        <section class="panel die">
+        <section
+            class="panel die"
+            on:mousemove=move |event| {
+                if !state.tv {
+                    point(event);
+                }
+            }
+            on:mouseleave=move |_| tip.set(None)
+        >
             <Surface draw=draw/>
+            {move || tip.get().map(Tip::view)}
         </section>
     }
 }
@@ -494,7 +566,7 @@ struct Ink<'a> {
     theme: &'a Theme,
     cluster: &'a Cluster,
     occupancy: &'a Occupancies,
-    highlight: Option<&'a Login>,
+    highlight: Option<&'a Highlight>,
 }
 
 impl Ink<'_> {
@@ -532,11 +604,15 @@ impl Ink<'_> {
             self.label(&groups[label.group], label);
         }
         for tile in &board.tiles {
+            let faded = self.highlight.is_some_and(|light| light.fades(tile.node));
+            self.context
+                .set_global_alpha(if faded { FADED_TILE } else { 1.0 });
             match board.style {
                 Style::Full(pitch) => self.tile(tile, pitch.gauges),
                 Style::Brief(brief) => self.brief(tile, &brief),
             }
         }
+        self.context.set_global_alpha(1.0);
     }
 
     fn label(&self, group: &NodeGroup, label: &Label) {
@@ -590,7 +666,7 @@ impl Ink<'_> {
             },
         };
         match self.highlight {
-            Some(highlight) if login != Some(highlight) => color.fade(free, FADED),
+            Some(Highlight::User(lit)) if login != Some(lit) => color.fade(free, FADED),
             _ => color,
         }
     }
@@ -806,7 +882,7 @@ fn out(theme: &Theme, node: &Node) -> Option<Rgb> {
 }
 
 /// Megabytes as whole gigabytes with a `G`, or terabytes with one decimal and a `T`.
-fn gigabytes(mb: u64) -> String {
+pub fn gigabytes(mb: u64) -> String {
     if mb >= 1_000_000 {
         #[expect(clippy::cast_precision_loss, reason = "megabytes fit in an f64")]
         let tb = mb as f64 / 1_048_576.0;
@@ -842,6 +918,45 @@ mod tests {
             gpu_model: None,
             features: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_point_finds_its_core_its_gpu_or_its_tile() {
+        let nodes = [node("z1", 4, 0), node("g1", 4, 2)];
+        let groups = [group("cpu", &nodes[..1]), group("gpu", &nodes[1..])];
+        let board = board(&groups, 800.0, 600.0);
+        let middle = |rect: &Rect| (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        let cpu = &board.tiles[0];
+        let (x, y) = middle(&cpu.cores[3]);
+        assert_eq!(spot_at(&board, x, y), Some((&nodes[0], Spot::Core(3))));
+        let (x, y) = middle(&board.tiles[1].gpus[1]);
+        assert_eq!(spot_at(&board, x, y), Some((&nodes[1], Spot::Gpu(1))));
+        let gap_x = cpu.cores[0].x + cpu.cores[0].w + 0.5;
+        assert_eq!(
+            spot_at(&board, gap_x, cpu.cores[0].y).map(|(_, spot)| spot),
+            Some(Spot::Core(0)),
+            "a point in the gap after a core"
+        );
+        let name = (cpu.frame.x + 2.0, cpu.frame.y + 2.0);
+        assert_eq!(
+            spot_at(&board, name.0, name.1),
+            Some((&nodes[0], Spot::Tile))
+        );
+        assert_eq!(spot_at(&board, 799.0, 599.0), None);
+    }
+
+    #[test]
+    fn partition_and_node_highlights_fade_the_tiles_they_leave_out() {
+        let mut inside = node("z1", 4, 0);
+        inside.partitions = vec![rtviz_model::PartitionName("long".into())];
+        let outside = node("z2", 4, 0);
+        let partition = Highlight::Partition(rtviz_model::PartitionName("long".into()));
+        assert!(!partition.fades(&inside));
+        assert!(partition.fades(&outside));
+        let one = Highlight::Node(NodeName("z2".into()));
+        assert!(one.fades(&inside));
+        assert!(!one.fades(&outside));
+        assert!(!Highlight::User(rtviz_model::Login("otter".into())).fades(&outside));
     }
 
     fn group<'a>(name: &str, nodes: &'a [Node]) -> NodeGroup<'a> {
