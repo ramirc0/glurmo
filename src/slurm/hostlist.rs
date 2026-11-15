@@ -10,7 +10,7 @@ use glurmo_model::NodeName;
 ///
 /// # Errors
 ///
-/// Fails on an unclosed bracket, text after a bracket, or a bad range.
+/// Fails on an unclosed bracket, text after a bracket, or a bad range or one over 65,536 hosts.
 pub fn expand_hosts(hostlist: &str) -> Result<Vec<NodeName>> {
     let mut hosts = Vec::new();
     let mut rest = hostlist;
@@ -27,7 +27,7 @@ pub fn expand_hosts(hostlist: &str) -> Result<Vec<NodeName>> {
                 .with_context(|| format!("unclosed bracket in hostlist {hostlist:?}"))?;
             for item in ranges.split(',') {
                 let width = item.find('-').unwrap_or(item.len());
-                let (low, high) = range(item)?;
+                let (low, high) = expandable(item)?;
                 for number in low..=high {
                     hosts.push(NodeName(format!("{prefix}{number:0width$}")));
                 }
@@ -49,11 +49,12 @@ pub fn expand_hosts(hostlist: &str) -> Result<Vec<NodeName>> {
 ///
 /// # Errors
 ///
-/// Fails on anything but integers and ranges between commas, or on a range that runs backward.
+/// Fails on anything but integers and ranges between commas, or on a range that runs backward or
+/// covers over 65,536 values.
 pub fn expand_ids(ranges: &str) -> Result<Vec<u32>> {
     let mut ids = Vec::new();
     for item in ranges.split(',').filter(|item| !item.is_empty()) {
-        let (low, high) = range(item)?;
+        let (low, high) = expandable(item)?;
         ids.extend(low..=high);
     }
     Ok(ids)
@@ -78,6 +79,18 @@ pub fn count_ids(ranges: &str) -> Result<u32> {
         count += (high - low) / step + 1;
     }
     Ok(count)
+}
+
+/// The most values one range may expand to. Slurm's own hostlist code stops at the same size.
+const MAX_RANGE: u32 = 65_536;
+
+/// A range small enough to expand into a list.
+fn expandable(item: &str) -> Result<(u32, u32)> {
+    let (low, high) = range(item)?;
+    if high - low >= MAX_RANGE {
+        bail!("range {item:?} covers more than {MAX_RANGE} values");
+    }
+    Ok((low, high))
 }
 
 fn range(item: &str) -> Result<(u32, u32)> {
@@ -119,6 +132,13 @@ mod tests {
         assert_eq!(names("z1054"), ["z1054"]);
         assert_eq!(names(""), Vec::<String>::new());
         assert_eq!(names("(null)"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn huge_ranges_are_errors() {
+        assert!(expand_hosts("z[0-70000]").is_err());
+        assert!(expand_ids("0-70000").is_err());
+        assert_eq!(expand_ids("0-65535").unwrap().len(), 65_536);
     }
 
     #[test]
