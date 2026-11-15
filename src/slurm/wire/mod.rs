@@ -153,10 +153,12 @@ impl Controller {
 async fn frame(session: &Session, kind: u16, flags: u16, body: &[u8]) -> Result<Vec<u8>> {
     let mut hash = vec![HASH_NONE];
     hash.extend(kind.to_be_bytes());
-    let (plugin, credential) = session
+    let credential = session
         .issuer
-        .credential(session.decoder, &hash, session.protocol)
-        .await?;
+        .credential(session.decoder, &hash, session.protocol);
+    let (plugin, credential) = tokio::time::timeout(TIMEOUT, credential)
+        .await
+        .with_context(|| format!("no credential from {:?} within {TIMEOUT:?}", session.issuer))??;
     let mut header = Pack::default();
     if flags & SLURMDBD_CONNECTION != 0 {
         header.u16(kind);
@@ -563,6 +565,26 @@ mod tests {
     fn an_unconvertible_record_is_skipped() {
         let converted = vec![Ok(1), Err(anyhow::anyhow!("bad TRES")), Ok(3)];
         assert_eq!(readable(converted.into_iter()), [1, 3]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_credential_daemon_that_never_answers_fails_the_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("munge.socket");
+        let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        for issuer in [Issuer::Munge(socket.clone()), Issuer::Sack(socket.clone())] {
+            let controller = Controller {
+                addresses: Vec::new(),
+                session: Session {
+                    issuer,
+                    decoder: None,
+                    protocol: Protocol::V23_11,
+                },
+            };
+            let call = controller.call(1, &[], 2);
+            let outcome = tokio::time::timeout(Duration::from_secs(3_600), call).await;
+            assert!(outcome.is_ok_and(|reply| reply.is_err()));
+        }
     }
 
     #[test]
