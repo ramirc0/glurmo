@@ -211,10 +211,14 @@ impl Store {
                     )?;
                 }
                 Event::Nodes(nodes) => {
+                    let first_listing = self.cpus_per_core.is_empty();
                     self.cpus_per_core = nodes
                         .iter()
                         .map(|node| (node.name.clone(), node.cpus_per_core()))
                         .collect();
+                    if first_listing {
+                        recount_cores(&tx, &self.cpus_per_core)?;
+                    }
                     for node in nodes {
                         let health = (health(node).to_owned(), node.reason.clone());
                         if self.health.get(&node.name) != Some(&health) {
@@ -758,13 +762,7 @@ fn upsert(
         JobState::Ended(state) => Some(state_name(state)),
         _ => None,
     };
-    let cores = attempt.nodes.first().map(|node| {
-        let per_core = cpus_per_core
-            .get(node)
-            .copied()
-            .unwrap_or_else(|| usual(cpus_per_core));
-        attempt.cpus.div_ceil(per_core)
-    });
+    let cores = cores(attempt.cpus, &attempt.nodes, cpus_per_core);
     let origin = match origin {
         Origin::Live => "live",
         Origin::Accounting => "accounting",
@@ -808,6 +806,38 @@ fn upsert(
         "INSERT OR IGNORE INTO users (login, color_slot) VALUES (?1, (SELECT count(*) FROM users))",
     )?
     .execute([&attempt.login.0])?;
+    Ok(())
+}
+
+/// How many cores `cpus` CPUs on `nodes` take, or `None` before the attempt has nodes.
+fn cores(cpus: u32, nodes: &[NodeName], cpus_per_core: &HashMap<NodeName, u32>) -> Option<u32> {
+    nodes.first().map(|node| {
+        let per_core = cpus_per_core
+            .get(node)
+            .copied()
+            .unwrap_or_else(|| usual(cpus_per_core));
+        cpus.div_ceil(per_core)
+    })
+}
+
+/// Counts the cores of running attempts again. Those stored before the run's first node listing
+/// took one core per CPU.
+fn recount_cores(tx: &Transaction, cpus_per_core: &HashMap<NodeName, u32>) -> Result<()> {
+    let running: Vec<(u32, i64, u32, String)> = tx
+        .prepare(
+            "SELECT job, submit, cpus, nodes FROM attempts WHERE start IS NOT NULL AND end IS NULL",
+        )?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (job, submit, cpus, nodes) in running {
+        let nodes: Vec<NodeName> = serde_json::from_str(&nodes)?;
+        tx.execute(
+            "UPDATE attempts SET cores = coalesce(?3, cores) WHERE job = ?1 AND submit = ?2",
+            params![job, submit, cores(cpus, &nodes, cpus_per_core)],
+        )?;
+    }
     Ok(())
 }
 

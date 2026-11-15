@@ -690,6 +690,32 @@ mod tests {
         assert_eq!(hub.unwrap().read(|cluster| cluster.users.len()), stored);
     }
 
+    #[tokio::test]
+    async fn attempts_stored_before_the_first_node_listing_get_their_cores_counted_again() {
+        let mut failed = false;
+        let slurm = busy_quarter_hour_with(|exchange| {
+            if exchange.call == Call::Nodes && !failed {
+                failed = true;
+                exchange.answer = Err("slurmctld did not answer".into());
+            }
+        })
+        .await;
+        let (dir, _) = assert_store_agrees_with_the_deltas(slurm).await;
+        let miscounted: u32 = rusqlite::Connection::open(dir.path().join("glurmo.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM attempts
+                 WHERE start IS NOT NULL AND end IS NULL AND cores != (cpus + 1) / 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            miscounted, 0,
+            "every node in the fixture runs 2 threads per core"
+        );
+    }
+
     /// The kinds of event in the first delta of the busy quarter hour, with the first answer to `failing`
     /// replaced by an error, and how many deltas the run published.
     async fn first_delta_when_the_first_call_fails(
