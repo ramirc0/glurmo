@@ -340,11 +340,13 @@ impl Sampler {
                 None
             };
             let changes = self.known.diff_jobs(&jobs, now);
-            self.lookups
-                .extend(changes.iter().filter_map(|event| match event {
-                    Event::Started { attempt } => Some(attempt.clone()),
-                    _ => None,
-                }));
+            if placements.is_some() || self.budget > 0 {
+                self.lookups
+                    .extend(changes.iter().filter_map(|event| match event {
+                        Event::Started { attempt } => Some(attempt.clone()),
+                        _ => None,
+                    }));
+            }
             tick.events.extend(changes);
             match placements {
                 Some(placements) => {
@@ -453,7 +455,8 @@ impl Sampler {
         users
     }
 
-    /// Looks up queued placements, oldest first, up to the budget. A failed lookup waits for the next tick.
+    /// Looks up queued placements, oldest first, up to the budget. A failed lookup goes to the back of
+    /// the queue and ends the pass, so one that keeps failing cannot hold up the rest.
     async fn look_up(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
         for _ in 0..self.budget {
@@ -466,7 +469,7 @@ impl Sampler {
                 Ok(Lookup::Gone) => {}
                 Err(error) => {
                     eprintln!("lookup of {} failed: {error:#}", attempt.key.job.0);
-                    self.lookups.push_front(attempt);
+                    self.lookups.push_back(attempt);
                     break;
                 }
             }
@@ -714,6 +717,18 @@ mod tests {
             miscounted, 0,
             "every node in the fixture runs 2 threads per core"
         );
+    }
+
+    #[tokio::test]
+    async fn no_lookup_budget_queues_no_lookups() {
+        let slurm = busy_quarter_hour().await;
+        let config =
+            crate::config::from_ron(r#"(sample: (lookups: 0), gpu_models: {"gpu": "V100"})"#)
+                .unwrap();
+        let hub = Hub::new(slurm.site().clone());
+        let mut sampler = Sampler::new(slurm, &config, None, hub);
+        sampler.run(None).await;
+        assert_eq!(sampler.lookups.len(), 0);
     }
 
     /// The kinds of event in the first delta of the busy quarter hour, with the first answer to `failing`

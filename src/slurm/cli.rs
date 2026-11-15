@@ -71,7 +71,8 @@ impl Cli {
         let version = self.version.unwrap_or(Version(23, 11, 4));
         if let Call::Lookup { .. } = call
             && exchange.status != 0
-            && exchange.stderr.contains(scontrol::GONE)
+            && (exchange.stderr.contains(scontrol::GONE)
+                || scontrol::is_not_found(&exchange.stdout))
         {
             return Ok(Answer::Lookup(Lookup::Gone));
         }
@@ -340,6 +341,28 @@ mod tests {
         let result = run(argv(&["sleep", "5"]), Duration::from_millis(100)).await;
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_lookup_of_an_array_task_no_longer_listed_is_gone() {
+        let call = Call::Lookup {
+            key: AttemptKey {
+                job: JobId(3_848_384),
+                submit: UnixTime(1_794_000_000),
+            },
+            printed: "3848210_174".into(),
+        };
+        let exchange = Exchange {
+            at: UnixTime(1_794_000_100),
+            argv: argv(&["scontrol", "-d", "-o", "show", "job", "3848210_174"]),
+            status: 1,
+            stdout: "Job 3848210_174 not found\n".into(),
+            stderr: String::new(),
+        };
+        assert_eq!(
+            Cli::default().parse(&call, &exchange).unwrap(),
+            Answer::Lookup(Lookup::Gone)
+        );
     }
 
     #[test]

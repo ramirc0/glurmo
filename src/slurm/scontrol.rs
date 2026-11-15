@@ -103,6 +103,13 @@ pub fn jobs_argv() -> Vec<String> {
 /// What scontrol prints on stderr for a job the controller no longer knows.
 pub const GONE: &str = "Invalid job id specified";
 
+/// Whether scontrol printed that it lists no such job, as it does on stdout for an array task the
+/// controller no longer holds.
+pub fn is_not_found(stdout: &str) -> bool {
+    let line = stdout.trim_end();
+    line.starts_with("Job ") && line.ends_with(" not found") && !line.contains('\n')
+}
+
 /// A job's placement as scontrol reports it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placed {
