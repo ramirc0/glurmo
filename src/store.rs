@@ -11,8 +11,8 @@ use serde::Deserialize;
 use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
 use rtviz_model::usage::Step;
 use rtviz_model::{
-    Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeName, NodeState,
-    PartitionName, UnixTime, User,
+    ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeName,
+    NodeState, PartitionName, Placement, UnixTime, User,
 };
 
 const DAY_S: i64 = 86_400;
@@ -21,7 +21,8 @@ const DAY_S: i64 = 86_400;
 const GRACE_S: i64 = 30;
 
 /// Schema changes, applied in order. `PRAGMA user_version` counts how many have run.
-const MIGRATIONS: [&str; 1] = ["
+const MIGRATIONS: [&str; 2] = [
+    "
     CREATE TABLE attempts (
         job INTEGER NOT NULL,
         submit INTEGER NOT NULL,
@@ -66,7 +67,12 @@ const MIGRATIONS: [&str; 1] = ["
     );
     CREATE TABLE users (login TEXT PRIMARY KEY, full_name TEXT, color_slot INTEGER NOT NULL);
     CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
-"];
+",
+    "
+    CREATE INDEX attempts_by_start ON attempts (start);
+    CREATE INDEX attempts_by_submit ON attempts (submit);
+",
+];
 
 /// How much history to fetch and keep.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -526,6 +532,36 @@ pub struct UsageQuery {
     pub by: By,
 }
 
+/// An attempt as history holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stored {
+    /// The attempt as the queue listed it while it waited. History keeps no name, reason, time limit,
+    /// raw state or estimated start, and only the first partition.
+    pub attempt: Attempt,
+    /// When it took its cores.
+    pub start: Option<UnixTime>,
+    /// When it freed them, or left the queue without taking any.
+    pub end: Option<UnixTime>,
+    /// How it ended, once known.
+    pub state: Option<EndState>,
+    /// Its exact cells, when a lookup found them.
+    pub placement: Option<Placement>,
+}
+
+/// A node's health from one moment until its next record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeHealth {
+    /// The node.
+    pub node: NodeName,
+    /// When the sampler first saw this health.
+    pub at: UnixTime,
+    /// Draining, drained, down or unknown, or `None` while it was up. History does not split up into
+    /// idle, mixed and allocated.
+    pub state: Option<NodeState>,
+    /// Why an operator drained it or took it down.
+    pub reason: Option<String>,
+}
+
 /// Reads history on a connection of its own, so a server can query while the sampler writes.
 pub struct History {
     path: PathBuf,
@@ -546,8 +582,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn usage(&self, query: &UsageQuery, now: UnixTime) -> Result<Vec<Step>> {
-        let db = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("cannot open {}", self.path.display()))?;
+        let db = self.connect()?;
         let Some(rolled_to) = meta(&db, "rolled_to")? else {
             return Ok(Vec::new());
         };
@@ -608,6 +643,78 @@ impl History {
                 failed: (query.by == By::Partition).then_some(usage.failed),
             })
             .collect())
+    }
+
+    /// When history starts: the earliest moment backfill has reached, or `None` for a new store.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be opened or read.
+    pub fn starts(&self) -> Result<Option<UnixTime>> {
+        meta(&self.connect()?, "history_from")
+    }
+
+    /// Attempts submitted by `at` that had not ended by then: those running at `at` and those waiting.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be opened or read.
+    pub fn alive(&self, at: UnixTime) -> Result<Vec<Stored>> {
+        // Two halves, so each uses an index: one on ends and one on open attempts.
+        stored(
+            &self.connect()?,
+            &format!(
+                "SELECT {STORED} FROM attempts WHERE end > ?1 AND submit <= ?1
+                 UNION ALL
+                 SELECT {STORED} FROM attempts WHERE end IS NULL AND submit <= ?1"
+            ),
+            [at.0],
+        )
+    }
+
+    /// Attempts submitted, started or ended after `from` and up to `to`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be opened or read.
+    pub fn touched(&self, from: UnixTime, to: UnixTime) -> Result<Vec<Stored>> {
+        stored(
+            &self.connect()?,
+            &format!(
+                "SELECT {STORED} FROM attempts WHERE submit > ?1 AND submit <= ?2
+                 UNION
+                 SELECT {STORED} FROM attempts WHERE start > ?1 AND start <= ?2
+                 UNION
+                 SELECT {STORED} FROM attempts WHERE end > ?1 AND end <= ?2"
+            ),
+            [from.0, to.0],
+        )
+    }
+
+    /// Every recorded change of node health up to `to`, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be opened or read.
+    pub fn node_health(&self, to: UnixTime) -> Result<Vec<NodeHealth>> {
+        let db = self.connect()?;
+        let mut query = db.prepare(
+            "SELECT node, at, state, reason FROM node_states WHERE at <= ?1 ORDER BY at, node",
+        )?;
+        let rows = query.query_map([to.0], |row| {
+            Ok(NodeHealth {
+                node: NodeName(row.get(0)?),
+                at: UnixTime(row.get(1)?),
+                state: health_state(&row.get::<_, String>(2)?),
+                reason: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn connect(&self) -> Result<Connection> {
+        Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("cannot open {}", self.path.display()))
     }
 }
 
@@ -743,6 +850,72 @@ fn spans(db: &Connection, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The columns [`stored`] reads, in its order.
+const STORED: &str =
+    "job, submit, array_job, task_range, tasks, login, partition, cpus, gpus, mem_mb,
+                      start, end, state, nodes, placement";
+
+/// Runs `sql`, which selects [`STORED`], and reads each row.
+fn stored(db: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<Vec<Stored>> {
+    let mut query = db.prepare(sql)?;
+    let rows = query.query_map(params, |row| {
+        let job = JobId(row.get(0)?);
+        let partition: String = row.get(6)?;
+        let attempt = Attempt {
+            key: AttemptKey {
+                job,
+                submit: UnixTime(row.get(1)?),
+            },
+            array: row
+                .get::<_, Option<u32>>(2)?
+                .map(|array| -> rusqlite::Result<ArrayTasks> {
+                    Ok(ArrayTasks {
+                        job: JobId(array),
+                        spec: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        count: row.get(4)?,
+                    })
+                })
+                .transpose()?,
+            login: Login(row.get(5)?),
+            partitions: (!partition.is_empty())
+                .then_some(PartitionName(partition))
+                .into_iter()
+                .collect(),
+            state: JobState::Pending,
+            state_raw: "PENDING".to_owned(),
+            cpus: row.get(7)?,
+            mem_mb: row.get(9)?,
+            gpus: row.get(8)?,
+            time_limit_s: None,
+            start: None,
+            end: None,
+            nodes: json(13, &row.get::<_, String>(13)?)?,
+            reason: None,
+            name: String::new(),
+        };
+        Ok(Stored {
+            attempt,
+            start: row.get::<_, Option<i64>>(10)?.map(UnixTime),
+            end: row.get::<_, Option<i64>>(11)?.map(UnixTime),
+            state: row
+                .get::<_, Option<String>>(12)?
+                .and_then(|name| state_from_name(&name)),
+            placement: row
+                .get::<_, Option<String>>(14)?
+                .map(|text| json(14, &text))
+                .transpose()?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Reads the JSON text in column `index`.
+fn json<T: serde::de::DeserializeOwned>(index: usize, text: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, error.into())
+    })
+}
+
 /// An end state's name, as it is serialized.
 fn state_name(state: EndState) -> String {
     serde_json::to_value(state)
@@ -763,6 +936,17 @@ fn health(node: &Node) -> &'static str {
         NodeState::Drained => "drained",
         NodeState::Down => "down",
         NodeState::Unknown => "unknown",
+    }
+}
+
+/// The node state a health that [`health`] wrote stands for, or `None` for `up`.
+fn health_state(name: &str) -> Option<NodeState> {
+    match name {
+        "up" => None,
+        "draining" => Some(NodeState::Draining),
+        "drained" => Some(NodeState::Drained),
+        "down" => Some(NodeState::Down),
+        _ => Some(NodeState::Unknown),
     }
 }
 
@@ -814,7 +998,7 @@ fn mount_kind<'a>(path: &Path, mounts: &'a str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::{ArrayTasks, NodeCells, Placement};
+    use rtviz_model::NodeCells;
 
     const T0: i64 = 1_794_614_400;
 

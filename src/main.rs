@@ -7,6 +7,7 @@ mod fixture;
 mod hub;
 mod library;
 mod passwd;
+mod past;
 mod rollup;
 mod sampler;
 mod server;

@@ -44,14 +44,26 @@ pub async fn busy_hub() -> Hub {
 /// A hub that has published the whole busy quarter hour, sampled into a temporary store as a server
 /// would. Unlike [`busy_hub`], it names users and gives them colors.
 pub async fn busy_stored_hub() -> Hub {
+    busy_store().await.1
+}
+
+/// The busy quarter hour sampled into a store, kept until the directory drops, and the hub it published
+/// to.
+pub async fn busy_store() -> (tempfile::TempDir, Hub) {
     let dir = tempfile::tempdir().unwrap();
     let settings = Settings {
         backfill_days: 0,
         keep_days: None,
         backup: dir.path().join("backup.sqlite"),
     };
-    let store = Store::open(&dir.path().join("rtviz.sqlite"), settings).unwrap();
-    sample_busy_quarter_hour(Some(store)).await
+    let store = Store::open(&store_path(&dir), settings).unwrap();
+    let hub = sample_busy_quarter_hour(Some(store)).await;
+    (dir, hub)
+}
+
+/// Where [`busy_store`] keeps its store.
+pub fn store_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    dir.path().join("rtviz.sqlite")
 }
 
 async fn sample_busy_quarter_hour(store: Option<Store>) -> Hub {
