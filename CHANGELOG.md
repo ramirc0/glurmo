@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- `serve` and `tui` stop cleanly on SIGINT, SIGTERM or SIGHUP. Before, `serve` left a temporary directory behind on every restart, and the TUI left the terminal in its alternate screen. `serve` makes that directory only for `--replay` now.
 - The TUI quits on Ctrl-C while the filter is open. Before, Ctrl-C typed a `c`. It also draws a squeezed header or keys pane and a zero-hour history span, which panicked before.
 - A job with no placement yet spreads leftover CPUs and GPUs over its first nodes. Before, each node drew the rounded-up share, so one GPU over two nodes drew two.
 - The history chart's queue depth sums every user's waiting tasks before it rounds. Before, many short waits each rounded down to nothing.

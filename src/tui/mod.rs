@@ -38,7 +38,7 @@ use glurmo_model::Login;
 /// How often theme and layout files are checked for changes.
 const LIBRARY_EVERY: Duration = Duration::from_secs(2);
 
-/// Runs the view until the user quits. It follows the server at `server`, or samples the cluster
+/// Runs the view until the user quits or a signal asks it to stop. It follows the server at `server`, or samples the cluster
 /// in-process when that is `None`. Stderr goes to `$XDG_STATE_HOME/glurmo/tui.log` meanwhile.
 ///
 /// # Errors
@@ -64,9 +64,12 @@ pub async fn run(config: &Config, server: Option<&str>) -> Result<()> {
     let (span, spans) = watch::channel(app.history_span_s());
     feed.watch_usage(spans, sender);
 
+    let stop = crate::shutdown::signals()?;
     let stderr = redirect_stderr()?;
-    let mut terminal = ratatui::try_init()?;
-    let result = show(&mut terminal, &mut app, &mut updates, &span, &dir).await;
+    let result = match ratatui::try_init() {
+        Ok(mut terminal) => show(&mut terminal, &mut app, &mut updates, &span, &dir, stop).await,
+        Err(error) => Err(error.into()),
+    };
     ratatui::restore();
     rustix::stdio::dup2_stderr(&stderr)?;
     result
@@ -88,15 +91,17 @@ fn redirect_stderr() -> Result<std::os::fd::OwnedFd> {
     Ok(stderr)
 }
 
-/// Draws, then waits for a key, an update or a library check, until the user quits.
+/// Draws, then waits for a key, an update or a library check, until the user quits or `stop` resolves.
 async fn show(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     updates: &mut mpsc::Receiver<Update>,
     span: &watch::Sender<i64>,
     dir: &Path,
+    stop: impl Future<Output = ()>,
 ) -> Result<()> {
     let mut keys = EventStream::new();
+    tokio::pin!(stop);
     let mut checks = tokio::time::interval(LIBRARY_EVERY);
     let mut stamp = Library::stamp(dir);
     loop {
@@ -111,6 +116,7 @@ async fn show(
                 None => return Ok(()),
             },
             Some(update) = updates.recv() => app.update(update),
+            () = &mut stop => return Ok(()),
             _ = checks.tick() => {
                 let now = Library::stamp(dir);
                 if now != stamp {

@@ -11,6 +11,7 @@ mod past;
 mod rollup;
 mod sampler;
 mod server;
+mod shutdown;
 mod slurm;
 mod store;
 mod tui;
@@ -188,12 +189,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Samples into the store and serves the stream, history, themes and layouts until the process ends.
+/// Samples into the store and serves the stream, history, themes and layouts until SIGINT, SIGTERM or
+/// SIGHUP.
 /// Theme and layout files are read from `$XDG_CONFIG_HOME/glurmo`. With `replay`, the samples come from a
 /// recording, played `speed` times faster than it was recorded, and the store is a temporary one.
 async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()> {
-    let scratch = tempfile::tempdir()?;
-    let (slurm, path, store) = if let Some(recording) = replay {
+    let stop = shutdown::signals()?;
+    let (slurm, path, store, _scratch) = if let Some(recording) = replay {
+        let scratch = tempfile::tempdir()?;
         let slurm =
             Slurm::connect(Source::Replay(Replay::open(recording)?.paced(speed)), None).await?;
         let path = scratch.path().join("replay.sqlite");
@@ -203,12 +206,12 @@ async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()>
             backup: scratch.path().join("backup.sqlite"),
         };
         let store = Store::open(&path, settings)?;
-        (slurm, path, store)
+        (slurm, path, store, Some(scratch))
     } else {
         let slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
         let path = store_path(&config.store, &slurm.site().cluster)?;
         let store = open_store(&config.store, &path)?;
-        (slurm, path, store)
+        (slurm, path, store, None)
     };
     let hub = Hub::new(slurm.site().clone());
     let dir = xdg::config_home()?.join("glurmo");
@@ -231,6 +234,7 @@ async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()>
         () = sample => Ok(()),
         () = library::keep_current(&dir, &library) => Ok(()),
         served = server::serve(config.server.listen, router) => served,
+        () = stop => Ok(()),
     }
 }
 
