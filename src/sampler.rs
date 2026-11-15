@@ -477,10 +477,9 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use super::*;
+    use crate::fixture::{busy_hub, busy_quarter_hour, busy_quarter_hour_with};
     use crate::model::{AttemptKey, Cluster, Delta, Owner};
-    use crate::slurm::source::{Exchange, Replay, Source};
     use crate::store::Settings;
-    use std::io::Write;
 
     /// One line per delta: its time, how many events of each kind it holds, and how the cluster looks after it.
     fn summary(delta: &Delta, start: UnixTime, cluster: &Cluster) -> String {
@@ -519,28 +518,6 @@ mod tests {
             kinds.join(", "),
             cluster.running.len()
         )
-    }
-
-    /// Connects to a replay of a pseudonymized busy quarter hour on zlurm.
-    async fn busy_quarter_hour() -> Slurm {
-        busy_quarter_hour_with(|_| {}).await
-    }
-
-    /// Connects to the busy quarter hour, with each recorded exchange passed through `edit` first.
-    async fn busy_quarter_hour_with(mut edit: impl FnMut(&mut Exchange)) -> Slurm {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/slurm-23.11/busy-15m.jsonl.zst");
-        let mut compressed = std::fs::File::open(path).unwrap();
-        let decoder = ruzstd::decoding::StreamingDecoder::new(&mut compressed).unwrap();
-        let mut recording = tempfile::NamedTempFile::new().unwrap();
-        for line in std::io::BufRead::lines(std::io::BufReader::new(decoder)) {
-            let mut exchange: Exchange = serde_json::from_str(&line.unwrap()).unwrap();
-            edit(&mut exchange);
-            writeln!(recording, "{}", serde_json::to_string(&exchange).unwrap()).unwrap();
-        }
-        Slurm::connect(Source::Replay(Replay::open(recording.path()).unwrap()))
-            .await
-            .unwrap()
     }
 
     #[tokio::test]
@@ -680,11 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_of_a_busy_quarter_hour() {
-        let slurm = busy_quarter_hour().await;
-        let hub = Hub::new(slurm.site().clone());
-        let mut sampler =
-            Sampler::new(slurm, Intervals::default(), None, hub.clone(), Names::Login);
-        sampler.run(None).await;
+        let hub = busy_hub().await;
 
         let mut cluster = Cluster::default();
         let mut lines = Vec::new();

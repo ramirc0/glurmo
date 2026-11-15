@@ -2,6 +2,8 @@
 
 mod config;
 mod diff;
+#[cfg(test)]
+mod fixture;
 mod hub;
 mod layout;
 mod library;

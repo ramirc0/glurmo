@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
 use sacct::Outcome;
@@ -60,8 +60,16 @@ impl Serialize for Version {
     }
 }
 
+impl<'de> Deserialize<'de> for Version {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// The controller's per-user RPC rate limit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RateLimit {
     /// Tokens a user can save up.
     pub bucket_size: u32,
@@ -72,7 +80,7 @@ pub struct RateLimit {
 }
 
 /// Facts about the site, read from the controller's configuration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Site {
     /// The cluster name.
     pub cluster: String,

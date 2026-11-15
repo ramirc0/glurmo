@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A job ID unique to each array task, as sacct's `JobIDRaw` prints it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct JobId(pub u32);
 
@@ -28,7 +28,7 @@ impl UnixTime {
 }
 
 /// One run of a job. A requeue keeps the job ID but resets the submit time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AttemptKey {
     /// The job ID.
     pub job: JobId,
@@ -37,22 +37,22 @@ pub struct AttemptKey {
 }
 
 /// A user's login name.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Login(pub String);
 
 /// A compute node's hostname.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeName(pub String);
 
 /// A partition, or a queue in schedulers that call it that.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PartitionName(pub String);
 
 /// Where a job is in its life.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     /// Waiting for resources, a dependency or a hold.
@@ -102,7 +102,7 @@ impl EndState {
 }
 
 /// The tasks of a job array that one queue row stands for.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrayTasks {
     /// The array's base job ID.
     pub job: JobId,
@@ -113,7 +113,7 @@ pub struct ArrayTasks {
 }
 
 /// A job as the queue lists it.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Attempt {
     /// The job ID and submit time.
     pub key: AttemptKey,
@@ -148,7 +148,7 @@ pub struct Attempt {
 }
 
 /// A node's state, neutral across schedulers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeState {
     /// No cores allocated.
@@ -168,7 +168,7 @@ pub enum NodeState {
 }
 
 /// A condition that can hold in any node state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeFlag {
     /// The controller has lost contact with the node.
@@ -182,7 +182,7 @@ pub enum NodeFlag {
 }
 
 /// A compute node.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     /// The hostname.
     pub name: NodeName,
@@ -230,7 +230,7 @@ impl Node {
 }
 
 /// A partition and its nodes.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Partition {
     /// The name.
     pub name: PartitionName,
@@ -247,7 +247,7 @@ pub struct Partition {
 }
 
 /// The cores, GPUs and memory a job holds on one node.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeCells {
     /// The node.
     pub node: NodeName,
@@ -262,7 +262,7 @@ pub struct NodeCells {
 }
 
 /// Where a job's cores and GPUs are, node by node.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Placement(pub Vec<NodeCells>);
 
@@ -274,7 +274,7 @@ impl Placement {
 }
 
 /// Counters since the controller's last daily reset. A counter this Slurm version does not print is `None`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stats {
     /// Controller threads busy with RPCs.
     pub server_threads: Option<u64>,
@@ -301,7 +301,7 @@ pub struct Stats {
 }
 
 /// How often the controller served one message type, and for how long in total.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RpcCount {
     /// The message type, such as `REQUEST_JOB_INFO`.
     pub kind: String,
@@ -312,7 +312,7 @@ pub struct RpcCount {
 }
 
 /// Someone who has held cores or waited in the queue.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     /// The login.
     pub login: Login,
@@ -323,7 +323,7 @@ pub struct User {
 }
 
 /// A stretch of failed ticks, which leaves the view stale. It usually means the controller is down.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outage {
     /// When the first failed tick started.
     pub since: UnixTime,
@@ -332,7 +332,7 @@ pub struct Outage {
 }
 
 /// One change the sampler saw in a tick.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Event {
     /// An attempt took its cores.
@@ -385,7 +385,7 @@ pub enum Event {
 }
 
 /// The changes from one tick.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Delta {
     /// Counts deltas from 1 since the sampler started.
     pub seq: u64,
@@ -396,7 +396,7 @@ pub struct Delta {
 }
 
 /// A running attempt and, once known, where it runs.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Running {
     /// The attempt as the queue listed it when it started.
     pub attempt: Attempt,
@@ -405,7 +405,7 @@ pub struct Running {
 }
 
 /// The cluster as a stream of deltas builds it up.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cluster {
     /// When the last delta was sampled.
     pub at: Option<UnixTime>,
@@ -414,10 +414,10 @@ pub struct Cluster {
     /// Every partition.
     pub partitions: Vec<Partition>,
     /// Attempts that hold cores.
-    #[serde(serialize_with = "values")]
+    #[serde(serialize_with = "values", deserialize_with = "keyed")]
     pub running: BTreeMap<AttemptKey, Running>,
     /// Pending jobs.
-    #[serde(serialize_with = "values")]
+    #[serde(serialize_with = "values", deserialize_with = "keyed")]
     pub queue: BTreeMap<AttemptKey, Attempt>,
     /// Scheduler counters.
     pub stats: Option<Stats>,
@@ -437,8 +437,33 @@ fn values<V: Serialize, S: Serializer>(
     serializer.collect_seq(map.values())
 }
 
+/// Something stored under its attempt's key.
+trait Keyed {
+    fn key(&self) -> AttemptKey;
+}
+
+impl Keyed for Attempt {
+    fn key(&self) -> AttemptKey {
+        self.key
+    }
+}
+
+impl Keyed for Running {
+    fn key(&self) -> AttemptKey {
+        self.attempt.key
+    }
+}
+
+/// Reads a list that [`values`] wrote back into a map keyed by attempt.
+fn keyed<'de, V: Deserialize<'de> + Keyed, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<AttemptKey, V>, D::Error> {
+    let list = Vec::<V>::deserialize(deserializer)?;
+    Ok(list.into_iter().map(|value| (value.key(), value)).collect())
+}
+
 /// Who holds a core or GPU.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Owner {
     /// A visible attempt.

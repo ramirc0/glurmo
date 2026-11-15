@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::model::{Cluster, Delta, Event, UnixTime};
@@ -49,7 +49,7 @@ impl FromStr for EventId {
 }
 
 /// The whole cluster at one sequence number, for a client that starts from scratch.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The last delta it includes.
     pub seq: u64,
@@ -370,6 +370,20 @@ mod tests {
         assert_eq!("1000-42".parse::<EventId>().unwrap(), id);
         assert!("1000".parse::<EventId>().is_err());
         assert!("x-1".parse::<EventId>().is_err());
+    }
+
+    #[tokio::test]
+    async fn snapshots_and_deltas_read_back_as_they_were_written() {
+        let hub = crate::fixture::busy_hub().await;
+        let snapshot = hub.snapshot();
+        assert!(!snapshot.cluster.running.is_empty());
+        assert!(!snapshot.cluster.queue.is_empty());
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
+        for delta in hub.deltas() {
+            let json = serde_json::to_string(&*delta).unwrap();
+            assert_eq!(serde_json::from_str::<Delta>(&json).unwrap(), *delta);
+        }
     }
 
     #[test]
