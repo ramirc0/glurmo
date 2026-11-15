@@ -6,6 +6,8 @@ pub mod munge;
 pub mod nodes;
 pub mod pack;
 pub mod reasons;
+pub mod rpcs;
+pub mod stats;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -166,7 +168,7 @@ mod tests {
     use super::*;
     use crate::slurm::scontrol::CpuMap;
     use crate::slurm::source::Source;
-    use crate::slurm::{scontrol, sinfo, squeue};
+    use crate::slurm::{scontrol, sdiag, sinfo, squeue};
     use glurmo_model::UnixTime;
 
     fn zlurm() -> Controller {
@@ -298,5 +300,29 @@ mod tests {
             wire.len()
         );
         assert!(placements_differ * 100 <= placed.len());
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live slurmctld"]
+    async fn stats_match_sdiag() {
+        let reply = zlurm()
+            .call(stats::REQUEST, &stats::request())
+            .await
+            .unwrap();
+        let wire = stats::decode(&reply.body).unwrap();
+        let printed = cli(sdiag::argv(), sdiag::parse).await;
+        assert_eq!(wire.jobs_submitted, printed.jobs_submitted);
+        assert_eq!(
+            wire.main_cycle_mean_us.is_some(),
+            printed.main_cycle_mean_us.is_some()
+        );
+        assert_eq!(wire.backfilled_jobs, printed.backfilled_jobs);
+        let kinds = |stats: &glurmo_model::Stats| {
+            let mut kinds: Vec<String> = stats.rpcs.iter().map(|rpc| rpc.kind.clone()).collect();
+            kinds.sort();
+            kinds
+        };
+        assert_eq!(kinds(&wire), kinds(&printed));
+        eprintln!("{:?}\n{:?}", &wire.rpcs[..3], &printed.rpcs[..3]);
     }
 }
