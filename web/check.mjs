@@ -155,8 +155,13 @@ if (pinch) {
 }
 
 if (expression) {
-  const { result } = await page("Runtime.evaluate", { expression: `Promise.resolve(${expression}).then(JSON.stringify)`, returnByValue: true, awaitPromise: true });
-  lines.push(`${expression} = ${result.value}`);
+  const { result, exceptionDetails } = await page("Runtime.evaluate", { expression: `Promise.resolve(${expression}).then(JSON.stringify)`, returnByValue: true, awaitPromise: true });
+  if (exceptionDetails) {
+    lines.push(`${expression} threw: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
+    failed = true;
+  } else {
+    lines.push(`${expression} = ${result.value}`);
+  }
 }
 
 const { data } = await page("Page.captureScreenshot", { format: "png" });
