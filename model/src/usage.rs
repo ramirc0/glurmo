@@ -6,20 +6,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::UnixTime;
 
-/// Usage summed over one step for one login or partition.
+/// Usage summed over one step for one login or partition. It travels as the array
+/// `[at, key, core_s, wait_s]`, because a month of steps by login runs to many thousands.
 ///
 /// # Examples
 ///
 /// ```
 /// use glurmo_model::usage::Step;
 ///
-/// let step: Step = serde_json::from_str(
-///     r#"{"at": 0, "key": "otter", "core_s": 600, "gpu_s": 0, "wait_s": 0, "started": 1, "ended": 0}"#,
-/// )
-/// .unwrap();
-/// assert_eq!(step.failed, None, "failures are counted per partition only");
+/// let step: Step = serde_json::from_str(r#"[0, "otter", 600, 30]"#).unwrap();
+/// assert_eq!((step.key.as_str(), step.core_s, step.wait_s), ("otter", 600, 30));
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    from = "(UnixTime, String, u64, u64)",
+    into = "(UnixTime, String, u64, u64)"
+)]
 pub struct Step {
     /// The step's start.
     pub at: UnixTime,
@@ -27,17 +29,25 @@ pub struct Step {
     pub key: String,
     /// Core-seconds held.
     pub core_s: u64,
-    /// GPU-seconds held.
-    pub gpu_s: u64,
     /// Task-seconds spent pending.
     pub wait_s: u64,
-    /// Attempts that took their cores.
-    pub started: u32,
-    /// Attempts that freed their cores.
-    pub ended: u32,
-    /// Ended attempts that failed. Counted per partition only, never per person.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed: Option<u32>,
+}
+
+impl From<(UnixTime, String, u64, u64)> for Step {
+    fn from((at, key, core_s, wait_s): (UnixTime, String, u64, u64)) -> Self {
+        Self {
+            at,
+            key,
+            core_s,
+            wait_s,
+        }
+    }
+}
+
+impl From<Step> for (UnixTime, String, u64, u64) {
+    fn from(step: Step) -> Self {
+        (step.at, step.key, step.core_s, step.wait_s)
+    }
 }
 
 /// Usage by login over a stretch of time.
@@ -107,7 +117,7 @@ impl Usage {
     /// use glurmo_model::usage::{Step, Usage};
     ///
     /// let step = |at, key: &str, core_s| Step {
-    ///     at: UnixTime(at), key: key.into(), core_s, gpu_s: 0, wait_s: 0, started: 0, ended: 0, failed: None,
+    ///     at: UnixTime(at), key: key.into(), core_s, wait_s: 0,
     /// };
     /// let usage = Usage {
     ///     from: UnixTime(0),
@@ -166,11 +176,7 @@ mod tests {
             at: UnixTime(0),
             key: key.into(),
             core_s: 600,
-            gpu_s: 0,
             wait_s: 0,
-            started: 0,
-            ended: 0,
-            failed: None,
         };
         let usage = Usage {
             from: UnixTime(0),
@@ -190,11 +196,7 @@ mod tests {
             at: UnixTime(0),
             key: key.into(),
             core_s: 0,
-            gpu_s: 0,
             wait_s: 200,
-            started: 0,
-            ended: 0,
-            failed: None,
         };
         let usage = Usage {
             from: UnixTime(0),
@@ -211,11 +213,7 @@ mod tests {
             at: UnixTime(at),
             key: "otter".into(),
             core_s,
-            gpu_s: 0,
             wait_s: 150,
-            started: 0,
-            ended: 0,
-            failed: None,
         };
         let usage = Usage {
             from: UnixTime(0),
@@ -227,6 +225,19 @@ mod tests {
         assert_eq!(columns[0].cores, [("otter", 4)]);
         assert_eq!(columns[1].cores, [("otter", 4)]);
         assert_eq!(columns[1].waiting, 1);
+    }
+
+    #[test]
+    fn a_step_travels_as_a_short_array() {
+        let step = Step {
+            at: UnixTime(300),
+            key: "otter".into(),
+            core_s: 600,
+            wait_s: 30,
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert_eq!(json, r#"[300,"otter",600,30]"#);
+        assert_eq!(serde_json::from_str::<Step>(&json).unwrap(), step);
     }
 
     #[test]

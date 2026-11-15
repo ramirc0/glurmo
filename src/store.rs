@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::Deserialize;
 
-use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
+use crate::rollup::{BIN_S, Span, bin_of, rollup};
 use glurmo_model::usage::Step;
 use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeFlag,
@@ -642,7 +642,8 @@ impl History {
         }
     }
 
-    /// Usage summed per step, by login or partition, in time then key order. Bins the sampler has rolled
+    /// Core and wait seconds summed per step, by login or partition, in time then key order. Steps with
+    /// neither are left out. Bins the sampler has rolled
     /// up come from the usage table. Later bins are rolled up from the attempts, counting up to the
     /// query's end or `now`, whichever comes first.
     ///
@@ -662,27 +663,20 @@ impl History {
             By::Login => "login",
             By::Partition => "partition",
         };
-        let mut sums: BTreeMap<(i64, String), Usage> = BTreeMap::new();
+        let mut sums: BTreeMap<(i64, String), (u64, u64)> = BTreeMap::new();
 
         let mut closed = db.prepare(&format!(
-            "SELECT ?1 + (bin - ?1) / ?3 * ?3 AS at, {column}, sum(core_s), sum(gpu_s), sum(wait_s),
-                    sum(started), sum(ended), sum(failed)
+            "SELECT ?1 + (bin - ?1) / ?3 * ?3 AS at, {column}, sum(core_s), sum(wait_s)
              FROM usage WHERE bin >= ?1 AND bin < ?2 GROUP BY at, {column}"
         ))?;
         let rows = closed.query_map([from.0, to.0.min(rolled_to.0), step_s], |row| {
-            let usage = Usage {
-                core_s: row.get(2)?,
-                gpu_s: row.get(3)?,
-                wait_s: row.get(4)?,
-                started: row.get(5)?,
-                ended: row.get(6)?,
-                failed: row.get(7)?,
-            };
-            Ok(((row.get(0)?, row.get(1)?), usage))
+            Ok(((row.get(0)?, row.get(1)?), (row.get(2)?, row.get(3)?)))
         })?;
         for row in rows {
-            let (key, usage) = row?;
-            *sums.entry(key).or_default() += &usage;
+            let (key, (core_s, wait_s)): (_, (u64, u64)) = row?;
+            let sum = sums.entry(key).or_default();
+            sum.0 += core_s;
+            sum.1 += wait_s;
         }
 
         let mut bin = from.max(rolled_to);
@@ -697,22 +691,21 @@ impl History {
                     By::Login => login.0,
                     By::Partition => partition.0,
                 };
-                *sums.entry((step_of(bin), key)).or_default() += &usage;
+                let sum = sums.entry((step_of(bin), key)).or_default();
+                sum.0 += usage.core_s;
+                sum.1 += usage.wait_s;
             }
             bin = UnixTime(bin.0 + BIN_S);
         }
 
         Ok(sums
             .into_iter()
-            .map(|((at, key), usage)| Step {
+            .filter(|(_, sum)| *sum != (0, 0))
+            .map(|((at, key), (core_s, wait_s))| Step {
                 at: UnixTime(at),
                 key,
-                core_s: usage.core_s,
-                gpu_s: usage.gpu_s,
-                wait_s: usage.wait_s,
-                started: usage.started,
-                ended: usage.ended,
-                failed: (query.by == By::Partition).then_some(usage.failed),
+                core_s,
+                wait_s,
             })
             .collect())
     }
@@ -1732,34 +1725,24 @@ mod tests {
                 .usage(&query, UnixTime(T0 + 1_000))
                 .unwrap()
                 .into_iter()
-                .map(|step| {
-                    (
-                        step.at.0 - T0,
-                        step.key,
-                        step.core_s,
-                        step.ended,
-                        step.failed,
-                    )
-                })
+                .map(|step| (step.at.0 - T0, step.key, step.core_s))
                 .collect::<Vec<_>>()
         };
         assert_eq!(
             usage(By::Login),
             [
-                (0, "heron".into(), 2_400, 0, None),
-                (0, "otter".into(), 2_400, 0, None),
-                (600, "heron".into(), 0, 1, None),
-                (600, "otter".into(), 1_600, 0, None),
+                (0, "heron".into(), 2_400),
+                (0, "otter".into(), 2_400),
+                (600, "otter".into(), 1_600),
             ],
-            "otter's last 100 s come from the open bin"
+            "otter's last 100 s come from the open bin, and heron has nothing left in it"
         );
         assert_eq!(
             usage(By::Partition),
             [
-                (0, "4hours".into(), 2_400, 0, Some(0)),
-                (0, "long".into(), 2_400, 0, Some(0)),
-                (600, "4hours".into(), 1_600, 0, Some(0)),
-                (600, "long".into(), 0, 1, Some(1)),
+                (0, "4hours".into(), 2_400),
+                (0, "long".into(), 2_400),
+                (600, "4hours".into(), 1_600),
             ]
         );
     }

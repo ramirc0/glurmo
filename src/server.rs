@@ -198,7 +198,7 @@ struct UsageParams {
     by: Option<By>,
 }
 
-/// Usage summed per step. Failures come back only by partition.
+/// Core and wait seconds summed per step, each step as `[at, key, core_s, wait_s]`.
 async fn usage(
     State(app): State<App>,
     Query(params): Query<UsageParams>,

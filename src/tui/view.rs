@@ -386,11 +386,7 @@ pub(super) mod tests {
                     at: UnixTime(from.0 / 300 * 300 + i.cast_signed() * 300),
                     key: login.0.clone(),
                     core_s: cores * 300,
-                    gpu_s: 0,
                     wait_s: (i % 48) * 3_000 * (rank + 1),
-                    started: 0,
-                    ended: 0,
-                    failed: None,
                 });
             }
         }
