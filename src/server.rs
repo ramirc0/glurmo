@@ -447,7 +447,7 @@ mod tests {
     use crate::store::{Settings, Store};
     use axum::body::Body;
     use axum::http::Request;
-    use glurmo_model::{Event, Stats};
+    use glurmo_model::Event;
     use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
@@ -464,7 +464,7 @@ mod tests {
             .sampled(UnixTime::now(), 300)
             .unwrap();
         let hub = Hub::new(Site::zlurm());
-        hub.publish(UnixTime::now(), vec![Event::Stats(Stats::default())]);
+        hub.publish(UnixTime::now(), vec![Event::Outage(None)]);
         let library = watch::channel(Library::load(dir.path())).1;
         (router(hub.clone(), History::open(&path), library), hub)
     }

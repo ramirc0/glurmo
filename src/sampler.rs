@@ -189,7 +189,6 @@ pub struct Sampler {
     jobs: Pace,
     nodes: Pace,
     partitions: Pace,
-    stats: Pace,
     placing: Calls,
     looking_up: Calls,
     settling: Calls,
@@ -226,7 +225,6 @@ impl Sampler {
             jobs: Pace::new(intervals.jobs_s, jobs_most_s),
             nodes: Pace::new(intervals.nodes_s, u64::MAX),
             partitions: Pace::new(intervals.partitions_s, u64::MAX),
-            stats: Pace::new(intervals.stats_s, u64::MAX),
             placing: Calls::default(),
             looking_up: Calls::default(),
             settling: Calls::default(),
@@ -290,7 +288,6 @@ impl Sampler {
             &self.jobs.calls,
             &self.nodes.calls,
             &self.partitions.calls,
-            &self.stats.calls,
             &self.placing,
         ]
         .into_iter()
@@ -303,7 +300,6 @@ impl Sampler {
             self.jobs.health("jobs"),
             self.nodes.health("nodes"),
             self.partitions.health("partitions"),
-            self.stats.health("stats"),
             unpaced("placements", &self.placing),
             unpaced("lookups", &self.looking_up),
             unpaced("outcomes", &self.settling),
@@ -312,7 +308,7 @@ impl Sampler {
     }
 
     fn next_due(&self) -> UnixTime {
-        [&self.jobs, &self.nodes, &self.partitions, &self.stats]
+        [&self.jobs, &self.nodes, &self.partitions]
             .iter()
             .map(|pace| pace.next)
             .min()
@@ -364,10 +360,6 @@ impl Sampler {
             }
             tick.events.extend(self.settle().await);
             tick.listed = true;
-        }
-        if self.stats.is_due(now) {
-            let stats = self.stats.time(now, self.slurm.stats()).await?;
-            tick.events.push(Event::Stats(stats));
         }
         Ok(())
     }
@@ -519,7 +511,6 @@ mod tests {
                 Event::Nodes(_) => "nodes".to_owned(),
                 Event::NodesChanged(nodes) => format!("changed nodes:{}", nodes.len()),
                 Event::Partitions(_) => "partitions".to_owned(),
-                Event::Stats(_) => "stats".to_owned(),
                 Event::Users(_) => "users".to_owned(),
                 Event::Outage(_) => "outage".to_owned(),
             };
@@ -785,12 +776,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_stats_call_keeps_the_listings_before_it() {
-        let (kinds, deltas) = first_delta_when_the_first_call_fails(Call::Stats).await;
-        for kind in ["nodes", "partitions", "started"] {
-            assert!(kinds.contains(kind), "{kinds:?}");
-        }
-        assert!(deltas > 50, "only {deltas} deltas");
+    async fn the_sampler_never_asks_for_scheduler_stats() {
+        let slurm = busy_quarter_hour_with(|exchange| {
+            if exchange.call == Call::Stats {
+                exchange.answer = Err("asked for stats".into());
+            }
+        })
+        .await;
+        let hub = Hub::new(slurm.site().clone());
+        Sampler::new(slurm, &zlurm_config(), None, hub.clone())
+            .run(None)
+            .await;
+        let outages = hub
+            .deltas()
+            .iter()
+            .flat_map(|delta| delta.events.clone())
+            .filter(|event| matches!(event, Event::Outage(_)))
+            .count();
+        assert_eq!(outages, 0);
     }
 
     #[tokio::test]

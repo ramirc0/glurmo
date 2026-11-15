@@ -268,7 +268,6 @@ impl Follow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glurmo_model::Stats;
 
     const BOOT: UnixTime = UnixTime(1_000);
 
@@ -279,10 +278,7 @@ mod tests {
     /// Publishes ticks 10 s apart from `BOOT`, numbered `from` to `to`.
     fn publish(hub: &Hub, ticks: std::ops::RangeInclusive<i64>) {
         for tick in ticks {
-            hub.publish(
-                UnixTime(BOOT.0 + 10 * tick),
-                vec![Event::Stats(Stats::default())],
-            );
+            hub.publish(UnixTime(BOOT.0 + 10 * tick), vec![Event::Outage(None)]);
         }
     }
 

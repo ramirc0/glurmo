@@ -23,6 +23,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A node listing that names the same nodes sends only the nodes that changed. The full list goes out only when nodes join, leave or move. Before, any change sent every node. On zlurm's 15-minute fixture, node events shrink from 227 KB to 67 KB, and the whole stream from 994 KB to 834 KB.
 
+### Removed
+
+- The sampler no longer asks slurmctld for scheduler stats every minute, and the stream no longer carries them. No view showed them. `glurmo probe` still reads them. A config that sets `sample: (stats: ...)` MUST drop that key, or it fails to load.
+
 ### Fixed
 
 - A partition's free cores and GPUs leave out draining nodes, which take no new jobs. sinfo counts their idle CPUs as other. Before, they counted as free.

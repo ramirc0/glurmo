@@ -235,7 +235,6 @@ impl Store {
                 Event::Dequeued(_)
                 | Event::Updated { .. }
                 | Event::Partitions(_)
-                | Event::Stats(_)
                 | Event::Users(_)
                 | Event::Outage(_) => {}
             }

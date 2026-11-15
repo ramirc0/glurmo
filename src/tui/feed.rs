@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::library::Library;
     use crate::slurm::Site;
-    use glurmo_model::{Event, Stats};
+    use glurmo_model::Event;
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
 
@@ -322,7 +322,7 @@ mod tests {
     }
 
     fn publish(hub: &Hub) {
-        hub.publish(UnixTime::now(), vec![Event::Stats(Stats::default())]);
+        hub.publish(UnixTime::now(), vec![Event::Outage(None)]);
     }
 
     #[tokio::test]

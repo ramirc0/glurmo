@@ -150,9 +150,6 @@ pub struct Intervals {
     /// Partitions.
     #[serde(rename = "partitions", with = "crate::config::seconds")]
     pub partitions_s: u64,
-    /// Scheduler stats.
-    #[serde(rename = "stats", with = "crate::config::seconds")]
-    pub stats_s: u64,
     /// Placement lookups per jobs tick.
     pub lookups: u64,
 }
@@ -163,7 +160,6 @@ impl Default for Intervals {
             jobs_s: 10,
             nodes_s: 30,
             partitions_s: 600,
-            stats_s: 60,
             lookups: 25,
         }
     }

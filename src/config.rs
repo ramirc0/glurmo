@@ -211,7 +211,7 @@ mod tests {
     fn a_full_config_parses() {
         let config: Config = from_ron(
             r#"Config(
-                sample: (jobs: "15s", nodes: "1m", partitions: "10m", stats: "60s", lookups: 10),
+                sample: (jobs: "15s", nodes: "1m", partitions: "10m", lookups: 10),
                 store: (path: "/scratch/otter/glurmo/zlurm.sqlite", keep: Days(365), backfill: Days(7)),
                 server: (listen: "0.0.0.0:8765"),
                 names: FullName,
@@ -226,7 +226,6 @@ mod tests {
                 jobs_s: 15,
                 nodes_s: 60,
                 partitions_s: 600,
-                stats_s: 60,
                 lookups: 10,
             }
         );

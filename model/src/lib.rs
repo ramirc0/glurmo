@@ -784,8 +784,6 @@ pub enum Event {
     NodesChanged(Vec<Node>),
     /// Every partition.
     Partitions(Vec<Partition>),
-    /// Scheduler counters.
-    Stats(Stats),
     /// Users seen for the first time.
     Users(Vec<User>),
     /// Ticks started failing, or work again when `None`.
@@ -845,7 +843,7 @@ pub struct Running {
 ///
 /// let cluster: Cluster = serde_json::from_str(
 ///     r#"{"at": null, "nodes": [], "partitions": [], "running": [], "queue": [],
-///         "stats": null, "hides_jobs": false, "users": {}, "outage": null}"#,
+///         "hides_jobs": false, "users": {}, "outage": null}"#,
 /// )
 /// .unwrap();
 /// assert!(cluster.running.is_empty());
@@ -864,8 +862,6 @@ pub struct Cluster {
     /// Pending jobs.
     #[serde(serialize_with = "values", deserialize_with = "keyed")]
     pub queue: BTreeMap<AttemptKey, Attempt>,
-    /// Scheduler counters.
-    pub stats: Option<Stats>,
     /// Whether the scheduler hides other users' jobs, so cores that no visible job explains belong to someone hidden.
     pub hides_jobs: bool,
     /// Everyone seen so far.
@@ -1023,7 +1019,6 @@ impl Cluster {
                     }
                 }
                 Event::Partitions(partitions) => self.partitions.clone_from(partitions),
-                Event::Stats(stats) => self.stats = Some(stats.clone()),
                 Event::Users(users) => {
                     for user in users {
                         self.users.insert(user.login.clone(), user.clone());

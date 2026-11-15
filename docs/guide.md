@@ -20,7 +20,7 @@ Settings live in `~/.config/glurmo/config.ron`. Every field is optional.
 ```ron
 Config(
     slurm: (backend: Wire, controller: ["ctl-1:6817"]),
-    sample: (jobs: "10s", nodes: "30s", partitions: "10m", stats: "60s", lookups: 25),
+    sample: (jobs: "10s", nodes: "30s", partitions: "10m", lookups: 25),
     store: (path: "/scratch/you/glurmo/cluster.sqlite", keep: Forever, backfill: Days(30)),
     server: (listen: "127.0.0.1:8765"),
     tui: (server: "http://head:8765", layout: "tui", theme: "rose-pine", me: "otter"),

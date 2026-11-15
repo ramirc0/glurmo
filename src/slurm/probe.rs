@@ -199,7 +199,6 @@ fn suggest(site: &Site, squeue_ms: u64, sinfo_ms: u64) -> Intervals {
         jobs_s,
         nodes_s: duty(sinfo_ms, 30),
         partitions_s: 600,
-        stats_s: 60,
         lookups,
     }
 }
@@ -263,12 +262,8 @@ impl fmt::Display for Report {
         let suggested = &self.suggested;
         writeln!(
             f,
-            "\nsuggested     jobs {} s, nodes {} s, partitions {} s, stats {} s, lookups {} per tick",
-            suggested.jobs_s,
-            suggested.nodes_s,
-            suggested.partitions_s,
-            suggested.stats_s,
-            suggested.lookups
+            "\nsuggested     jobs {} s, nodes {} s, partitions {} s, lookups {} per tick",
+            suggested.jobs_s, suggested.nodes_s, suggested.partitions_s, suggested.lookups
         )
     }
 }
