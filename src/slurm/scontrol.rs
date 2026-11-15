@@ -148,6 +148,9 @@ impl CpuMap {
 ///
 /// Fails on a job without the job fields, a bad value, or a node that sinfo did not list.
 pub fn parse_jobs(stdout: &str, map: &CpuMap) -> Result<Vec<Placed>> {
+    if stdout.trim_end() == "No jobs in the system" {
+        return Ok(Vec::new());
+    }
     let starts: Vec<usize> = std::iter::once(0)
         .chain(stdout.match_indices("\nJobId=").map(|(i, _)| i + 1))
         .chain([stdout.len()])
@@ -202,7 +205,9 @@ fn placed(line: &str, map: &CpuMap) -> Result<Placed> {
             gres: follows(3, "GRES"),
         });
     }
-    let num_cpus: u32 = integer(record.require("NumCPUs")?)?;
+    // A job with a CPU range prints its NumCPUs as one too, such as `4-8`.
+    let num_cpus = record.require("NumCPUs")?;
+    let num_cpus: u32 = integer(num_cpus.split_once('-').map_or(num_cpus, |(low, _)| low))?;
     Ok(Placed {
         job: JobId(integer(record.require("JobId")?)?),
         start: time(record.require("StartTime")?)?,
@@ -413,6 +418,13 @@ mod tests {
         let job = one(PENDING_RANGE);
         assert_eq!(job.state, JobState::Pending);
         assert_eq!(job.placement, Placement(Vec::new()));
+        let job = one(&PENDING_RANGE.replace("NumCPUs=1 ", "NumCPUs=1-4 "));
+        assert_eq!(job.state, JobState::Pending);
+    }
+
+    #[test]
+    fn an_empty_queue_holds_no_jobs() {
+        assert_eq!(parse_jobs("No jobs in the system\n", &zlurm()).unwrap(), []);
     }
 
     #[test]

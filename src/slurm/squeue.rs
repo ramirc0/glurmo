@@ -172,6 +172,13 @@ mod tests {
     }
 
     #[test]
+    fn a_job_with_no_time_limit_ends_at_none() {
+        let line = "5|5|N/A|otter|long|RUNNING|4|cpu=4,mem=4G,node=1,billing=4|UNLIMITED|1794244136|1794244200|NONE|z1054|None|job1";
+        let job = parse(line).unwrap().remove(0);
+        assert_eq!((job.end, job.time_limit_s), (None, None));
+    }
+
+    #[test]
     fn throttled_range_counts_tasks_without_the_throttle() {
         let line = "9|9|45-200,300%48|kite|4hours|PENDING|2|cpu=2,mem=16G,node=1,billing=2|2:00:00|1794244136|N/A|N/A||JobArrayTaskLimit|job5";
         let range = parse(line).unwrap().remove(0).array.unwrap();

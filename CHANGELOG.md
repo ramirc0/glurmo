@@ -11,6 +11,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- The command backend reads squeue's `NONE` end and `INVALID` time limit, scontrol's `No jobs in the system`, and a `NumCPUs` range such as `4-8`. Before, each failed its whole listing.
 - GRES held without a device bitmap, such as `gpu:v100(CNT:2)`, and GRES counts in T or P no longer fail a whole job or node listing.
 - A sample interval under a second is a config error. Before, `"0s"` or `"500ms"` made glurmo call slurmctld without pause.
 - `/api/usage` and `/api/past/events` answer 400 to ranges whose length overflows. Before, a debug build panicked and a release build skipped the size limit.

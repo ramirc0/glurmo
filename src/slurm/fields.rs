@@ -41,6 +41,7 @@ pub fn is_placeholder(text: &str) -> bool {
             | "UNLIMITED"
             | "Partition_Limit"
             | "NOT_SET"
+            | "NONE"
     )
 }
 
@@ -54,13 +55,14 @@ pub fn integer<T: std::str::FromStr>(text: &str) -> Result<T> {
         .map_err(|_| anyhow::anyhow!("expected an integer, got {text:?}"))
 }
 
-/// Parses `[D-]HH:MM:SS` or `MM:SS` into seconds. Placeholders such as `UNLIMITED` give `None`.
+/// Parses `[D-]HH:MM:SS` or `MM:SS` into seconds. Placeholders such as `UNLIMITED` give `None`, and so
+/// does `INVALID`, which squeue prints for a limit over 365 days.
 ///
 /// # Errors
 ///
 /// Fails on any other text.
 pub fn seconds(duration: &str) -> Result<Option<u64>> {
-    if is_placeholder(duration) {
+    if is_placeholder(duration) || duration == "INVALID" {
         return Ok(None);
     }
     let (days, clock) = match duration.split_once('-') {
@@ -354,6 +356,11 @@ mod tests {
     #[test]
     fn durations() {
         assert_eq!(seconds("5:00").unwrap(), Some(300));
+        assert_eq!(
+            seconds("INVALID").unwrap(),
+            None,
+            "squeue's limit over 365 days"
+        );
         assert_eq!(seconds("12:00:00").unwrap(), Some(43_200));
         assert_eq!(seconds("60-00:00:00").unwrap(), Some(5_184_000));
         assert_eq!(seconds("1-02:03:04").unwrap(), Some(93_784));
