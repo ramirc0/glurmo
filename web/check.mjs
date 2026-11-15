@@ -4,7 +4,7 @@
 //
 // Usage: node web/check.mjs SERVER OUT.png [--size 1920x1080] [--query '?layout=tv'] [--settle 8] [--pull 3]
 //        [--pinch SCALE], which zooms in as a pinch does, [--eval EXPRESSION], which prints the expression's
-//        value after the page settles.
+//        value, awaited if it is a promise, after the page settles.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -146,7 +146,7 @@ if (pinch) {
 }
 
 if (expression) {
-  const { result } = await page("Runtime.evaluate", { expression: `JSON.stringify(${expression})`, returnByValue: true, awaitPromise: true });
+  const { result } = await page("Runtime.evaluate", { expression: `Promise.resolve(${expression}).then(JSON.stringify)`, returnByValue: true, awaitPromise: true });
   lines.push(`${expression} = ${result.value}`);
 }
 
