@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Fixed
+
+- The command backend reads a job whose name holds newlines. squeue prints such a name over several lines. Before, one such job failed every job listing while it was listed.
+
 ## [0.3.0] - 2026-11-15
 
 ### Changed

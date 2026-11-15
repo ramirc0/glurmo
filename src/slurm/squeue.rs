@@ -38,13 +38,26 @@ pub fn argv() -> Vec<String> {
 
 /// Parses the output of [`argv`].
 ///
+/// The name is printed last and can hold newlines. A line with too few columns continues the name of
+/// the job before it.
+///
 /// # Errors
 ///
-/// Fails on a line with too few columns or a value that does not parse.
+/// Fails on a first line with too few columns, or a value that does not parse.
 pub fn parse(stdout: &str) -> Result<Vec<Attempt>> {
-    stdout
-        .lines()
-        .map(|line| attempt(line).with_context(|| format!("squeue line {line:?}")))
+    let mut records: Vec<String> = Vec::new();
+    for line in stdout.lines() {
+        match records.last_mut() {
+            Some(record) if line.matches('|').count() < FIELDS.len() - 1 => {
+                record.push('\n');
+                record.push_str(line);
+            }
+            _ => records.push(line.to_owned()),
+        }
+    }
+    records
+        .iter()
+        .map(|record| attempt(record).with_context(|| format!("squeue line {record:?}")))
         .collect()
 }
 
@@ -204,6 +217,15 @@ mod tests {
                 PartitionName("12hours".into())
             ]
         );
+    }
+
+    #[test]
+    fn a_name_with_newlines_continues_on_the_next_lines() {
+        let line = "7|7|N/A|puma|4hours|PENDING|4|cpu=4,mem=4G,node=1,billing=4|1:00:00|1794244136|N/A|N/A||Priority|first\nsecond | half\n\nthird";
+        let jobs = parse(&format!("{line}\n{LIVE}")).unwrap();
+        assert_eq!(jobs.len(), 6);
+        assert_eq!(jobs[0].name, "first\nsecond | half\n\nthird");
+        assert_eq!(jobs[1].name, "job1");
     }
 
     #[test]
