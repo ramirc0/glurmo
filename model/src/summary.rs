@@ -1,6 +1,6 @@
 //! What the panels show, summed from a cluster and its occupancy. The terminal and web views share it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::layout::{Grouping, QueueBy};
 use crate::{
@@ -528,28 +528,70 @@ impl Tick {
     }
 }
 
-/// The starts and ends in `delta`, read against `cluster` before the delta applies. An attempt that
-/// starts and ends within one delta gives both.
+/// Recent starts and ends, latest first, up to [`Ticker::KEPT`] of them.
 ///
 /// # Examples
 ///
 /// ```
-/// # let json = r#"{
-/// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
-/// #     "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
-/// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": 1700000100, "end": null,
-/// #     "nodes": ["z1001"], "reason": null, "name": "align"
-/// # }"#;
-/// use rtviz_model::{Attempt, Cluster, Delta, Event, UnixTime};
-/// use rtviz_model::summary::ticks;
+/// use rtviz_model::summary::Ticker;
 ///
-/// let attempt: Attempt = serde_json::from_str(json).unwrap();
-/// let key = attempt.key;
-/// let events = vec![Event::Started { attempt }, Event::Ended { key, at: UnixTime(1_700_000_200), state: None }];
-/// let ticks = ticks(&Cluster::default(), &Delta { seq: 1, at: UnixTime(1_700_000_200), events });
-/// assert_eq!(ticks.iter().map(|tick| tick.started).collect::<Vec<_>>(), [true, false]);
+/// assert_eq!(Ticker::default().iter().count(), 0);
 /// ```
-pub fn ticks(cluster: &Cluster, delta: &Delta) -> Vec<Tick> {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Ticker(VecDeque<Tick>);
+
+impl Ticker {
+    /// The most ticks kept.
+    pub const KEPT: usize = 200;
+
+    /// Adds the starts and ends in `delta`, read against `cluster` before the delta applies. An attempt
+    /// that starts and ends within one delta gives both. An end with no known start gives nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let json = r#"{
+    /// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
+    /// #     "partitions": ["5days"], "state": "running", "state_raw": "RUNNING", "cpus": 8,
+    /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": 1700000100, "end": null,
+    /// #     "nodes": ["z1001"], "reason": null, "name": "align"
+    /// # }"#;
+    /// use rtviz_model::{Attempt, Cluster, Delta, Event, UnixTime};
+    /// use rtviz_model::summary::Ticker;
+    ///
+    /// let attempt: Attempt = serde_json::from_str(json).unwrap();
+    /// let key = attempt.key;
+    /// let events = vec![Event::Started { attempt }, Event::Ended { key, at: UnixTime(1_700_000_200), state: None }];
+    /// let mut ticker = Ticker::default();
+    /// ticker.record(&Cluster::default(), &Delta { seq: 1, at: UnixTime(1_700_000_200), events });
+    /// assert_eq!(ticker.iter().map(|tick| tick.started).collect::<Vec<_>>(), [false, true], "latest first");
+    /// ```
+    pub fn record(&mut self, cluster: &Cluster, delta: &Delta) {
+        for tick in ticks(cluster, delta) {
+            self.0.push_front(tick);
+        }
+        self.0
+            .make_contiguous()
+            .sort_by_key(|tick| std::cmp::Reverse(tick.at));
+        self.0.truncate(Self::KEPT);
+    }
+
+    /// The ticks, latest first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rtviz_model::summary::Ticker;
+    ///
+    /// assert!(Ticker::default().iter().next().is_none());
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = &Tick> {
+        self.0.iter()
+    }
+}
+
+/// The starts and ends in `delta`, in order, read against `cluster` before the delta applies.
+fn ticks(cluster: &Cluster, delta: &Delta) -> Vec<Tick> {
     let mut started: HashMap<_, &Attempt> = HashMap::new();
     let mut ticks = Vec::new();
     for event in &delta.events {

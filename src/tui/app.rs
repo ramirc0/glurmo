@@ -1,6 +1,6 @@
 //! The terminal view's state: the cluster, what the user picked, and what the feed reported.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::tz::TimeZone;
@@ -12,13 +12,10 @@ use crate::hub::Message;
 use crate::library::Library;
 use crate::slurm::Site;
 use rtviz_model::layout::{Layout, Pane};
-use rtviz_model::summary::{Tick, ticks};
+use rtviz_model::summary::Ticker;
 use rtviz_model::theme::Theme;
 use rtviz_model::usage::Usage;
 use rtviz_model::{Cluster, Delta, Login};
-
-/// Ticker lines kept.
-const TICKER: usize = 200;
 
 /// Text that narrows what the panels show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,7 +55,7 @@ pub struct App {
     /// Usage history, or why it could not be read.
     pub usage: Result<Usage, String>,
     /// Recent starts and ends, latest first.
-    pub ticker: VecDeque<Tick>,
+    pub ticker: Ticker,
     /// The time zone for clocks.
     pub tz: TimeZone,
     /// Whether the user asked to quit.
@@ -82,7 +79,7 @@ impl App {
             limits: Vec::new(),
             link: Link::Connecting,
             usage: Ok(Usage::default()),
-            ticker: VecDeque::new(),
+            ticker: Ticker::default(),
             tz,
             quit: false,
         }
@@ -140,13 +137,7 @@ impl App {
 
     /// Applies a delta and adds its starts and ends to the ticker, latest first.
     fn apply(&mut self, delta: &Delta) {
-        for tick in ticks(&self.cluster, delta) {
-            self.ticker.push_front(tick);
-        }
-        self.ticker
-            .make_contiguous()
-            .sort_by_key(|tick| std::cmp::Reverse(tick.at));
-        self.ticker.truncate(TICKER);
+        self.ticker.record(&self.cluster, delta);
         self.cluster.apply(delta);
     }
 
