@@ -20,13 +20,14 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::config::to_ron;
-use crate::hub::{EventId, Hub, Message};
+use crate::hub::{EventId, Hub, Message, Snapshot};
 use crate::library::Library;
+use crate::past::{self, Frame};
 use crate::sampler::Health;
 use crate::store::{By, History, UsageQuery};
 use rtviz_model::layout::Layout;
 use rtviz_model::theme::Theme;
-use rtviz_model::{Outage, UnixTime};
+use rtviz_model::{Delta, Outage, UnixTime};
 
 /// How long a browser waits before it reconnects a dropped stream.
 const RETRY: Duration = Duration::from_secs(5);
@@ -36,6 +37,9 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 
 /// The most steps one usage query may return per key.
 const MAX_STEPS: i64 = 10_000;
+
+/// The longest window of past changes one query may ask for.
+const MAX_PAST_S: i64 = 6 * 3_600;
 
 /// What every handler shares.
 #[derive(Clone)]
@@ -56,6 +60,8 @@ pub fn router(hub: Hub, history: History, library: watch::Receiver<Library>) -> 
         .route("/api/events", get(events))
         .route("/api/snapshot", get(snapshot))
         .route("/api/usage", get(usage))
+        .route("/api/past", get(past))
+        .route("/api/past/events", get(past_events))
         .route("/api/themes", get(themes))
         .route("/api/themes/{name}", get(theme))
         .route("/theme.css", get(theme_css))
@@ -175,7 +181,7 @@ impl Names {
 }
 
 /// The whole cluster as of the latest delta.
-async fn snapshot(State(app): State<App>) -> Json<crate::hub::Snapshot> {
+async fn snapshot(State(app): State<App>) -> Json<Snapshot> {
     Json(app.hub.snapshot())
 }
 
@@ -212,6 +218,91 @@ async fn usage(
         .await
         .context("the usage query panicked")??;
     Ok(Json(steps))
+}
+
+/// A past moment, in Unix seconds.
+#[derive(Deserialize)]
+struct PastParams {
+    at: i64,
+}
+
+/// The cluster at a past moment, in a snapshot's shape and marked as past.
+#[derive(Serialize)]
+struct Past {
+    past: bool,
+    #[serde(flatten)]
+    snapshot: Snapshot,
+}
+
+/// The cluster at `at`, as history rebuilds it. Load, memory in use, pending reasons, job names and
+/// scheduler counters are left out, because history does not keep them.
+async fn past(
+    State(app): State<App>,
+    Query(params): Query<PastParams>,
+) -> Result<Json<Past>, Failure> {
+    let at = UnixTime(params.at);
+    let history = Arc::clone(&app.history);
+    let (alive, health) = tokio::task::spawn_blocking(move || {
+        within_history(&history, at, at)?;
+        Ok::<_, Failure>((history.alive(at)?, history.node_health(at)?))
+    })
+    .await
+    .context("the past query panicked")??;
+    let frame = app.hub.read(Frame::of);
+    Ok(Json(Past {
+        past: true,
+        snapshot: Snapshot {
+            seq: 0,
+            site: app.hub.site(),
+            cluster: past::cluster_at(at, alive, &health, &frame),
+        },
+    }))
+}
+
+/// A window of the past, in Unix seconds.
+#[derive(Deserialize)]
+struct PastEventsParams {
+    from: i64,
+    to: i64,
+}
+
+/// The changes after `from` and up to `to`, at most six hours later, as deltas in time order. A window
+/// that reaches past now stops at now.
+async fn past_events(
+    State(app): State<App>,
+    Query(params): Query<PastEventsParams>,
+) -> Result<Json<Vec<Delta>>, Failure> {
+    let from = UnixTime(params.from);
+    let to = UnixTime(params.to.min(UnixTime::now().0));
+    if params.to <= params.from || params.to - params.from > MAX_PAST_S {
+        return Err(Failure(
+            StatusCode::BAD_REQUEST,
+            format!("from must come before to, at most {MAX_PAST_S} s before"),
+        ));
+    }
+    let history = Arc::clone(&app.history);
+    let (touched, health) = tokio::task::spawn_blocking(move || {
+        within_history(&history, from, from)?;
+        Ok::<_, Failure>((history.touched(from, to)?, history.node_health(to)?))
+    })
+    .await
+    .context("the past query panicked")??;
+    let frame = app.hub.read(Frame::of);
+    Ok(Json(past::deltas(from, to, touched, &health, &frame)))
+}
+
+/// Fails unless history covers `from` to `to`: from its start to now.
+fn within_history(history: &History, from: UnixTime, to: UnixTime) -> Result<(), Failure> {
+    let starts = history.starts()?;
+    let now = UnixTime::now();
+    match starts {
+        Some(starts) if starts <= from && to <= now => Ok(()),
+        Some(starts) => Err(Failure(
+            StatusCode::BAD_REQUEST,
+            format!("history covers {} to {}", starts.0, now.0),
+        )),
+        None => Err(Failure(StatusCode::NOT_FOUND, "no history yet".to_owned())),
+    }
 }
 
 async fn themes(State(app): State<App>) -> Json<std::collections::BTreeMap<String, Theme>> {
@@ -451,6 +542,46 @@ mod tests {
         ] {
             let (status, _, _) = get(&router, bad).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_past_comes_as_a_snapshot_and_deltas_and_stays_within_history() {
+        let (dir, hub) = crate::fixture::busy_store().await;
+        let history = History::open(&crate::fixture::store_path(&dir));
+        let library = watch::channel(Library::load(dir.path())).1;
+        let router = router(hub.clone(), history, library);
+        let ticks: Vec<i64> = hub.deltas().iter().map(|delta| delta.at.0).collect();
+        let (first, last) = (ticks[0], *ticks.last().unwrap());
+
+        let (status, _, body) = get(&router, &format!("/api/past?at={last}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let past: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(past["past"], true);
+        assert_eq!(past["at"], last);
+        assert_ne!(past["running"], serde_json::json!([]));
+        assert!(
+            past["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|node| node["load"].is_null())
+        );
+
+        let (status, _, body) =
+            get(&router, &format!("/api/past/events?from={first}&to={last}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let deltas: Vec<Delta> = serde_json::from_str(&body).unwrap();
+        assert!(deltas.len() > 10);
+
+        for bad in [
+            format!("/api/past?at={}", first - 86_400),
+            format!("/api/past/events?from={last}&to={first}"),
+            format!("/api/past/events?from={first}&to={}", first + 7 * 3_600),
+            "/api/past?at=now".to_owned(),
+        ] {
+            let (status, _, body) = get(&router, &bad).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
         }
     }
 

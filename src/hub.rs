@@ -125,6 +125,11 @@ impl Hub {
         self.0.boot
     }
 
+    /// The site facts the hub was made with.
+    pub fn site(&self) -> Site {
+        self.0.site.clone()
+    }
+
     /// Numbers a tick's events, applies them to the cluster, keeps them for an hour and sends them to
     /// every subscriber. A tick that changed nothing sends nothing.
     pub fn publish(&self, at: UnixTime, events: Vec<Event>) {
