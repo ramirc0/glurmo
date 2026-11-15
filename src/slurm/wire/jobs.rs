@@ -259,7 +259,7 @@ fn resources(u: &mut Unpack) -> Result<Option<Resources>> {
 
 /// Reads the hex task mask the controller sends for a pending array range. Anything else, such as
 /// an empty string, means no range.
-fn hex_tasks(text: &str) -> Result<Bitmap> {
+pub(super) fn hex_tasks(text: &str) -> Result<Bitmap> {
     let digits = text.strip_prefix("0x").unwrap_or_default();
     let mut set = Vec::new();
     for (position, digit) in digits.bytes().rev().enumerate() {
@@ -337,33 +337,13 @@ impl Job {
         })
     }
 
-    /// The array tasks this record stands for: a pending range, one task, or none.
     fn array(&self) -> Option<ArrayTasks> {
-        let job = JobId(self.array_base);
-        match &self.array_tasks {
-            Some(tasks) if !tasks.set.is_empty() => Some(ArrayTasks {
-                job,
-                spec: self.task_spec(tasks),
-                count: u32::try_from(tasks.set.len()).unwrap_or(u32::MAX),
-            }),
-            _ if self.array_task != NO_VAL => Some(ArrayTasks {
-                job,
-                spec: self.array_task.to_string(),
-                count: 1,
-            }),
-            _ => None,
-        }
-    }
-
-    /// Spells a pending range as squeue does under `SLURM_BITSTR_LEN=0`: a stepped range such as
-    /// `1-21:4`, else ranges such as `0-3,7`, then `%N` for a throttle.
-    fn task_spec(&self, tasks: &Bitmap) -> String {
-        let spec = stepped(&tasks.set).unwrap_or_else(|| ranges(&tasks.set));
-        if self.array_max_tasks == 0 {
-            spec
-        } else {
-            format!("{spec}%{}", self.array_max_tasks)
-        }
+        array_tasks(
+            self.array_base,
+            self.array_task,
+            self.array_tasks.as_ref(),
+            self.array_max_tasks,
+        )
     }
 
     /// The job's cores, GPUs and memory on each node, as `scontrol -d` reports them.
@@ -428,7 +408,41 @@ impl Job {
     }
 }
 
-fn epoch(time: i64) -> Option<UnixTime> {
+/// The array tasks a record stands for: a pending range, one task, or none.
+pub(super) fn array_tasks(
+    base: u32,
+    task: u32,
+    range: Option<&Bitmap>,
+    max_tasks: u32,
+) -> Option<ArrayTasks> {
+    let job = JobId(base);
+    match range {
+        Some(range) if !range.set.is_empty() => Some(ArrayTasks {
+            job,
+            spec: task_spec(&range.set, max_tasks),
+            count: u32::try_from(range.set.len()).unwrap_or(u32::MAX),
+        }),
+        _ if task != NO_VAL => Some(ArrayTasks {
+            job,
+            spec: task.to_string(),
+            count: 1,
+        }),
+        _ => None,
+    }
+}
+
+/// Spells a pending range as squeue and sacct do under `SLURM_BITSTR_LEN=0`: a stepped range such as
+/// `1-21:4`, else ranges such as `0-3,7`, then `%N` for a throttle.
+fn task_spec(set: &[u32], max_tasks: u32) -> String {
+    let spec = stepped(set).unwrap_or_else(|| ranges(set));
+    if max_tasks == 0 {
+        spec
+    } else {
+        format!("{spec}%{max_tasks}")
+    }
+}
+
+pub(super) fn epoch(time: i64) -> Option<UnixTime> {
     (time != 0).then_some(UnixTime(time))
 }
 
@@ -467,7 +481,7 @@ fn stepped(set: &[u32]) -> Option<String> {
 }
 
 /// `job_state_string`: a flag wins over the base state.
-fn state_name(state: u32) -> &'static str {
+pub(super) fn state_name(state: u32) -> &'static str {
     const FLAGS: [(u32, &str); 12] = [
         (1 << 15, "COMPLETING"),
         (1 << 23, "STAGE_OUT"),

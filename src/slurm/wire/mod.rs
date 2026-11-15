@@ -1,5 +1,6 @@
 //! Slurm's RPC protocol, spoken directly to slurmctld and slurmdbd.
 
+pub mod accounting;
 pub mod config;
 pub mod jobs;
 pub mod munge;
@@ -9,7 +10,7 @@ pub mod reasons;
 pub mod rpcs;
 pub mod stats;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -24,6 +25,8 @@ pub const PROTOCOL: u16 = 40 << 8;
 const AUTH_MUNGE: u32 = 101;
 const HASH_NONE: u8 = 1;
 const NO_AUTH_CRED: u16 = 1 << 6;
+const GLOBAL_AUTH_KEY: u16 = 1;
+const SLURMDBD_CONNECTION: u16 = 1 << 1;
 const AF_INET: u16 = 2;
 const AF_INET6: u16 = 10;
 const RESPONSE_SLURM_RC: u16 = 8001;
@@ -56,7 +59,7 @@ impl Controller {
     /// Fails when no address answers, munged refuses, the reply is malformed, or the controller
     /// returns an error code.
     pub async fn call(&self, kind: u16, body: &[u8]) -> Result<Reply> {
-        let request = self.frame(kind, body).await?;
+        let request = frame(&self.munge, self.decoder, kind, 0, body).await?;
         let mut failures = Vec::new();
         for address in &self.addresses {
             match tokio::time::timeout(TIMEOUT, exchange(address, &request)).await {
@@ -67,35 +70,51 @@ impl Controller {
         }
         bail!("slurmctld did not answer: {}", failures.join("; "))
     }
+}
 
-    async fn frame(&self, kind: u16, body: &[u8]) -> Result<Vec<u8>> {
-        let mut hash = vec![HASH_NONE];
-        hash.extend(kind.to_be_bytes());
-        let credential = munge::credential(&self.munge, self.decoder, &hash).await?;
-        let mut header = Pack::default();
-        header
-            .u16(PROTOCOL)
-            .u16(0)
-            .u16(kind)
-            .u32(u32::try_from(body.len())?)
-            .u16(0)
-            .u16(0)
-            .u16(0);
-        let mut auth = Pack::default();
-        auth.u32(AUTH_MUNGE).str(Some(&credential));
-        let len = header.0.len() + auth.0.len() + body.len();
-        let mut frame = Pack::default();
-        frame.u32(u32::try_from(len)?);
-        frame.0.extend(header.0);
-        frame.0.extend(auth.0);
-        frame.0.extend(body);
-        Ok(frame.0)
+/// Frames a request: its length, a header, a munge credential and the body. A slurmdbd connection
+/// puts the message type before the header too.
+async fn frame(
+    munge: &Path,
+    decoder: Option<u32>,
+    kind: u16,
+    flags: u16,
+    body: &[u8],
+) -> Result<Vec<u8>> {
+    let mut hash = vec![HASH_NONE];
+    hash.extend(kind.to_be_bytes());
+    let credential = munge::credential(munge, decoder, &hash).await?;
+    let mut header = Pack::default();
+    if flags & SLURMDBD_CONNECTION != 0 {
+        header.u16(kind);
     }
+    header
+        .u16(PROTOCOL)
+        .u16(flags)
+        .u16(kind)
+        .u32(u32::try_from(body.len())?)
+        .u16(0)
+        .u16(0)
+        .u16(0);
+    let mut auth = Pack::default();
+    auth.u32(AUTH_MUNGE).str(Some(&credential));
+    let len = header.0.len() + auth.0.len() + body.len();
+    let mut frame = Pack::default();
+    frame.u32(u32::try_from(len)?);
+    frame.0.extend(header.0);
+    frame.0.extend(auth.0);
+    frame.0.extend(body);
+    Ok(frame.0)
 }
 
 async fn exchange(address: &str, request: &[u8]) -> Result<Vec<u8>> {
     let mut stream = TcpStream::connect(address).await?;
     stream.write_all(request).await?;
+    read_frame(&mut stream).await
+}
+
+/// Reads a length-prefixed message.
+async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
     let len = stream.read_u32().await? as usize;
     if len > MAX_MESSAGE {
         bail!("a {len}-byte reply is too large");
@@ -168,8 +187,8 @@ mod tests {
     use super::*;
     use crate::slurm::scontrol::CpuMap;
     use crate::slurm::source::Source;
-    use crate::slurm::{scontrol, sdiag, sinfo, squeue};
-    use glurmo_model::UnixTime;
+    use crate::slurm::{sacct, scontrol, sdiag, sinfo, squeue};
+    use glurmo_model::{JobId, UnixTime};
 
     fn zlurm() -> Controller {
         Controller {
@@ -324,5 +343,56 @@ mod tests {
         };
         assert_eq!(kinds(&wire), kinds(&printed));
         eprintln!("{:?}\n{:?}", &wire.rpcs[..3], &printed.rpcs[..3]);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live slurmdbd"]
+    async fn accounting_matches_sacct() {
+        let addresses = vec!["10.7.17.211:6819".to_owned()];
+        let socket = std::path::Path::new(munge::SOCKET);
+        let now = UnixTime::now();
+        let (from, to) = (UnixTime(now.0 - 3600), UnixTime(now.0 - 600));
+        let started = std::time::Instant::now();
+        let window = accounting::Query::Window(from, to);
+        let (records, tres) =
+            accounting::records(&addresses, socket, Some(64030), "zlurm", &window, now)
+                .await
+                .unwrap();
+        eprintln!("{} records in {:?}", records.len(), started.elapsed());
+        let mut uids: Vec<u32> = records.iter().map(accounting::Record::user_id).collect();
+        uids.sort_unstable();
+        uids.dedup();
+        let logins = crate::passwd::logins(&uids).await.unwrap();
+        let mut wire: Vec<_> = records
+            .iter()
+            .map(|r| r.attempt(tres, &logins).unwrap())
+            .collect();
+        let mut printed = cli(sacct::history_argv(from, to).unwrap(), sacct::parse_history).await;
+        let order = |a: &glurmo_model::Attempt| (a.key, a.array.as_ref().map(|t| t.spec.clone()));
+        wire.sort_by_key(order);
+        printed.sort_by_key(order);
+        assert_eq!(wire.len(), printed.len());
+        let differ: Vec<_> = wire.iter().zip(&printed).filter(|(w, p)| w != p).collect();
+        for (w, p) in differ.iter().take(3) {
+            eprintln!("wire  {w:?}\nsacct {p:?}\n");
+        }
+        assert!(
+            differ.is_empty(),
+            "{} of {} differ",
+            differ.len(),
+            wire.len()
+        );
+
+        let ids: Vec<JobId> = printed.iter().take(20).map(|a| a.key.job).collect();
+        let jobs = accounting::Query::Jobs(&ids);
+        let (records, _) =
+            accounting::records(&addresses, socket, Some(64030), "zlurm", &jobs, now)
+                .await
+                .unwrap();
+        let mut wire: Vec<_> = records.iter().map(|r| r.outcome().unwrap()).collect();
+        let mut printed = cli(sacct::argv(&ids), sacct::parse).await;
+        wire.sort_by_key(|o| o.key);
+        printed.sort_by_key(|o| o.key);
+        assert_eq!(wire, printed);
     }
 }
