@@ -213,17 +213,15 @@ fn gres_entry(entry: &str) -> Result<Gres<'_>> {
     };
     let mut parts: Vec<&str> = spec.split(':').collect();
     let name = parts.remove(0);
-    // A GRES held without a device bitmap prints as `name:type(CNT:n)`, with no count before it.
     let counted = parts
         .last()
         .is_some_and(|last| last.starts_with(|c: char| c.is_ascii_digit()));
-    let count = match (
-        counted,
-        detail.and_then(|detail| detail.strip_prefix("CNT:")),
-    ) {
-        (true, _) => gres_count(parts.pop().unwrap_or_default())?,
-        (false, Some(count)) => integer(count)?,
-        (false, None) => 1,
+    let count = match detail.and_then(|detail| detail.strip_prefix("CNT:")) {
+        // A GRES held without a device bitmap prints as `name:type(CNT:n)`, with no count before it,
+        // so a type such as `2080` is no count.
+        Some(count) => integer(count)?,
+        None if counted => gres_count(parts.pop().unwrap_or_default())?,
+        None => 1,
     };
     let kind = parts
         .into_iter()
@@ -447,6 +445,10 @@ mod tests {
         assert_eq!((typed[0].kind, typed[0].count), (Some("v100"), 2));
         let untyped = gres("craynetwork(CNT:1)").unwrap();
         assert_eq!((untyped[0].kind, untyped[0].count), (None, 1));
+        let numbered = gres("gpu:2080(CNT:2)").unwrap();
+        assert_eq!((numbered[0].kind, numbered[0].count), (Some("2080"), 2));
+        let named = gres("gpu:1080ti(CNT:1)").unwrap();
+        assert_eq!((named[0].kind, named[0].count), (Some("1080ti"), 1));
         assert_eq!(gres("scratch:no_consume:4T").unwrap()[0].count, 4 << 40);
         assert_eq!(gres("bb:2P").unwrap()[0].count, 2 << 50);
     }
