@@ -4,6 +4,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-15
+
 ### Added
 
 - `glurmo tui --me LOGIN`, and `me` in the config's `tui` section, name whose jobs `m` and the `Mine` panel show, as `?me=` does on the web. Before, the TUI always took `$USER`, which is wrong when following another site's server.
@@ -12,7 +14,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - `record --pseudonymize` and `pseudonymize` also rewrite free-text reasons of jobs and nodes as `reason1`, `reason2` and so on, and every error's text as a fixed string. Reasons that are one word, as Slurm's own are, stay. Before, a job's reason could quote `user=` from an association message, a node's reason kept what an operator typed, and an error could quote raw squeue or scontrol output.
 - Every TUI panel reads the filter as the jobs panel does. Each word must appear in a login, full name, partition, node, job ID, job name or reason. Before, the other panels looked for the whole text in one field, so `otter long` or a job ID showed nothing there.
-- A node listing that names the same nodes sends only the nodes that changed. The full list goes out only when nodes join, leave or move. Before, any change sent every node. On zlurm's 15-minute fixture, node events shrink from 227 KB to 67 KB, and the whole stream from 994 KB to 834 KB.
+- A node listing that names the same nodes sends only the nodes that changed. The full list goes out only when nodes join, leave or move. Before, any change sent every node. A TUI that follows a server must match its version. On zlurm's 15-minute fixture, node events shrink from 227 KB to 67 KB, and the whole stream from 994 KB to 834 KB.
 - The protocol backend places jobs from the tick's job listing, so each tick sends slurmctld one job-info request instead of two.
 - The protocol backend reads every field of each reply and fails one with bytes left over, so a layout it misreads shows as an error. It also checks the return code of slurmdbd's TRES list. Before, the configuration, scheduler statistics and TRES walks stopped early, and nothing checked what remained.
 - The jobs list keeps the rows whose text has not changed, so a delta or a filter change builds only the rows that appear or change. On a replay with 1,170 rows, ten deltas rebuilt 12,446 rows before and 2,833 now. A search that every row matched rebuilt all 1,170 before and none now.
@@ -116,7 +118,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - `glurmo record`, `pseudonymize`, `convert` and `serve --replay --speed`, for recordings, demos and test fixtures.
 - Account lookups through `/etc/passwd` and SSSD's socket, so the static binary sees directory users.
 
-[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ramirc0/glurmo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ramirc0/glurmo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ramirc0/glurmo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ramirc0/glurmo/releases/tag/v0.1.0
