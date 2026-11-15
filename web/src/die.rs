@@ -15,6 +15,7 @@ use rtviz_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use web_sys::CanvasRenderingContext2d;
 
 use crate::paint::{Rgb, Surface, user_color};
+use crate::replay::{Cell, Effect, Effects};
 use crate::state::{Highlight, State};
 use crate::tip::Tip;
 
@@ -262,19 +263,20 @@ impl Pitch {
     }
 }
 
-/// Lays out `groups` in a panel `width` wide, at the largest core pitch whose board fits `height`. Tiles
-/// keep their gauges while cores stay at least the smallest gauged pitch, and drop them after. Tiles go
-/// brief when nothing fits, and take the smallest brief style when even that overflows.
-pub fn board<'a>(groups: &[NodeGroup<'a>], width: f64, height: f64) -> Board<'a> {
-    let gauged = GAUGED_PITCHES
+/// Lays out `groups` in a panel `width` wide, at the largest core pitch whose board fits `height`. With
+/// `gauges`, tiles keep them while cores stay at least the smallest gauged pitch, and drop them after.
+/// Tiles go brief when nothing fits, and take the smallest brief style when even that overflows.
+pub fn board<'a>(groups: &[NodeGroup<'a>], width: f64, height: f64, gauges: bool) -> Board<'a> {
+    let with_gauges = GAUGED_PITCHES
         .rev()
+        .filter(|_| gauges)
         .map(|pitch| Style::Full(Pitch::new(pitch, true)));
     let bare = PITCHES
         .rev()
         .map(|pitch| Style::Full(Pitch::new(pitch, false)));
     let brief = BRIEFS.map(Style::Brief);
     let mut board = None;
-    for style in gauged.chain(bare).chain(brief) {
+    for style in with_gauges.chain(bare).chain(brief) {
         let packed = pack(groups, width, style);
         if packed.height <= height {
             return packed;
@@ -507,6 +509,8 @@ pub fn Die(group: Grouping) -> impl IntoView {
     let tip = RwSignal::new(None::<Tip>);
     let panel = NodeRef::<leptos::html::Section>::new();
     let overflow = RwSignal::new(None::<f64>);
+    // History keeps no load or memory in use, so a replay draws no gauges.
+    let gauged = move || state.replay.with_untracked(Option::is_none);
     let visible = move || {
         panel.get_untracked().map(|panel| {
             (
@@ -525,7 +529,7 @@ pub fn Die(group: Grouping) -> impl IntoView {
         let found = state.cluster.with_untracked(|cluster| {
             state.occupancy.with_untracked(|occupancy| {
                 let groups = node_groups(cluster, group);
-                let board = board(&groups, width, height);
+                let board = board(&groups, width, height, gauged());
                 let (node, spot) = spot_at(&board, x, y)?;
                 Some(Tip::of(cluster, occupancy, node, spot))
             })
@@ -538,20 +542,24 @@ pub fn Die(group: Grouping) -> impl IntoView {
         };
         let height = visible().map_or(height, |(_, height)| height);
         let highlight = state.highlight.get();
+        let playhead = state.replay.get();
         state.cluster.with(|cluster| {
             state.occupancy.with(|occupancy| {
                 let groups = node_groups(cluster, group);
-                let board = board(&groups, width, height);
+                let board = board(&groups, width, height, playhead.is_none());
                 let needed = (board.height > height).then(|| board.height.ceil());
                 overflow.maybe_update(|overflow| std::mem::replace(overflow, needed) != needed);
-                let ink = Ink {
-                    context,
-                    theme: &theme,
-                    cluster,
-                    occupancy,
-                    highlight: highlight.as_ref(),
-                };
-                ink.board(&groups, &board);
+                state.engine.with_value(|engine| {
+                    let ink = Ink {
+                        context,
+                        theme: &theme,
+                        cluster,
+                        occupancy,
+                        highlight: highlight.as_ref(),
+                        effects: playhead.map(|playhead| (&engine.effects, playhead.at)),
+                    };
+                    ink.board(&groups, &board);
+                });
             });
         });
     };
@@ -584,6 +592,8 @@ struct Ink<'a> {
     cluster: &'a Cluster,
     occupancy: &'a Occupancies,
     highlight: Option<&'a Highlight>,
+    /// While replaying, the cells that just changed hands and the playhead.
+    effects: Option<(&'a Effects, f64)>,
 }
 
 impl Ink<'_> {
@@ -729,15 +739,55 @@ impl Ink<'_> {
             .cores
             .first()
             .map_or(1.0, |rect| if rect.w > 6.0 { 2.0 } else { 1.0 });
-        for (rect, owner) in tile.cores.iter().zip(cores) {
-            self.fill(*rect, radius, self.cell(*owner, empty));
+        let effects = self
+            .effects
+            .and_then(|(effects, now)| Some((effects.get(&node.name)?, now)));
+        let effect = |cell| {
+            let (cells, now) = effects?;
+            let effect = cells.get(&cell)?;
+            Some((effect, effect.strength(now)?))
+        };
+        for (index, (rect, owner)) in tile.cores.iter().zip(cores).enumerate() {
+            let (rect, color) = self.lit(*rect, *owner, empty, effect(Cell::Core(index)));
+            self.fill(rect, radius, color);
         }
         let stacks = memory_stacks(node);
-        for (rect, owner) in tile.gpus.iter().zip(gpus) {
-            self.gpu(*rect, self.cell(*owner, empty), stacks);
+        for (index, (rect, owner)) in tile.gpus.iter().zip(gpus).enumerate() {
+            let (_, color) = self.lit(*rect, *owner, empty, effect(Cell::Gpu(index)));
+            self.gpu(*rect, color, stacks);
         }
         if gauges {
             self.gauges(node, frame);
+        }
+    }
+
+    /// A cell's rectangle and color, with a replay's effect on it at `strength`: a start flashes it
+    /// toward the text color and swells it, and an end leaves the old holder's color fading on a free cell.
+    fn lit(
+        &self,
+        rect: Rect,
+        owner: Option<Owner>,
+        empty: Rgb,
+        effect: Option<(&Effect, f64)>,
+    ) -> (Rect, Rgb) {
+        let color = self.cell(owner, empty);
+        match effect {
+            Some((effect, strength)) if effect.started && owner.is_some() => {
+                let grow = 1.5 * strength;
+                let swollen = Rect {
+                    x: rect.x - grow,
+                    y: rect.y - grow,
+                    w: rect.w + 2.0 * grow,
+                    h: rect.h + 2.0 * grow,
+                };
+                let text = Self::rgb(&self.theme.ui.text);
+                (swollen, color.fade(text, 1.0 - 0.85 * strength))
+            }
+            Some((effect, strength)) if !effect.started && owner.is_none() => {
+                let held = user_color(self.theme, self.cluster, &effect.login);
+                (rect, held.fade(empty, 0.6 * strength))
+            }
+            _ => (rect, color),
         }
     }
 
@@ -989,7 +1039,7 @@ mod tests {
     fn a_point_finds_its_core_its_gpu_or_its_tile() {
         let nodes = [node("z1", 4, 0), node("g1", 4, 2)];
         let groups = [group("cpu", &nodes[..1]), group("gpu", &nodes[1..])];
-        let board = board(&groups, 800.0, 600.0);
+        let board = board(&groups, 800.0, 600.0, true);
         let middle = |rect: &Rect| (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
         let cpu = &board.tiles[0];
         let (x, y) = middle(&cpu.cores[3]);
@@ -1034,7 +1084,7 @@ mod tests {
     #[test]
     fn a_roomy_panel_gets_the_largest_cores() {
         let nodes = [node("z1", 52, 0)];
-        let board = board(&[group("cpu", &nodes)], 1_000.0, 1_000.0);
+        let board = board(&[group("cpu", &nodes)], 1_000.0, 1_000.0, true);
         assert!(matches!(board.style, Style::Full(_)));
         let core = board.tiles[0].cores[0];
         assert_eq!(core.w, 16.0, "pitch 18 less a gap of 2");
@@ -1045,19 +1095,30 @@ mod tests {
     fn cores_shrink_until_the_board_fits_then_go_brief() {
         let nodes: Vec<Node> = (0..40).map(|i| node(&format!("z{i}"), 52, 0)).collect();
         let groups = [group("cpu", &nodes)];
-        let roomy = board(&groups, 1_400.0, 2_000.0);
-        let tight = board(&groups, 1_400.0, 600.0);
+        let roomy = board(&groups, 1_400.0, 2_000.0, true);
+        let tight = board(&groups, 1_400.0, 600.0, true);
         assert!(tight.tiles[0].cores[0].w < roomy.tiles[0].cores[0].w);
         assert!(tight.height <= 600.0);
-        let cramped = board(&groups, 1_400.0, 150.0);
+        let cramped = board(&groups, 1_400.0, 150.0, true);
         assert!(matches!(cramped.style, Style::Brief(_)));
         assert_eq!(cramped.tiles[0].cores, []);
     }
 
     #[test]
+    fn a_board_without_gauges_spends_their_room_on_cores() {
+        let nodes: Vec<Node> = (0..40).map(|i| node(&format!("z{i}"), 52, 0)).collect();
+        let groups = [group("cpu", &nodes)];
+        let gauged = board(&groups, 1_400.0, 2_000.0, true);
+        let bare = board(&groups, 1_400.0, 2_000.0, false);
+        assert!(matches!(gauged.style, Style::Full(pitch) if pitch.gauges));
+        assert!(matches!(bare.style, Style::Full(pitch) if !pitch.gauges));
+        assert!(bare.height < gauged.height);
+    }
+
+    #[test]
     fn sockets_stack_and_gpus_sit_above_the_cores() {
         let nodes = [node("g1", 16, 4)];
-        let board = board(&[group("gpu", &nodes)], 600.0, 600.0);
+        let board = board(&[group("gpu", &nodes)], 600.0, 600.0, true);
         let tile = &board.tiles[0];
         let first_socket = tile.cores[0].y;
         let second_socket = tile.cores[8].y;
@@ -1073,10 +1134,20 @@ mod tests {
     fn small_groups_share_a_row_and_big_ones_wrap() {
         let cpu: Vec<Node> = (0..3).map(|i| node(&format!("c{i}"), 16, 0)).collect();
         let gpu = [node("g1", 16, 4)];
-        let board = board(&[group("cpu", &cpu), group("gpu", &gpu)], 2_000.0, 2_000.0);
+        let board = board(
+            &[group("cpu", &cpu), group("gpu", &gpu)],
+            2_000.0,
+            2_000.0,
+            true,
+        );
         assert_eq!(board.labels[0].y, board.labels[1].y, "side by side");
         assert!(board.labels[1].x > board.labels[0].x + board.labels[0].w);
-        let narrow = super::board(&[group("cpu", &cpu), group("gpu", &gpu)], 300.0, 2_000.0);
+        let narrow = super::board(
+            &[group("cpu", &cpu), group("gpu", &gpu)],
+            300.0,
+            2_000.0,
+            true,
+        );
         assert!(narrow.labels[1].y > narrow.labels[0].y, "wrapped");
     }
 
@@ -1088,6 +1159,7 @@ mod tests {
             &[group("skylake", &skylake), group("gpu", &gpu)],
             2_000.0,
             2_000.0,
+            true,
         );
         let first = &board.labels[0];
         assert!(first.w >= title_width(&group("skylake", &skylake)));
@@ -1121,9 +1193,9 @@ mod tests {
     fn zlurm_fits_full_tiles_in_a_tv_die_panel() {
         let nodes = zlurm();
         let groups: Vec<NodeGroup> = nodes.iter().map(|nodes| group("g", nodes)).collect();
-        let board = board(&groups, 1_330.0, 690.0);
+        let board = board(&groups, 1_330.0, 690.0, true);
         assert!(matches!(board.style, Style::Full(_)));
-        let roomy = super::board(&groups, 1_330.0, 2_000.0);
+        let roomy = super::board(&groups, 1_330.0, 2_000.0, true);
         assert!(
             matches!(roomy.style, Style::Full(Pitch { gauges: true, .. })),
             "gauges come back when there is room"
@@ -1134,7 +1206,7 @@ mod tests {
     fn zlurm_fits_a_small_tv_in_one_line_tiles() {
         let nodes = zlurm();
         let groups: Vec<NodeGroup> = nodes.iter().map(|nodes| group("g", nodes)).collect();
-        let board = board(&groups, 940.0, 400.0);
+        let board = board(&groups, 940.0, 400.0, true);
         assert!(board.height <= 400.0, "{}", board.height);
     }
 
