@@ -1,9 +1,11 @@
 //! Slurm's RPC protocol, spoken directly to slurmctld and slurmdbd.
 
 pub mod config;
+pub mod jobs;
 pub mod munge;
 pub mod nodes;
 pub mod pack;
+pub mod reasons;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -162,8 +164,10 @@ impl std::error::Error for ReturnCode {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slurm::scontrol::CpuMap;
     use crate::slurm::source::Source;
-    use crate::slurm::{scontrol, sinfo};
+    use crate::slurm::{scontrol, sinfo, squeue};
+    use glurmo_model::UnixTime;
 
     fn zlurm() -> Controller {
         Controller {
@@ -222,5 +226,77 @@ mod tests {
             }
             assert_eq!(wire, listed);
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live slurmctld"]
+    async fn jobs_and_placements_match_squeue_and_scontrol() {
+        let controller = zlurm();
+        let started = std::time::Instant::now();
+        let reply = controller
+            .call(jobs::REQUEST, &jobs::request())
+            .await
+            .unwrap();
+        eprintln!(
+            "job info: {} bytes in {:?}",
+            reply.body.len(),
+            started.elapsed()
+        );
+        let decoded = jobs::decode(&reply.body).unwrap();
+        let now = UnixTime::now();
+        let mut uids: Vec<u32> = decoded.iter().map(jobs::Job::user_id).collect();
+        uids.sort_unstable();
+        uids.dedup();
+        let logins = crate::passwd::logins(&uids).await.unwrap();
+        let wire: Vec<_> = decoded
+            .iter()
+            .map(|job| job.attempt(now, &logins).unwrap())
+            .collect();
+        let placed: Vec<_> = decoded.iter().map(|job| job.placed().unwrap()).collect();
+        let listed = cli(squeue::argv(), squeue::parse).await;
+        let nodes = cli(sinfo::argv(), sinfo::parse).await;
+        let map = CpuMap::new(&nodes, crate::slurm::Version(23, 11, 4));
+        let shown = cli(scontrol::jobs_argv(), |out| scontrol::parse_jobs(out, &map)).await;
+        let by_key: std::collections::HashMap<_, _> = listed
+            .iter()
+            .map(|job| ((job.key, job.array.as_ref().map(|a| a.spec.clone())), job))
+            .collect();
+        let mut differ = 0;
+        for job in &wire {
+            match by_key.get(&(job.key, job.array.as_ref().map(|a| a.spec.clone()))) {
+                Some(listed) if *listed == job => {}
+                Some(listed) => {
+                    differ += 1;
+                    if differ <= 5 {
+                        eprintln!("wire  {job:?}\nsqueue {listed:?}\n");
+                    }
+                }
+                None => differ += 1,
+            }
+        }
+        eprintln!(
+            "{} wire jobs, {} squeue jobs, {differ} differ",
+            wire.len(),
+            listed.len()
+        );
+        let shown: std::collections::HashMap<_, _> = shown.iter().map(|p| (p.job, p)).collect();
+        let mut placements_differ = 0;
+        for p in &placed {
+            if let Some(s) = shown.get(&p.job)
+                && **s != *p
+            {
+                placements_differ += 1;
+                if placements_differ <= 3 {
+                    eprintln!("wire     {p:?}\nscontrol {s:?}\n");
+                }
+            }
+        }
+        eprintln!("{placements_differ} placements differ of {}", shown.len());
+        assert!(
+            differ * 100 <= wire.len(),
+            "{differ} of {} differ",
+            wire.len()
+        );
+        assert!(placements_differ * 100 <= placed.len());
     }
 }
