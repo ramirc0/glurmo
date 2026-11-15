@@ -91,7 +91,7 @@ pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Job>> {
     let count = u.u32()?;
     let _last_update = u.time()?;
     let _last_backfill = u.time()?;
-    (0..count)
+    let jobs = (0..count)
         .map(|i| {
             match protocol {
                 Protocol::V23_11 => v23_11(u),
@@ -99,7 +99,9 @@ pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Job>> {
             }
             .with_context(|| format!("job {i}"))
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    u.finish()?;
+    Ok(jobs)
 }
 
 #[allow(

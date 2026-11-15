@@ -72,6 +72,16 @@ pub fn decode(body: &[u8], protocol: Protocol) -> Result<Stats> {
     if kinds.len() != counts.len() || kinds.len() != times.len() {
         bail!("RPC arrays differ in length");
     }
+    if v25_11 && u.u8()? != 0 {
+        let _queued = u.u16_array()?;
+        let _dropped = u.u64_array()?;
+        let _cycle_last_max = (u.u16_array()?, u.u16_array()?);
+    }
+    let _rpc_user_size = u.u32()?;
+    let _users = (u.u32_array()?, u.u32_array()?, u.u64_array()?);
+    let _pending_by_type = (u.u32_array()?, u.u32_array()?);
+    let _dumps = (u.u32_array()?, u.str_array()?);
+    u.finish()?;
     stats.rpcs = kinds
         .iter()
         .zip(&counts)
@@ -95,6 +105,27 @@ fn rpc_name(kind: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 23.11 reply without the scheduler parts: one RPC type, one user, no queues, no dumps.
+    fn rpcs_only() -> Pack {
+        let mut body = Pack::default();
+        body.u32(0);
+        body.u32(1).u32(1).u16(2003).u32(1).u32(7).u32(1).u64(900);
+        body.u32(1).u32(1).u32(0).u32(1).u32(7).u32(1).u64(900);
+        body.u32(0).u32(0);
+        body.u32(0).u32(0);
+        body
+    }
+
+    #[test]
+    fn a_reply_is_read_to_its_end() {
+        let stats = decode(&rpcs_only().0, Protocol::V23_11).unwrap();
+        assert_eq!(stats.rpcs[0].kind, "REQUEST_JOB_INFO");
+        assert_eq!((stats.rpcs[0].count, stats.rpcs[0].total_us), (7, 900));
+        let mut longer = rpcs_only();
+        longer.u16(0);
+        assert!(decode(&longer.0, Protocol::V23_11).is_err());
+    }
 
     #[test]
     fn rpcs_spell_like_sdiag() {

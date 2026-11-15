@@ -51,9 +51,11 @@ pub fn partitions(body: &[u8], protocol: Protocol) -> Result<Vec<PartitionRecord
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
     let _last_update = u.time()?;
-    (0..count)
+    let partitions = (0..count)
         .map(|i| partition(u, protocol).with_context(|| format!("partition {i}")))
-        .collect()
+        .collect::<Result<_>>()?;
+    u.finish()?;
+    Ok(partitions)
 }
 
 fn partition(u: &mut Unpack, protocol: Protocol) -> Result<PartitionRecord> {
@@ -153,6 +155,7 @@ pub fn nodes(body: &[u8], partitions: &[PartitionRecord], protocol: Protocol) ->
                 .with_context(|| format!("node {i}"))
         })
         .collect::<Result<Vec<_>>>()?;
+    u.finish()?;
     for record in partitions {
         for &i in &record.node_indices {
             let slot = nodes

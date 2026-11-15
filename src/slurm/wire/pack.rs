@@ -29,6 +29,23 @@ impl<'a> Unpack<'a> {
         self.bytes.len() - self.at
     }
 
+    /// Checks that every byte was read. A message whose walk ends early has lost its place, so the
+    /// fields it read may be wrong too.
+    ///
+    /// # Errors
+    ///
+    /// Fails when bytes remain.
+    pub fn finish(&self) -> Result<()> {
+        if self.remaining() != 0 {
+            bail!(
+                "{} bytes left over after offset {}",
+                self.remaining(),
+                self.at
+            );
+        }
+        Ok(())
+    }
+
     /// The next `len` raw bytes.
     ///
     /// # Errors
@@ -351,6 +368,17 @@ mod tests {
         let mut null = Pack::default();
         null.u32(NO_VAL);
         assert_eq!(Unpack::new(&null.0).bitmap().unwrap(), None);
+    }
+
+    #[test]
+    fn a_walk_that_leaves_bytes_fails_to_finish() {
+        let mut pack = Pack::default();
+        pack.u16(1).u16(2);
+        let mut unpack = Unpack::new(&pack.0);
+        unpack.u16().unwrap();
+        assert!(unpack.finish().is_err());
+        unpack.u16().unwrap();
+        unpack.finish().unwrap();
     }
 
     #[test]

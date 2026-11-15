@@ -33,11 +33,12 @@ pub struct Config {
 /// Fails when the body is shorter than the layout or a needed value is missing.
 pub fn decode(body: &[u8], protocol: Protocol) -> Result<Config> {
     let u = &mut Unpack::new(body);
-    match protocol {
+    let raw = match protocol {
         Protocol::V23_11 => v23_11(u)?,
         Protocol::V25_11 => v25_11(u)?,
-    }
-    .config()
+    };
+    u.finish()?;
+    raw.config()
 }
 
 /// The settings glurmo reads, as the controller packed them.
@@ -289,7 +290,9 @@ fn v23_11(u: &mut Unpack) -> Result<Raw> {
     let _unkillable_program = u.str()?;
     let _unkillable_timeout = u.u16()?;
     let version = u.str()?;
-
+    let _vsize_factor = u.u16()?;
+    let _wait_time = u.u16()?;
+    let _x11_params = u.str()?;
     Ok(Raw {
         accounting_backup,
         accounting_host,

@@ -18,6 +18,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - The sampler no longer asks slurmctld for scheduler stats every minute, and the stream no longer carries them. No view showed them. `glurmo probe` still reads them. A config that sets `sample: (stats: ...)` must drop that key, or it fails to load.
 - The protocol backend places jobs from the tick's job listing, so each tick sends slurmctld one job-info request instead of two.
+- The protocol backend reads every field of each reply and fails one with bytes left over, so a layout it misreads shows as an error. It also checks the return code of slurmdbd's TRES list. Before, the configuration, scheduler statistics and TRES walks stopped early, and nothing checked what remained.
 
 ### Fixed
 

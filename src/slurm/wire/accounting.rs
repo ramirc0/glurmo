@@ -232,6 +232,7 @@ pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Record>> {
     let u = &mut Unpack::new(body);
     let records = u.list(|u| record(u, protocol))?;
     let code = u.u32()?;
+    u.finish()?;
     if code != 0 {
         bail!("slurmdbd error {code}");
     }
@@ -346,7 +347,7 @@ impl Tres {
     ///
     /// # Errors
     ///
-    /// Fails when the body does not follow Slurm 23.11's layout.
+    /// Fails when the body does not follow Slurm 23.11's layout or carries an error code.
     pub fn decode(body: &[u8]) -> Result<Self> {
         let u = &mut Unpack::new(body);
         let records = u.list(|u| {
@@ -357,6 +358,11 @@ impl Tres {
             let kind = u.str()?;
             Ok((id, kind, name))
         })?;
+        let code = u.u32()?;
+        u.finish()?;
+        if code != 0 {
+            bail!("slurmdbd error {code}");
+        }
         let gpu = records.into_iter().find_map(|(id, kind, name)| {
             (kind.as_deref() == Some("gres") && name.as_deref() == Some("gpu")).then_some(id)
         });
@@ -528,6 +534,26 @@ mod tests {
         assert_eq!(attempt.partitions.len(), 2);
         assert_eq!(attempt.time_limit_s, Some(3_600));
         assert_eq!((attempt.start, attempt.end), (None, None));
+    }
+
+    #[test]
+    fn the_tres_reply_is_read_to_its_return_code() {
+        let mut body = Pack::default();
+        body.u32(2);
+        body.u64(0).u64(0).u32(1).str(Some("cpu")).str(Some("cpu"));
+        body.u64(0)
+            .u64(0)
+            .u32(1001)
+            .str(Some("gpu"))
+            .str(Some("gres"));
+        body.u32(0);
+        assert_eq!(Tres::decode(&body.0).unwrap(), Tres { gpu: Some(1001) });
+        let mut longer = Pack(body.0.clone());
+        longer.u16(0);
+        assert!(Tres::decode(&longer.0).is_err());
+        let mut refused = Pack(body.0[..body.0.len() - 4].to_vec());
+        refused.u32(1);
+        assert!(Tres::decode(&refused.0).is_err());
     }
 
     #[test]
