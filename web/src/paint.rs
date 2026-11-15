@@ -8,6 +8,11 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::Closure;
 use web_sys::{CanvasRenderingContext2d, ResizeObserver, ResizeObserverEntry};
 
+use crate::state::State;
+
+/// The most device pixels one canvas may hold, so a deep pinch cannot take hundreds of megabytes.
+const MAX_CANVAS_PIXELS: f64 = 16_777_216.0;
+
 /// A color for canvas drawing, as red, green and blue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -64,8 +69,44 @@ pub fn display_name(cluster: &Cluster, login: &Login) -> String {
         .unwrap_or_else(|| login.0.clone())
 }
 
+/// Device pixels per CSS pixel on screen: the display's ratio times any pinch zoom.
+pub fn zoom() -> f64 {
+    let window = window();
+    let pinch = window
+        .visual_viewport()
+        .map_or(1.0, |viewport| viewport.scale());
+    window.device_pixel_ratio() * pinch
+}
+
+/// Keeps `state.zoom` current. A pinch changes only the visual viewport's scale, and browser zoom
+/// changes the device pixel ratio, so both viewports are watched.
+pub fn watch_zoom(state: State) {
+    let changed = Closure::<dyn Fn()>::new(move || {
+        let now = zoom();
+        state.zoom.maybe_update(|zoom| {
+            let changed = (*zoom - now).abs() > f64::EPSILON;
+            *zoom = now;
+            changed
+        });
+    });
+    let window = window();
+    let viewport = window.visual_viewport().map(web_sys::EventTarget::from);
+    for target in [Some(web_sys::EventTarget::from(window)), viewport]
+        .into_iter()
+        .flatten()
+    {
+        if target
+            .add_event_listener_with_callback("resize", changed.as_ref().unchecked_ref())
+            .is_err()
+        {
+            web_sys::console::error_1(&"cannot watch the zoom".into());
+        }
+    }
+    changed.forget();
+}
+
 /// A canvas that fills its panel and calls `draw` with the context and its size in CSS pixels whenever
-/// the panel resizes, a font finishes loading, or a signal `draw` reads changes.
+/// the panel resizes, the zoom or a font changes, or a signal `draw` reads changes.
 #[component]
 pub fn Surface<F>(draw: F) -> impl IntoView
 where
@@ -74,7 +115,7 @@ where
     let frame = NodeRef::<html::Div>::new();
     let canvas = NodeRef::<html::Canvas>::new();
     let size = RwSignal::new((0.0, 0.0));
-    let fonts = expect_context::<crate::state::State>().fonts;
+    let state = expect_context::<State>();
     frame.on_load(move |frame| {
         let resized = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
             let entry: ResizeObserverEntry = entries.get(0).unchecked_into();
@@ -91,11 +132,12 @@ where
     });
     Effect::new(move |_| {
         let (width, height) = size.get();
-        fonts.track();
+        state.fonts.track();
         let Some(canvas) = canvas.get() else {
             return;
         };
-        let ratio = window().device_pixel_ratio();
+        let largest = (MAX_CANVAS_PIXELS / (width * height).max(1.0)).sqrt();
+        let ratio = state.zoom.get().min(largest);
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,

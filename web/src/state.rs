@@ -54,6 +54,8 @@ pub struct State {
     pub me: RwSignal<Option<Login>>,
     /// Counts fonts finished loading, so canvases redraw in them.
     pub fonts: RwSignal<u32>,
+    /// Device pixels per CSS pixel on screen, so canvases stay sharp under a pinch or browser zoom.
+    pub zoom: RwSignal<f64>,
     /// Whether this is a wall display: no cursor, and the highlight cycles through users.
     pub tv: bool,
 }
@@ -115,6 +117,7 @@ impl State {
             highlight: RwSignal::new(None),
             me: RwSignal::new(address.me.map(Login)),
             fonts: RwSignal::new(0),
+            zoom: RwSignal::new(crate::paint::zoom()),
             tv: address.tv,
         }
     }

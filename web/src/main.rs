@@ -1,6 +1,14 @@
 //! rtviz's web view: the cluster live from `rtviz serve`, laid out by the server's layouts and drawn
 //! with its themes.
 
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        clippy::large_types_passed_by_value,
+        reason = "State is a Copy bag of signal handles, half as large on wasm32, the only target that runs it"
+    )
+)]
+
 mod die;
 mod feed;
 mod history;
@@ -38,6 +46,7 @@ fn App() -> impl IntoView {
     feed::follow(state);
     feed::watch_usage(state);
     feed::watch_fonts(state);
+    paint::watch_zoom(state);
     Effect::new(move |_| {
         let css = state
             .theme
