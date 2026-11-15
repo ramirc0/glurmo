@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- A logo, the foreman in `docs/media/logo.svg`. Its head and hard hat are the web view's favicon.
+
 ## [0.4.0] - 2026-11-15
 
 ### Added
