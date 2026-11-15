@@ -2,8 +2,8 @@
 //! the stage with it. While the editor is open, each panel wears a cover to pick and drag it by, and
 //! each gap between panes a grip to resize them by.
 
+use glurmo_model::layout::{Direction, Pane, Size};
 use leptos::prelude::*;
-use rtviz_model::layout::{Direction, Pane, Size};
 
 use crate::builder::{Cover, Grip, label};
 use crate::die::Die;

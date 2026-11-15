@@ -8,8 +8,8 @@ use ratatui::text::{Line, Span};
 
 use super::units::clock;
 use super::view::{Focus, Scene, scrolled};
-use rtviz_model::jobs::{JobGroup, Order, Phase, Search, job_groups};
-use rtviz_model::units::{count, gigabytes, since, span, thousands};
+use glurmo_model::jobs::{JobGroup, Order, Phase, Search, job_groups};
+use glurmo_model::units::{count, gigabytes, since, span, thousands};
 
 /// One line per group of jobs: owner, IDs and count, name, partitions, CPUs, GPUs, memory, time so far,
 /// and nodes or reason. Narrow panels drop the name and partitions, and wide ones add full names, time

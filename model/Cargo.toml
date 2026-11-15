@@ -1,9 +1,9 @@
 [package]
-name = "rtviz-model"
+name = "glurmo-model"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
-description = "The cluster model rtviz's sampler, terminal view and web view share"
+description = "The cluster model glurmo's sampler, terminal view and web view share"
 publish = false
 
 [dependencies]

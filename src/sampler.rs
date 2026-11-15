@@ -14,7 +14,7 @@ use crate::passwd;
 use crate::slurm::source::Exhausted;
 use crate::slurm::{Lookup, Slurm};
 use crate::store::Store;
-use rtviz_model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
+use glurmo_model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
 
 /// A call slower than this counts against its command, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
@@ -492,7 +492,7 @@ mod tests {
     use super::*;
     use crate::fixture::{busy_hub, busy_quarter_hour, busy_quarter_hour_with, zlurm_config};
     use crate::store::Settings;
-    use rtviz_model::{AttemptKey, Cluster, Delta, Owner};
+    use glurmo_model::{AttemptKey, Cluster, Delta, Owner};
 
     /// One line per delta: its time, how many events of each kind it holds, and how the cluster looks after it.
     fn summary(delta: &Delta, start: UnixTime, cluster: &Cluster) -> String {
@@ -570,7 +570,7 @@ mod tests {
         );
         assert_eq!(outages[1], None);
         let last = deltas.last().unwrap().at;
-        let covered: i64 = rusqlite::Connection::open(dir.path().join("rtviz.sqlite"))
+        let covered: i64 = rusqlite::Connection::open(dir.path().join("glurmo.sqlite"))
             .unwrap()
             .query_row(
                 "SELECT value FROM meta WHERE key = 'complete_to'",
@@ -591,7 +591,7 @@ mod tests {
         slurm: Slurm,
     ) -> (tempfile::TempDir, Vec<std::sync::Arc<Delta>>) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rtviz.sqlite");
+        let path = dir.path().join("glurmo.sqlite");
         let settings = Settings {
             backfill_days: 0,
             keep_days: None,

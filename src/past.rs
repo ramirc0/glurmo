@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::store::{NodeHealth, Stored};
-use rtviz_model::{
+use glurmo_model::{
     Attempt, Cluster, Delta, Event, JobState, Login, Node, NodeName, NodeState, Partition, Running,
     UnixTime, User,
 };
@@ -182,7 +182,7 @@ mod tests {
 
     use crate::fixture::{busy_store, store_path};
     use crate::store::History;
-    use rtviz_model::{AttemptKey, Occupancies};
+    use glurmo_model::{AttemptKey, Occupancies};
 
     /// Cores held on each node, by count.
     fn held(occupancy: &Occupancies) -> BTreeMap<NodeName, usize> {

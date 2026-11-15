@@ -7,11 +7,11 @@ use leptos::prelude::*;
 
 use crate::replay::{Engine, Playhead};
 use crate::tree::Path;
-use rtviz_model::layout::{Layout, Pane};
-use rtviz_model::summary::Ticker;
-use rtviz_model::theme::Theme;
-use rtviz_model::usage::Usage;
-use rtviz_model::{
+use glurmo_model::layout::{Layout, Pane};
+use glurmo_model::summary::Ticker;
+use glurmo_model::theme::Theme;
+use glurmo_model::usage::Usage;
+use glurmo_model::{
     AttemptKey, Cluster, Login, Node, NodeName, Occupancies, PartitionName, UnixTime,
 };
 

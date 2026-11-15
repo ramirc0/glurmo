@@ -32,7 +32,7 @@ pub struct Config {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Storage {
-    /// The SQLite file, which must be on a local disk. `None` puts it under `$XDG_STATE_HOME/rtviz`.
+    /// The SQLite file, which must be on a local disk. `None` puts it under `$XDG_STATE_HOME/glurmo`.
     pub path: Option<PathBuf>,
     /// How long to keep history.
     pub keep: Keep,
@@ -112,7 +112,7 @@ pub enum Names {
 }
 
 impl Config {
-    /// Reads the config at `path`, or at `$XDG_CONFIG_HOME/rtviz/config.ron` when `path` is `None`.
+    /// Reads the config at `path`, or at `$XDG_CONFIG_HOME/glurmo/config.ron` when `path` is `None`.
     /// A missing default file gives the defaults.
     ///
     /// # Errors
@@ -122,7 +122,7 @@ impl Config {
         let path = if let Some(path) = path {
             path.to_owned()
         } else {
-            let path = crate::xdg::config_home()?.join("rtviz/config.ron");
+            let path = crate::xdg::config_home()?.join("glurmo/config.ron");
             if !path.exists() {
                 return Ok(Self::default());
             }
@@ -194,7 +194,7 @@ mod tests {
         let config: Config = from_ron(
             r#"Config(
                 sample: (jobs: "15s", nodes: "1m", partitions: "10m", stats: "60s", lookups: 10),
-                store: (path: "/scratch/otter/rtviz/zlurm.sqlite", keep: Days(365), backfill: Days(7)),
+                store: (path: "/scratch/otter/glurmo/zlurm.sqlite", keep: Days(365), backfill: Days(7)),
                 server: (listen: "0.0.0.0:8765"),
                 names: FullName,
                 tui: (server: "http://js029:8765", layout: "wide", theme: "rose-pine-dawn"),
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(
             config.store,
             Storage {
-                path: Some("/scratch/otter/rtviz/zlurm.sqlite".into()),
+                path: Some("/scratch/otter/glurmo/zlurm.sqlite".into()),
                 keep: Keep::Days(365),
                 backfill: Days(7),
             }

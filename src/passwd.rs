@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::process::Command;
 
-use rtviz_model::Login;
+use glurmo_model::Login;
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 

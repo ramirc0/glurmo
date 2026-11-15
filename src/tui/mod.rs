@@ -33,13 +33,13 @@ use crate::config::Config;
 use crate::library::Library;
 use app::App;
 use feed::{Feed, Update};
-use rtviz_model::Login;
+use glurmo_model::Login;
 
 /// How often theme and layout files are checked for changes.
 const LIBRARY_EVERY: Duration = Duration::from_secs(2);
 
 /// Runs the view until the user quits. It follows the server at `server`, or samples the cluster
-/// in-process when that is `None`. Stderr goes to `$XDG_STATE_HOME/rtviz/tui.log` meanwhile.
+/// in-process when that is `None`. Stderr goes to `$XDG_STATE_HOME/glurmo/tui.log` meanwhile.
 ///
 /// # Errors
 ///
@@ -49,7 +49,7 @@ pub async fn run(config: &Config, server: Option<&str>) -> Result<()> {
         Some(server) => Feed::remote(server)?,
         None => Feed::embedded(config).await?,
     };
-    let dir = crate::xdg::config_home()?.join("rtviz");
+    let dir = crate::xdg::config_home()?.join("glurmo");
     let me = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_default();
@@ -74,7 +74,7 @@ pub async fn run(config: &Config, server: Option<&str>) -> Result<()> {
 
 /// Points stderr at the log, so messages do not land on the screen. Returns the old stderr.
 fn redirect_stderr() -> Result<std::os::fd::OwnedFd> {
-    let path = crate::xdg::state_home()?.join("rtviz/tui.log");
+    let path = crate::xdg::state_home()?.join("glurmo/tui.log");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

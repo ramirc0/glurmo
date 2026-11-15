@@ -8,8 +8,8 @@ use ratatui::text::{Line, Span};
 use super::feed::Link;
 use super::units::clock;
 use super::view::Scene;
-use rtviz_model::UnixTime;
-use rtviz_model::units::{percent, since, thousands};
+use glurmo_model::UnixTime;
+use glurmo_model::units::{percent, since, thousands};
 
 /// Eighth blocks, from empty to full.
 const EIGHTHS: [&str; 9] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
@@ -38,7 +38,7 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
     let value = |text: String| Span::styled(text, palette.text);
     let mut spans = vec![
         Span::styled(
-            " rtviz ",
+            " glurmo ",
             Style::new()
                 .fg(palette.base)
                 .bg(palette.user(0))

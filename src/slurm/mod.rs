@@ -21,7 +21,7 @@ use std::str::FromStr;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use rtviz_model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
+use glurmo_model::{Attempt, JobId, JobState, Node, NodeName, Partition, Stats, UnixTime};
 use sacct::Outcome;
 use scontrol::{CpuMap, Placed};
 use source::{Exchange, Source};
@@ -334,9 +334,9 @@ fn checked<T>(exchange: &Exchange, parse: impl FnOnce(&str) -> Result<T>) -> Res
     })
 }
 
-/// Appends an exchange to `$XDG_STATE_HOME/rtviz/unparsed.jsonl`.
+/// Appends an exchange to `$XDG_STATE_HOME/glurmo/unparsed.jsonl`.
 fn keep_unparsed(exchange: &Exchange) -> Result<PathBuf> {
-    let state = crate::xdg::state_home()?.join("rtviz");
+    let state = crate::xdg::state_home()?.join("glurmo");
     fs::create_dir_all(&state)?;
     let path = state.join("unparsed.jsonl");
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;

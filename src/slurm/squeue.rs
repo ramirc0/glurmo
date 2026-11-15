@@ -6,7 +6,7 @@ use super::fields::{
     columns, format_spec, integer, is_placeholder, job_state, seconds, time, tres,
 };
 use super::hostlist::{count_ids, expand_hosts};
-use rtviz_model::{ArrayTasks, Attempt, AttemptKey, JobId, Login, PartitionName};
+use glurmo_model::{ArrayTasks, Attempt, AttemptKey, JobId, Login, PartitionName};
 
 /// The `-O` fields, in the order [`parse`] reads them. Free text goes last.
 pub const FIELDS: [&str; 15] = [
@@ -107,7 +107,7 @@ fn attempt(line: &str) -> Result<Attempt> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::{EndState, JobState, NodeName, UnixTime};
+    use glurmo_model::{EndState, JobState, NodeName, UnixTime};
 
     const LIVE: &str = "\
 3700690|3700690|N/A|otter|12hours|PENDING|8|cpu=8,mem=200G,node=1,billing=8|12:00:00|1793370192|N/A|N/A||DependencyNeverSatisfied|job1

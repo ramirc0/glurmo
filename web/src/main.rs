@@ -1,4 +1,4 @@
-//! rtviz's web view: the cluster live from `rtviz serve`, laid out by the server's layouts and drawn
+//! glurmo's web view: the cluster live from `glurmo serve`, laid out by the server's layouts and drawn
 //! with its themes.
 
 #![allow(
@@ -26,8 +26,8 @@ mod tree;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use glurmo_model::summary::holdings;
 use leptos::prelude::*;
-use rtviz_model::summary::holdings;
 use wasm_bindgen::JsCast;
 
 use editor::{Editor, Sidebar};
@@ -71,7 +71,7 @@ fn App() -> impl IntoView {
     Effect::new(move |_| {
         let css = state
             .theme
-            .with(|theme| theme.as_ref().map(rtviz_model::theme::Theme::css));
+            .with(|theme| theme.as_ref().map(glurmo_model::theme::Theme::css));
         if let (Some(css), Some(style)) = (css, document().get_element_by_id("theme")) {
             style.set_text_content(Some(&css));
         }

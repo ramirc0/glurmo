@@ -1,8 +1,8 @@
 //! The theme editor's half of the sidebar: every color with a picker, the users' palette, the fonts,
 //! and a base16 import. Every change shows on the page at once.
 
+use glurmo_model::theme::{Color, Theme};
 use leptos::prelude::*;
-use rtviz_model::theme::{Color, Theme};
 
 use crate::base16;
 use crate::editor::{Editor, file_name_for};
@@ -265,7 +265,7 @@ mod tests {
             .map(|i| format!("base0{i:X}: \"{:06x}\"", i * 0x10_1010))
             .collect::<Vec<_>>()
             .join("\n");
-        let fonts = rtviz_model::theme::Fonts {
+        let fonts = glurmo_model::theme::Fonts {
             sans: "a".into(),
             mono: "b".into(),
         };

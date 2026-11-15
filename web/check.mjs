@@ -125,7 +125,7 @@ await page("Page.navigate", { url });
 await sleep(settle);
 
 const stats = async () => {
-  const { result } = await page("Runtime.evaluate", { expression: "JSON.stringify(window.rtviz ?? null)", returnByValue: true });
+  const { result } = await page("Runtime.evaluate", { expression: "JSON.stringify(window.glurmo ?? null)", returnByValue: true });
   return JSON.parse(result.value);
 };
 if (pull) {

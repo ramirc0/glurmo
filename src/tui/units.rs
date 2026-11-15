@@ -2,7 +2,7 @@
 
 use jiff::tz::TimeZone;
 
-use rtviz_model::UnixTime;
+use glurmo_model::UnixTime;
 
 /// Writes `at` in `tz` with a `strftime` format.
 pub fn clock(at: UnixTime, tz: &TimeZone, format: &str) -> String {

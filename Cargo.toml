@@ -1,5 +1,5 @@
 [package]
-name = "rtviz"
+name = "glurmo"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
@@ -7,7 +7,7 @@ description = "Live view of who holds which cores and GPUs on a batch-scheduler 
 publish = false
 
 [dependencies]
-rtviz-model = { path = "model" }
+glurmo-model = { path = "model" }
 anyhow = "1.0.104"
 axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive"] }

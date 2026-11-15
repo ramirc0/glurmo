@@ -25,8 +25,8 @@ impl Shelf {
 
     fn key(self) -> &'static str {
         match self {
-            Self::Layouts => "rtviz.layouts",
-            Self::Themes => "rtviz.themes",
+            Self::Layouts => "glurmo.layouts",
+            Self::Themes => "glurmo.themes",
         }
     }
 

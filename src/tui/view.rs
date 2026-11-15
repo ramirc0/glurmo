@@ -10,9 +10,9 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use super::app::App;
 use super::palette::Palette;
 use super::{die, header, history, jobs, mine, nodes, partitions, queue, ticker, users};
-use rtviz_model::layout::{Direction, Pane, Size};
-use rtviz_model::summary::{self, Tally};
-use rtviz_model::{Attempt, Cluster, Login, Occupancies, Owner, UnixTime};
+use glurmo_model::layout::{Direction, Pane, Size};
+use glurmo_model::summary::{self, Tally};
+use glurmo_model::{Attempt, Cluster, Login, Occupancies, Owner, UnixTime};
 
 /// What every panel draws from, worked out once per frame.
 pub struct Scene<'a> {
@@ -350,9 +350,9 @@ mod tests {
     use crate::hub::Message;
     use crate::library::Library;
     use crate::tui::feed::{Link, Update};
-    use rtviz_model::UnixTime;
-    use rtviz_model::usage::Step;
-    use rtviz_model::usage::Usage;
+    use glurmo_model::UnixTime;
+    use glurmo_model::usage::Step;
+    use glurmo_model::usage::Usage;
 
     /// The busy quarter hour as a view sees it after following every delta, seen by the user with
     /// the most running jobs, over a made-up day of usage by the four busiest users.

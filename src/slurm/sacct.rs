@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 
 use super::fields::{columns, integer, is_placeholder, job_state, seconds, time, tres};
 use super::hostlist::{count_ids, expand_hosts};
-use rtviz_model::{
+use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, JobId, JobState, Login, PartitionName, UnixTime,
 };
 
@@ -197,7 +197,7 @@ fn array_tasks(job_id: &str) -> Result<Option<ArrayTasks>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::{EndState, NodeName};
+    use glurmo_model::{EndState, NodeName};
 
     #[test]
     fn history_asks_for_a_utc_window() {

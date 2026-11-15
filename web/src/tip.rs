@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
+use glurmo_model::units::{gigabytes, load, since, span};
+use glurmo_model::{Attempt, Cluster, Node, Occupancies, Occupancy, Owner};
 use leptos::prelude::*;
-use rtviz_model::units::{gigabytes, load, since, span};
-use rtviz_model::{Attempt, Cluster, Node, Occupancies, Occupancy, Owner};
 
 use crate::die::{Spot, owner_at};
 use crate::paint::display_name;

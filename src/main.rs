@@ -1,4 +1,4 @@
-//! `rtviz` shows who holds which cores and GPUs on a batch-scheduler cluster.
+//! `glurmo` shows who holds which cores and GPUs on a batch-scheduler cluster.
 
 mod config;
 mod diff;
@@ -26,9 +26,9 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 
 use config::{Config, Keep, Storage};
+use glurmo_model::{Cluster, JobState, Owner};
 use hub::Hub;
 use library::Library;
-use rtviz_model::{Cluster, JobState, Owner};
 use sampler::Sampler;
 use slurm::source::{Exchange, Recorder, Replay, Source};
 use slurm::{Sample, Slurm};
@@ -38,7 +38,7 @@ use store::{History, Settings, Store};
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    /// The config file. Without it, `$XDG_CONFIG_HOME/rtviz/config.ron` is read if it exists.
+    /// The config file. Without it, `$XDG_CONFIG_HOME/glurmo/config.ron` is read if it exists.
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
     #[command(subcommand)]
@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
         } => {
             let slurm =
                 Slurm::connect(Source::Record(Recorder::create(&out, pseudonymize)?)).await?;
-            let until = rtviz_model::UnixTime(slurm.now().0 + minutes * 60);
+            let until = glurmo_model::UnixTime(slurm.now().0 + minutes * 60);
             stream(slurm, &config, None, Some(until)).await?;
             eprintln!("recorded to {}", out.display());
         }
@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
 }
 
 /// Samples into the store and serves the stream, history, themes and layouts until the process ends.
-/// Theme and layout files are read from `$XDG_CONFIG_HOME/rtviz`. With `replay`, the samples come from a
+/// Theme and layout files are read from `$XDG_CONFIG_HOME/glurmo`. With `replay`, the samples come from a
 /// recording and the store is a temporary one.
 async fn serve(config: &Config, replay: Option<&Path>) -> Result<()> {
     let scratch = tempfile::tempdir()?;
@@ -186,7 +186,7 @@ async fn serve(config: &Config, replay: Option<&Path>) -> Result<()> {
         (slurm, path, store)
     };
     let hub = Hub::new(slurm.site().clone());
-    let dir = xdg::config_home()?.join("rtviz");
+    let dir = xdg::config_home()?.join("glurmo");
     let (library, _) = watch::channel(Library::load(&dir));
     let router = server::router(hub.clone(), History::open(&path), library.subscribe());
     let mut sampler = Sampler::new(slurm, config, Some(store), hub);
@@ -209,17 +209,17 @@ async fn serve(config: &Config, replay: Option<&Path>) -> Result<()> {
     }
 }
 
-/// Where the config puts the store, by default `$XDG_STATE_HOME/rtviz/<cluster>.sqlite`.
+/// Where the config puts the store, by default `$XDG_STATE_HOME/glurmo/<cluster>.sqlite`.
 fn store_path(storage: &Storage, cluster: &str) -> Result<PathBuf> {
     Ok(match &storage.path {
         Some(path) => path.clone(),
         None => xdg::state_home()?
-            .join("rtviz")
+            .join("glurmo")
             .join(format!("{cluster}.sqlite")),
     })
 }
 
-/// Opens the store at `path`. Its nightly backup goes to `$XDG_DATA_HOME/rtviz` under the same file name.
+/// Opens the store at `path`. Its nightly backup goes to `$XDG_DATA_HOME/glurmo` under the same file name.
 fn open_store(storage: &Storage, path: &Path) -> Result<Store> {
     let name = path.file_name().context("the store path names no file")?;
     let settings = Settings {
@@ -228,7 +228,7 @@ fn open_store(storage: &Storage, path: &Path) -> Result<Store> {
             Keep::Forever => None,
             Keep::Days(days) => Some(days),
         },
-        backup: xdg::data_home()?.join("rtviz").join(name),
+        backup: xdg::data_home()?.join("glurmo").join(name),
     };
     Store::open(path, settings)
 }
@@ -238,7 +238,7 @@ async fn stream(
     slurm: Slurm,
     config: &Config,
     store: Option<Store>,
-    until: Option<rtviz_model::UnixTime>,
+    until: Option<glurmo_model::UnixTime>,
 ) -> Result<()> {
     let mut cluster = Cluster {
         hides_jobs: slurm.site().hides_jobs(),

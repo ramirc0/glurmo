@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::{Intervals, Lookup, Site, Slurm, scontrol, sinfo, squeue};
-use rtviz_model::{Attempt, JobState, RpcCount, Stats};
+use glurmo_model::{Attempt, JobState, RpcCount, Stats};
 
 /// Runs per command. The minimum delta over them filters out other users' RPCs.
 const RUNS: usize = 3;

@@ -25,9 +25,9 @@ use crate::library::Library;
 use crate::past::{self, Frame};
 use crate::sampler::Health;
 use crate::store::{By, History, UsageQuery};
-use rtviz_model::layout::Layout;
-use rtviz_model::theme::Theme;
-use rtviz_model::{Delta, Outage, UnixTime};
+use glurmo_model::layout::Layout;
+use glurmo_model::theme::Theme;
+use glurmo_model::{Delta, Outage, UnixTime};
 
 /// How long a browser waits before it reconnects a dropped stream.
 const RETRY: Duration = Duration::from_secs(5);
@@ -199,7 +199,7 @@ struct UsageParams {
 async fn usage(
     State(app): State<App>,
     Query(params): Query<UsageParams>,
-) -> Result<Json<Vec<rtviz_model::usage::Step>>, Failure> {
+) -> Result<Json<Vec<glurmo_model::usage::Step>>, Failure> {
     let now = UnixTime::now();
     let to = params.to.unwrap_or(now.0);
     let query = UsageQuery {
@@ -429,13 +429,13 @@ mod tests {
     use crate::store::{Settings, Store};
     use axum::body::Body;
     use axum::http::Request;
-    use rtviz_model::{Event, Stats};
+    use glurmo_model::{Event, Stats};
     use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
     /// A router over a hub with one delta, an empty store and the built-in library.
     fn app(dir: &tempfile::TempDir) -> (Router, Hub) {
-        let path = dir.path().join("rtviz.sqlite");
+        let path = dir.path().join("glurmo.sqlite");
         let settings = Settings {
             backfill_days: 0,
             keep_days: None,
@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _, _) = get(&router, "/api/health").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(content_type("rtviz-web-1a2b_bg.wasm"), "application/wasm");
+        assert_eq!(content_type("glurmo-web-1a2b_bg.wasm"), "application/wasm");
         assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
     }
 
@@ -627,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_built_layout_and_an_edited_theme_round_trip_through_ron() {
-        use rtviz_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span};
+        use glurmo_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span};
         let dir = tempfile::tempdir().unwrap();
         let (router, _) = app(&dir);
         let layout = Layout {

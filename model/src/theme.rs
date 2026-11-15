@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::theme::Color;
+/// use glurmo_model::theme::Color;
 ///
 /// assert!(Color::try_from("#1f1d2e".to_owned()).is_ok());
 /// assert!(Color::try_from("red".to_owned()).is_err());
@@ -23,7 +23,7 @@ pub struct Color(String);
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::theme::Color;
+/// use glurmo_model::theme::Color;
 ///
 /// let error = Color::try_from("red".to_owned()).unwrap_err();
 /// assert_eq!(error.to_string(), r#""red" is not a color like #1f1d2e"#);
@@ -57,7 +57,7 @@ impl Color {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::theme::Color;
+    /// use glurmo_model::theme::Color;
     ///
     /// let color = Color::try_from("#1f1d2e".to_owned()).unwrap();
     /// assert_eq!(color.rgb(), (0x1f, 0x1d, 0x2e));
@@ -79,7 +79,7 @@ impl From<Color> for String {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::theme::Theme;
+/// use glurmo_model::theme::Theme;
 ///
 /// # let json = r##"{
 /// #     "name": "Rose Pine",
@@ -112,7 +112,7 @@ pub struct Theme {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::theme::Ui;
+/// use glurmo_model::theme::Ui;
 ///
 /// # let json = r##"{"base": "#191724", "surface": "#1f1d2e", "overlay": "#26233a",
 /// #                "muted": "#6e6a86", "subtle": "#908caa", "text": "#e0def4"}"##;
@@ -141,7 +141,7 @@ pub struct Ui {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::theme::States;
+/// use glurmo_model::theme::States;
 ///
 /// let states: States =
 ///     serde_json::from_str(r##"{"free": "#26233a", "down": "#eb6f92", "drain": "#f6c177"}"##).unwrap();
@@ -163,7 +163,7 @@ pub struct States {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::theme::Fonts;
+/// use glurmo_model::theme::Fonts;
 ///
 /// let fonts = Fonts { sans: "Hanken Grotesk".into(), mono: "CommitMono Nerd Font".into() };
 /// assert_eq!(fonts.sans, "Hanken Grotesk");
@@ -184,7 +184,7 @@ impl Theme {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::theme::Theme;
+    /// use glurmo_model::theme::Theme;
     ///
     /// # let json = r##"{
     /// #     "name": "Rose Pine",

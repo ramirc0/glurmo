@@ -4,10 +4,10 @@
 
 use std::collections::BTreeSet;
 
+use glurmo_model::jobs::{GroupKey, JobGroup, Order, Phase, Search, job_groups};
+use glurmo_model::units::{count, gigabytes, since, span, thousands};
+use glurmo_model::{Attempt, AttemptKey, Cluster, NodeName};
 use leptos::prelude::*;
-use rtviz_model::jobs::{GroupKey, JobGroup, Order, Phase, Search, job_groups};
-use rtviz_model::units::{count, gigabytes, since, span, thousands};
-use rtviz_model::{Attempt, AttemptKey, Cluster, NodeName};
 use wasm_bindgen::JsCast;
 
 use crate::paint::{clock, display_name};

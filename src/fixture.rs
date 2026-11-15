@@ -63,7 +63,7 @@ pub async fn busy_store() -> (tempfile::TempDir, Hub) {
 
 /// Where [`busy_store`] keeps its store.
 pub fn store_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
-    dir.path().join("rtviz.sqlite")
+    dir.path().join("glurmo.sqlite")
 }
 
 async fn sample_busy_quarter_hour(store: Option<Store>) -> Hub {

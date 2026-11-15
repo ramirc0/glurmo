@@ -326,7 +326,7 @@ fn replace_word(text: &str, word: &str, replacement: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::UnixTime;
+    use glurmo_model::UnixTime;
 
     fn exchange(argv: Vec<String>, stdout: &str) -> Exchange {
         Exchange {

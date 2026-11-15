@@ -9,10 +9,10 @@ use ratatui::text::{Line, Span as Text};
 use ratatui::widgets::{Paragraph, Widget};
 
 use super::view::{Focus, Scene};
-use rtviz_model::Login;
-use rtviz_model::layout::Span;
-use rtviz_model::units::thousands;
-use rtviz_model::usage::Column;
+use glurmo_model::Login;
+use glurmo_model::layout::Span;
+use glurmo_model::units::thousands;
+use glurmo_model::usage::Column;
 
 /// Lower blocks by eighths, from empty to full.
 const LOWER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];

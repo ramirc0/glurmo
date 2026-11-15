@@ -6,9 +6,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::view::{Focus, Scene, scrolled};
-use rtviz_model::layout::QueueBy;
-use rtviz_model::summary::waiting;
-use rtviz_model::units::{since, thousands};
+use glurmo_model::layout::QueueBy;
+use glurmo_model::summary::waiting;
+use glurmo_model::units::{since, thousands};
 
 /// The widest key shown.
 const KEY: usize = 12;
@@ -31,7 +31,7 @@ pub fn draw(scene: &Scene, by: QueueBy, area: Rect, buf: &mut Buffer, focus: Foc
             let key = waiting.key;
             let color = match by {
                 QueueBy::Partition => palette.text,
-                QueueBy::Login => scene.color(&rtviz_model::Login(key.to_owned())),
+                QueueBy::Login => scene.color(&glurmo_model::Login(key.to_owned())),
             };
             let wait = waiting
                 .oldest

@@ -230,7 +230,7 @@ where
                     </a>
                     " and save it as "
                     <code>{place}</code>
-                    " in rtviz's config directory on the server. Every page picks it up within seconds."
+                    " in glurmo's config directory on the server. Every page picks it up within seconds."
                 </p>
             }
         })

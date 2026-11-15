@@ -15,7 +15,7 @@ use crate::{
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::jobs::Phase;
+/// use glurmo_model::jobs::Phase;
 ///
 /// assert!(Phase::Running < Phase::Pending, "running groups list first");
 /// ```
@@ -32,7 +32,7 @@ pub enum Phase {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::jobs::{Phase, Search};
+/// use glurmo_model::jobs::{Phase, Search};
 ///
 /// let search = Search { text: "bash long", phase: Some(Phase::Running), ..Search::default() };
 /// assert!(search.login.is_none() && !search.gpus);
@@ -55,7 +55,7 @@ pub struct Search<'a> {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::jobs::Order;
+/// use glurmo_model::jobs::Order;
 ///
 /// assert_eq!(Order::default(), Order::Cpus);
 /// ```
@@ -79,8 +79,8 @@ pub enum Order {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Login;
-/// use rtviz_model::jobs::{GroupKey, Phase};
+/// use glurmo_model::Login;
+/// use glurmo_model::jobs::{GroupKey, Phase};
 ///
 /// let key = GroupKey { phase: Phase::Pending, login: Login("otter".into()), family: "align".into(), partitions: "5days".into() };
 /// assert_eq!(key.clone(), key);
@@ -116,8 +116,8 @@ impl GroupKey {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Cluster;
-/// use rtviz_model::jobs::{Order, Search, job_groups};
+/// use glurmo_model::Cluster;
+/// use glurmo_model::jobs::{Order, Search, job_groups};
 ///
 /// assert!(job_groups(&Cluster::default(), &Search::default(), Order::default()).is_empty());
 /// ```
@@ -139,8 +139,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!(groups[0].first().name, "align");
@@ -154,8 +154,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!((groups[0].tasks(), groups[1].tasks()), (2, 4));
@@ -169,8 +169,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!((groups[0].cpus(), groups[1].cpus()), (16, 4));
@@ -184,8 +184,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!(groups[0].gpus(), 2);
@@ -199,8 +199,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!((groups[0].mem_mb(), groups[1].mem_mb()), (Some(32_000), None));
@@ -217,9 +217,9 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::UnixTime;
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::UnixTime;
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!(groups[0].since(), Some(UnixTime(1_700_000_100)));
@@ -241,8 +241,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!(groups[0].label(), "4250…4251");
@@ -266,8 +266,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!(groups[0].place(), "2 nodes");
@@ -322,9 +322,9 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let mut cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::{JobId, UnixTime};
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let mut cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::{JobId, UnixTime};
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// for running in cluster.running.values_mut() {
     ///     running.attempt.end = Some(UnixTime(1_700_003_600));
@@ -346,9 +346,9 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::UnixTime;
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::UnixTime;
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert_eq!(groups[0].submitted(), Some(UnixTime(1_700_000_000)));
@@ -362,8 +362,8 @@ impl<'a> JobGroup<'a> {
     /// # Examples
     ///
     /// ```
-    /// # let cluster = rtviz_model::jobs::example();
-    /// use rtviz_model::jobs::{Order, Search, job_groups};
+    /// # let cluster = glurmo_model::jobs::example();
+    /// use glurmo_model::jobs::{Order, Search, job_groups};
     ///
     /// let groups = job_groups(&cluster, &Search::default(), Order::default());
     /// assert!(groups[0].holds(groups[0].attempts[1].key));
@@ -388,8 +388,8 @@ impl<'a> JobGroup<'a> {
 /// # Examples
 ///
 /// ```
-/// # let cluster = rtviz_model::jobs::example();
-/// use rtviz_model::jobs::{Order, Phase, Search, job_groups};
+/// # let cluster = glurmo_model::jobs::example();
+/// use glurmo_model::jobs::{Order, Phase, Search, job_groups};
 ///
 /// let all = job_groups(&cluster, &Search::default(), Order::default());
 /// assert_eq!(all.len(), 2);

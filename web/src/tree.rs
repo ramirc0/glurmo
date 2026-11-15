@@ -1,6 +1,6 @@
 //! Edits to a layout's split tree, for the panel builder.
 
-use rtviz_model::layout::{Direction, Pane, Size};
+use glurmo_model::layout::{Direction, Pane, Size};
 
 /// Where a pane sits in a tree: the index of each split's child on the way down from the root.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -184,7 +184,7 @@ fn whole(value: f64) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::layout::Grouping;
+    use glurmo_model::layout::Grouping;
 
     /// `Header` over `Die | (Users / Ticker)`, sized as the built-in layouts are.
     fn tree() -> Pane {

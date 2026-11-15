@@ -2,11 +2,11 @@
 //! a timeline: the wheel or a drag pans it, ctrl and the wheel or a pinch zooms it, and a click replays
 //! the cluster from that moment.
 
+use glurmo_model::layout::Span;
+use glurmo_model::units::thousands;
+use glurmo_model::usage::Column;
+use glurmo_model::{Login, UnixTime, summary};
 use leptos::prelude::*;
-use rtviz_model::layout::Span;
-use rtviz_model::units::thousands;
-use rtviz_model::usage::Column;
-use rtviz_model::{Login, UnixTime, summary};
 use web_sys::CanvasRenderingContext2d;
 
 use crate::paint::{Rgb, Surface, clock, user_color};

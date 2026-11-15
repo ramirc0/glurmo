@@ -3,12 +3,12 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use leptos::prelude::*;
-use leptos::task::spawn_local;
-use rtviz_model::summary::Ticker;
-use rtviz_model::{
+use glurmo_model::summary::Ticker;
+use glurmo_model::{
     AttemptKey, Cluster, Delta, Event, Login, NodeName, Occupancies, Owner, UnixTime,
 };
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 
 use crate::feed::fetch;
 use crate::state::State;

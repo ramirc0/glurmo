@@ -6,8 +6,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::view::{Focus, Scene, scrolled};
-use rtviz_model::summary::{Holding, holdings};
-use rtviz_model::units::thousands;
+use glurmo_model::summary::{Holding, holdings};
+use glurmo_model::units::thousands;
 
 /// The widest name shown.
 const NAME: usize = 12;

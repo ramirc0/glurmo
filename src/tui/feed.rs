@@ -14,8 +14,8 @@ use crate::sampler::Sampler;
 use crate::slurm::Slurm;
 use crate::slurm::source::Source;
 use crate::store::{By, History, Settings, Store, UsageQuery};
-use rtviz_model::UnixTime;
-use rtviz_model::usage::{Usage, step_for};
+use glurmo_model::UnixTime;
+use glurmo_model::usage::{Usage, step_for};
 
 /// How long to wait before reconnecting to a server, as the server's `retry` field also says.
 const RETRY: Duration = Duration::from_secs(5);
@@ -102,7 +102,7 @@ impl Feed {
         let parent = std::env::var_os("XDG_RUNTIME_DIR")
             .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
         let dir = tempfile::Builder::new()
-            .prefix("rtviz-")
+            .prefix("glurmo-")
             .tempdir_in(&parent)
             .with_context(|| format!("cannot create a store under {}", parent.display()))?;
         let path = dir.path().join("store.sqlite");
@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::library::Library;
     use crate::slurm::Site;
-    use rtviz_model::{Event, Stats};
+    use glurmo_model::{Event, Stats};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
 
@@ -328,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn a_remote_feed_resumes_after_a_network_pull_without_a_fresh_snapshot() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rtviz.sqlite");
+        let path = dir.path().join("glurmo.sqlite");
         let settings = Settings {
             backfill_days: 0,
             keep_days: None,

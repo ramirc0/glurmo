@@ -11,7 +11,7 @@ use crate::UnixTime;
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::usage::Step;
+/// use glurmo_model::usage::Step;
 ///
 /// let step: Step = serde_json::from_str(
 ///     r#"{"at": 0, "key": "otter", "core_s": 600, "gpu_s": 0, "wait_s": 0, "started": 1, "ended": 0}"#,
@@ -45,8 +45,8 @@ pub struct Step {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::UnixTime;
-/// use rtviz_model::usage::Usage;
+/// use glurmo_model::UnixTime;
+/// use glurmo_model::usage::Usage;
 ///
 /// let usage = Usage { from: UnixTime(0), to: UnixTime(3_600), step_s: 300, steps: Vec::new() };
 /// assert!(usage.steps.is_empty());
@@ -68,7 +68,7 @@ pub struct Usage {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::usage::step_for;
+/// use glurmo_model::usage::step_for;
 ///
 /// assert_eq!(step_for(86_400), 300);
 /// assert_eq!(step_for(7 * 86_400), 1_200);
@@ -82,7 +82,7 @@ pub fn step_for(span_s: i64) -> i64 {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::usage::Column;
+/// use glurmo_model::usage::Column;
 ///
 /// let column = Column { cores: vec![("otter", 12), ("heron", 4)], waiting: 30 };
 /// assert_eq!(column.cores.iter().map(|(_, cores)| cores).sum::<u64>(), 16);
@@ -102,8 +102,8 @@ impl Usage {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::UnixTime;
-    /// use rtviz_model::usage::{Step, Usage};
+    /// use glurmo_model::UnixTime;
+    /// use glurmo_model::usage::{Step, Usage};
     ///
     /// let step = |at, key: &str, core_s| Step {
     ///     at: UnixTime(at), key: key.into(), core_s, gpu_s: 0, wait_s: 0, started: 0, ended: 0, failed: None,

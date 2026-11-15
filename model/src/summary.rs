@@ -13,7 +13,7 @@ use crate::{
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::summary::Tally;
+/// use glurmo_model::summary::Tally;
 ///
 /// let tally = Tally { total: 48, held: 36 };
 /// assert_eq!(tally.free(), 12);
@@ -32,7 +32,7 @@ impl Tally {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::summary::Tally;
+    /// use glurmo_model::summary::Tally;
     ///
     /// assert_eq!(Tally { total: 4, held: 1 }.free(), 3);
     /// ```
@@ -51,8 +51,8 @@ impl Tally {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Cluster;
-/// use rtviz_model::summary::{Tally, cores};
+/// use glurmo_model::Cluster;
+/// use glurmo_model::summary::{Tally, cores};
 ///
 /// let cluster = Cluster::default();
 /// assert_eq!(cores(&cluster, &cluster.occupancy()), Tally::default());
@@ -66,8 +66,8 @@ pub fn cores(cluster: &Cluster, occupancy: &Occupancies) -> Tally {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Cluster;
-/// use rtviz_model::summary::{Tally, gpus};
+/// use glurmo_model::Cluster;
+/// use glurmo_model::summary::{Tally, gpus};
 ///
 /// let cluster = Cluster::default();
 /// assert_eq!(gpus(&cluster, &cluster.occupancy()), Tally::default());
@@ -95,7 +95,7 @@ fn usable_tally(
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::summary::Holding;
+/// use glurmo_model::summary::Holding;
 ///
 /// let holding = Holding { cores: 64, gpus: 2, jobs: 3, pending: 120 };
 /// assert_eq!(holding.jobs, 3);
@@ -117,8 +117,8 @@ pub struct Holding {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Cluster;
-/// use rtviz_model::summary::holdings;
+/// use glurmo_model::Cluster;
+/// use glurmo_model::summary::holdings;
 ///
 /// let cluster = Cluster::default();
 /// let holdings = holdings(&cluster, &cluster.occupancy());
@@ -143,8 +143,8 @@ pub struct Holdings<'a> {
 /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": null, "end": null,
 /// #     "nodes": [], "reason": "Priority", "name": "align"
 /// # }"#;
-/// use rtviz_model::{Attempt, Cluster};
-/// use rtviz_model::summary::holdings;
+/// use glurmo_model::{Attempt, Cluster};
+/// use glurmo_model::summary::holdings;
 ///
 /// let mut cluster = Cluster::default();
 /// let attempt: Attempt = serde_json::from_str(json).unwrap();
@@ -195,7 +195,7 @@ pub fn holdings<'a>(cluster: &'a Cluster, occupancy: &Occupancies) -> Holdings<'
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::summary::Waiting;
+/// use glurmo_model::summary::Waiting;
 ///
 /// let waiting = Waiting { key: "5days", jobs: 2, tasks: 10, cpus: 80, gpus: 0, oldest: None, reason: "Priority" };
 /// assert_eq!(waiting.cpus / waiting.tasks, 8);
@@ -229,9 +229,9 @@ pub struct Waiting<'a> {
 /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": null, "end": null,
 /// #     "nodes": [], "reason": "Priority", "name": "align"
 /// # }"#;
-/// use rtviz_model::Attempt;
-/// use rtviz_model::layout::QueueBy;
-/// use rtviz_model::summary::waiting;
+/// use glurmo_model::Attempt;
+/// use glurmo_model::layout::QueueBy;
+/// use glurmo_model::summary::waiting;
 ///
 /// let attempt: Attempt = serde_json::from_str(json).unwrap();
 /// let rows = waiting([&attempt], QueueBy::Partition);
@@ -279,8 +279,8 @@ pub fn waiting<'a>(
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Cluster;
-/// use rtviz_model::summary::partition_loads;
+/// use glurmo_model::Cluster;
+/// use glurmo_model::summary::partition_loads;
 ///
 /// let cluster = Cluster::default();
 /// assert!(partition_loads(&cluster, &cluster.occupancy()).is_empty());
@@ -304,8 +304,8 @@ pub struct PartitionLoad<'a> {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{Cluster, Partition, PartitionName};
-/// use rtviz_model::summary::partition_loads;
+/// use glurmo_model::{Cluster, Partition, PartitionName};
+/// use glurmo_model::summary::partition_loads;
 ///
 /// let partition = Partition {
 ///     name: PartitionName("5days".into()),
@@ -367,7 +367,7 @@ pub fn partition_loads<'a>(
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::summary::NodeGroup;
+/// use glurmo_model::summary::NodeGroup;
 ///
 /// let group = NodeGroup { name: "gpu · V100".into(), nodes: Vec::new() };
 /// assert!(group.nodes.is_empty());
@@ -386,8 +386,8 @@ impl NodeGroup<'_> {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::Cluster;
-    /// use rtviz_model::summary::{NodeGroup, Tally};
+    /// use glurmo_model::Cluster;
+    /// use glurmo_model::summary::{NodeGroup, Tally};
     ///
     /// let group = NodeGroup { name: "cpu".into(), nodes: Vec::new() };
     /// assert_eq!(group.cores(&Cluster::default().occupancy()), Tally::default());
@@ -401,8 +401,8 @@ impl NodeGroup<'_> {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::Cluster;
-    /// use rtviz_model::summary::{NodeGroup, Tally};
+    /// use glurmo_model::Cluster;
+    /// use glurmo_model::summary::{NodeGroup, Tally};
     ///
     /// let group = NodeGroup { name: "cpu".into(), nodes: Vec::new() };
     /// assert_eq!(group.gpus(&Cluster::default().occupancy()), Tally::default());
@@ -432,9 +432,9 @@ impl NodeGroup<'_> {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Cluster;
-/// use rtviz_model::layout::Grouping;
-/// use rtviz_model::summary::node_groups;
+/// use glurmo_model::Cluster;
+/// use glurmo_model::layout::Grouping;
+/// use glurmo_model::summary::node_groups;
 ///
 /// assert!(node_groups(&Cluster::default(), Grouping::Hardware).is_empty());
 /// ```
@@ -493,8 +493,8 @@ pub fn node_groups(cluster: &Cluster, grouping: Grouping) -> Vec<NodeGroup<'_>> 
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{Login, UnixTime};
-/// use rtviz_model::summary::Tick;
+/// use glurmo_model::{Login, UnixTime};
+/// use glurmo_model::summary::Tick;
 ///
 /// let tick = Tick { at: UnixTime(0), started: true, login: Login("otter".into()), partition: None, cpus: 8, gpus: 0 };
 /// assert!(tick.started);
@@ -533,7 +533,7 @@ impl Tick {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::summary::Ticker;
+/// use glurmo_model::summary::Ticker;
 ///
 /// assert_eq!(Ticker::default().iter().count(), 0);
 /// ```
@@ -556,8 +556,8 @@ impl Ticker {
     /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": 1700000100, "end": null,
     /// #     "nodes": ["z1001"], "reason": null, "name": "align"
     /// # }"#;
-    /// use rtviz_model::{Attempt, Cluster, Delta, Event, UnixTime};
-    /// use rtviz_model::summary::Ticker;
+    /// use glurmo_model::{Attempt, Cluster, Delta, Event, UnixTime};
+    /// use glurmo_model::summary::Ticker;
     ///
     /// let attempt: Attempt = serde_json::from_str(json).unwrap();
     /// let key = attempt.key;
@@ -581,7 +581,7 @@ impl Ticker {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::summary::Ticker;
+    /// use glurmo_model::summary::Ticker;
     ///
     /// assert!(Ticker::default().iter().next().is_none());
     /// ```

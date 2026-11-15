@@ -1,9 +1,8 @@
 ---
 source: src/tui/view.rs
-assertion_line: 412
 expression: "render(&mut app, 100, 30).backend()"
 ---
-" rtviz  zlurm  Sat 14 Nov 23:00:31   cores ███████          883/1,988 44%   gpus ▋        4/44   run"
+" glurmo  zlurm  Sat 14 Nov 23:00:31   cores ███████          883/1,988 44%   gpus ▋        4/44   ru"
 "╭ cores ─────────────────────────────────────────────────────────╮╭ users ─────────────────────────╮"
 "│cascadelake  24 nodes  615/1,248 cores held                     ││  user              cores gpus j│"
 "│z1055 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                ││█ heron        you    726    0  │"

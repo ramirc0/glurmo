@@ -1,12 +1,12 @@
 # A systemd user unit. Copy the binary to ~/.local/bin and this file to ~/.config/systemd/user, then run
-#   systemctl --user enable --now rtviz
+#   systemctl --user enable --now glurmo
 # With linger on, it keeps running after you log out.
 [Unit]
-Description=rtviz: sample the cluster and serve its live view
+Description=glurmo: sample the cluster and serve its live view
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/rtviz serve
+ExecStart=%h/.local/bin/glurmo serve
 Restart=on-failure
 RestartSec=10
 

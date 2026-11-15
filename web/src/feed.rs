@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use glurmo_model::layout::Layout;
+use glurmo_model::theme::Theme;
+use glurmo_model::usage::{Step, Usage, step_for};
+use glurmo_model::{Cluster, Delta, UnixTime};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use rtviz_model::layout::Layout;
-use rtviz_model::theme::Theme;
-use rtviz_model::usage::{Step, Usage, step_for};
-use rtviz_model::{Cluster, Delta, UnixTime};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use wasm_bindgen::JsCast;
@@ -111,10 +111,10 @@ fn listen(
     closure.forget();
 }
 
-/// Adds one to a counter on `window.rtviz`, which the headless check reads.
+/// Adds one to a counter on `window.glurmo`, which the headless check reads.
 fn count(name: &str) {
     let window = window();
-    let key = wasm_bindgen::JsValue::from_str("rtviz");
+    let key = wasm_bindgen::JsValue::from_str("glurmo");
     let counters = js_sys::Reflect::get(&window, &key)
         .ok()
         .filter(wasm_bindgen::JsValue::is_object)

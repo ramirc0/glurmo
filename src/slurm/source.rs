@@ -13,7 +13,7 @@ use tokio::process::Command;
 
 use super::pseudonymize::Pseudonyms;
 use super::scontrol;
-use rtviz_model::UnixTime;
+use glurmo_model::UnixTime;
 
 /// One command and its answer. A recording holds one per line, as JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

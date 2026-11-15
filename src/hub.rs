@@ -12,7 +12,7 @@ use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::sampler::Health;
 use crate::slurm::Site;
-use rtviz_model::{Cluster, Delta, Event, UnixTime};
+use glurmo_model::{Cluster, Delta, Event, UnixTime};
 
 /// How long a delta stays available to clients that reconnect.
 const RING_S: i64 = 3_600;
@@ -268,7 +268,7 @@ impl Follow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::Stats;
+    use glurmo_model::Stats;
 
     const BOOT: UnixTime = UnixTime(1_000);
 

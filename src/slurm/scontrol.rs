@@ -11,7 +11,7 @@ use super::fields::{
 };
 use super::hostlist::{expand_hosts, expand_ids};
 use super::{RateLimit, Site, Version};
-use rtviz_model::{
+use glurmo_model::{
     Attempt, JobId, JobState, Node, NodeCells, NodeName, Partition, PartitionName, Placement,
     UnixTime,
 };
@@ -359,7 +359,7 @@ fn rate_limit(parameters: &str) -> Result<Option<RateLimit>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::EndState;
+    use glurmo_model::EndState;
 
     const RUNNING: &str = "JobId=3249466 JobName=bash UserId=otter(20001) GroupId=otter(20001) MCS_label=N/A Priority=1 Nice=0 Account=(null) QOS=normal JobState=RUNNING Reason=None Dependency=(null) Requeue=1 Restarts=0 BatchFlag=0 Reboot=0 ExitCode=0:0 DerivedExitCode=0:0 RunTime=46-09:38:24 TimeLimit=60-00:00:00 TimeMin=N/A SubmitTime=1790684947 EligibleTime=1790684947 AccrueTime=Unknown StartTime=1790684947 EndTime=1795868947 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=1790684947 Scheduler=Main Partition=long AllocNode:Sid=z012:657564 ReqNodeList=(null) ExcNodeList=z1059 NodeList=z1054 BatchHost=z1054 NumNodes=1 NumCPUs=72 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* ReqTRES=cpu=72,mem=1000000M,node=1,billing=72 AllocTRES=cpu=72,mem=1000000M,node=1,billing=72 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* JOB_GRES=(null)   Nodes=z1054 CPU_IDs=0-71 Mem=1000000 GRES= MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=NO Contiguous=0 Licenses=(null) Network=(null) Command=bash WorkDir=/home/otter Power= ";
 

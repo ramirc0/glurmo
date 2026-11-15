@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use rtviz_model::{EndState, Login, PartitionName, UnixTime};
+use glurmo_model::{EndState, Login, PartitionName, UnixTime};
 
 /// How long one bin lasts.
 pub const BIN_S: i64 = 300;

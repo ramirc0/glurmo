@@ -1,9 +1,9 @@
 //! Colors from the theme, a canvas that redraws when its panel resizes, and clock times.
 
+use glurmo_model::theme::{Color, Theme};
+use glurmo_model::{Cluster, Login, UnixTime};
 use leptos::html;
 use leptos::prelude::*;
-use rtviz_model::theme::{Color, Theme};
-use rtviz_model::{Cluster, Login, UnixTime};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::Closure;
 use web_sys::{CanvasRenderingContext2d, ResizeObserver, ResizeObserverEntry};

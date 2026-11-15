@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::slurm::sacct::Outcome;
 use crate::slurm::scontrol::Placed;
-use rtviz_model::{
+use glurmo_model::{
     Attempt, AttemptKey, EndState, Event, JobId, JobState, Node, Partition, UnixTime,
 };
 
@@ -257,7 +257,7 @@ pub fn placed(attempt: &Attempt, found: Placed) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::{ArrayTasks, Login, NodeCells, NodeName, PartitionName, Placement};
+    use glurmo_model::{ArrayTasks, Login, NodeCells, NodeName, PartitionName, Placement};
 
     const SUBMIT: UnixTime = UnixTime(1_000);
 
@@ -581,7 +581,7 @@ mod tests {
     fn nodes_and_partitions_fire_only_when_they_change() {
         let mut known = Known::default();
         assert_eq!(known.diff_nodes(Vec::new()), None);
-        let partitions = vec![rtviz_model::Partition {
+        let partitions = vec![glurmo_model::Partition {
             name: PartitionName("4hours".into()),
             nodes: vec![NodeName("z1".into())],
             max_time_s: Some(14_400),

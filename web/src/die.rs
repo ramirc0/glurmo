@@ -6,12 +6,12 @@
 
 use std::fmt::Write;
 
+use glurmo_model::layout::Grouping;
+use glurmo_model::summary::{NodeGroup, node_groups};
+use glurmo_model::theme::Theme;
+use glurmo_model::units::{gigabytes, load, thousands};
+use glurmo_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use leptos::prelude::*;
-use rtviz_model::layout::Grouping;
-use rtviz_model::summary::{NodeGroup, node_groups};
-use rtviz_model::theme::Theme;
-use rtviz_model::units::{gigabytes, load, thousands};
-use rtviz_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use web_sys::CanvasRenderingContext2d;
 
 use crate::paint::{Rgb, Surface, user_color};
@@ -636,7 +636,7 @@ struct Ink<'a> {
 }
 
 impl Ink<'_> {
-    fn rgb(color: &rtviz_model::theme::Color) -> Rgb {
+    fn rgb(color: &glurmo_model::theme::Color) -> Rgb {
         Rgb::of(color)
     }
 
@@ -1045,7 +1045,7 @@ fn out(theme: &Theme, node: &Node) -> Option<Rgb> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::{NodeName, NodeState};
+    use glurmo_model::{NodeName, NodeState};
 
     fn node(name: &str, cores: u32, gpus: u32) -> Node {
         Node {
@@ -1098,15 +1098,15 @@ mod tests {
     #[test]
     fn partition_and_node_highlights_fade_the_tiles_they_leave_out() {
         let mut inside = node("z1", 4, 0);
-        inside.partitions = vec![rtviz_model::PartitionName("long".into())];
+        inside.partitions = vec![glurmo_model::PartitionName("long".into())];
         let outside = node("z2", 4, 0);
-        let partition = Highlight::Partition(rtviz_model::PartitionName("long".into()));
+        let partition = Highlight::Partition(glurmo_model::PartitionName("long".into()));
         assert!(!partition.fades(&inside));
         assert!(partition.fades(&outside));
         let one = Highlight::Node(NodeName("z2".into()));
         assert!(one.fades(&inside));
         assert!(!one.fades(&outside));
-        assert!(!Highlight::User(rtviz_model::Login("otter".into())).fades(&outside));
+        assert!(!Highlight::User(glurmo_model::Login("otter".into())).fades(&outside));
     }
 
     fn group<'a>(name: &str, nodes: &'a [Node]) -> NodeGroup<'a> {

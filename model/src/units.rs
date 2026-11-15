@@ -7,7 +7,7 @@ use crate::UnixTime;
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::units::gigabytes;
+/// use glurmo_model::units::gigabytes;
 ///
 /// assert_eq!(gigabytes(64_000), "62G");
 /// assert_eq!(gigabytes(2_000_000), "1.9T");
@@ -27,7 +27,7 @@ pub fn gigabytes(mb: u64) -> String {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::units::count;
+/// use glurmo_model::units::count;
 ///
 /// assert_eq!((count(0), count(1_024)), ("–".to_owned(), "1,024".to_owned()));
 /// ```
@@ -44,7 +44,7 @@ pub fn count(number: u64) -> String {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::units::thousands;
+/// use glurmo_model::units::thousands;
 ///
 /// assert_eq!(thousands(1_234_567), "1,234,567");
 /// ```
@@ -65,7 +65,7 @@ pub fn thousands(number: u64) -> String {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::units::span;
+/// use glurmo_model::units::span;
 ///
 /// assert_eq!(span(3_599), "59m");
 /// ```
@@ -84,8 +84,8 @@ pub fn span(seconds: i64) -> String {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::UnixTime;
-/// use rtviz_model::units::since;
+/// use glurmo_model::UnixTime;
+/// use glurmo_model::units::since;
 ///
 /// assert_eq!(since(UnixTime(0), UnixTime(7_200)), "2h");
 /// ```
@@ -98,7 +98,7 @@ pub fn since(then: UnixTime, now: UnixTime) -> String {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::units::load;
+/// use glurmo_model::units::load;
 ///
 /// assert_eq!(load(48.62), "48.6");
 /// ```
@@ -117,7 +117,7 @@ pub fn load(load: f64) -> String {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::units::percent;
+/// use glurmo_model::units::percent;
 ///
 /// assert_eq!(percent(1, 3), 33);
 /// assert_eq!(percent(1, 0), 0);

@@ -1,11 +1,11 @@
 //! The panels drawn as HTML: the header, tables of users, the queue, partitions, nodes and your jobs,
 //! the ticker, and the key line.
 
+use glurmo_model::layout::QueueBy;
+use glurmo_model::summary::{self, Holding, holdings, partition_loads, waiting};
+use glurmo_model::units::{percent, since, span, thousands};
+use glurmo_model::{Attempt, Login, NodeName, NodeState, PartitionName};
 use leptos::prelude::*;
-use rtviz_model::layout::QueueBy;
-use rtviz_model::summary::{self, Holding, holdings, partition_loads, waiting};
-use rtviz_model::units::{percent, since, span, thousands};
-use rtviz_model::{Attempt, Login, NodeName, NodeState, PartitionName};
 
 use crate::paint::{Rgb, clock, display_name, now, user_color};
 use crate::state::{Highlight, Link, State};
@@ -168,7 +168,7 @@ fn Trouble() -> impl IntoView {
                     clippy::cast_possible_truncation,
                     reason = "milliseconds since 1970 fit in an i64"
                 )]
-                let at = rtviz_model::UnixTime((at_ms / 1_000.0) as i64);
+                let at = glurmo_model::UnixTime((at_ms / 1_000.0) as i64);
                 Some(format!(
                     "server unreachable for {}, reconnecting",
                     since(at, now())

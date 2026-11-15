@@ -9,8 +9,8 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::Deserialize;
 
 use crate::rollup::{BIN_S, Span, Usage, bin_of, rollup};
-use rtviz_model::usage::Step;
-use rtviz_model::{
+use glurmo_model::usage::Step;
+use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeName,
     NodeState, PartitionName, Placement, UnixTime, User,
 };
@@ -998,7 +998,7 @@ fn mount_kind<'a>(path: &Path, mounts: &'a str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rtviz_model::NodeCells;
+    use glurmo_model::NodeCells;
 
     const T0: i64 = 1_794_614_400;
 
@@ -1006,12 +1006,12 @@ mod tests {
         Settings {
             backfill_days: 2,
             keep_days: None,
-            backup: dir.join("backup/rtviz.sqlite"),
+            backup: dir.join("backup/glurmo.sqlite"),
         }
     }
 
     fn open(dir: &tempfile::TempDir) -> Store {
-        Store::open(&dir.path().join("rtviz.sqlite"), settings(dir.path())).unwrap()
+        Store::open(&dir.path().join("glurmo.sqlite"), settings(dir.path())).unwrap()
     }
 
     fn key(id: u32) -> AttemptKey {
@@ -1485,7 +1485,7 @@ mod tests {
         store.sampled(UnixTime(T0), 300).unwrap();
         store.roll(UnixTime(T0 + 900 + GRACE_S)).unwrap();
 
-        let history = History::open(&dir.path().join("rtviz.sqlite"));
+        let history = History::open(&dir.path().join("glurmo.sqlite"));
         let usage = |by| {
             let query = UsageQuery {
                 from: UnixTime(T0),
@@ -1592,7 +1592,7 @@ mod tests {
 /dev/sdb1 /scratch ext4 rw 0 0
 ";
         assert_eq!(
-            mount_kind(Path::new("/home/otter/rtviz"), mounts),
+            mount_kind(Path::new("/home/otter/glurmo"), mounts),
             Some("ceph")
         );
         assert_eq!(

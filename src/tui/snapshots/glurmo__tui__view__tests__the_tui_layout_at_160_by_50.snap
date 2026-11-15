@@ -2,7 +2,7 @@
 source: src/tui/view.rs
 expression: "render(&mut app, 160, 50).backend()"
 ---
-" rtviz  zlurm  Sat 14 Nov 23:00:31   cores ███████          883/1,988 44%   gpus ▋        4/44   running 182   pending 5                                        "
+" glurmo  zlurm  Sat 14 Nov 23:00:31   cores ███████          883/1,988 44%   gpus ▋        4/44   running 182   pending 5                                       "
 "╭ cores ─────────────────────────────────────────────────────────────────────────────────────────────────╮╭ users ─────────────────────────────────────────────╮"
 "│cascadelake  24 nodes  615/1,248 cores held                                                             ││  user              cores gpus jobs  pend  share    │"
 "│z1055 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  76.5  20%   z1056 ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  77.6  27%               ││█ heron        you    726    0  177     0  ■■■■■■■■ │"

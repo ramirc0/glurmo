@@ -6,8 +6,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::view::{Focus, Scene, scrolled};
-use rtviz_model::summary::partition_loads;
-use rtviz_model::units::{span, thousands};
+use glurmo_model::summary::partition_loads;
+use glurmo_model::units::{span, thousands};
 
 /// The widest partition name shown.
 const NAME: usize = 12;

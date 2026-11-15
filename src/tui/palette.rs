@@ -2,7 +2,7 @@
 
 use ratatui::style::Color;
 
-use rtviz_model::theme::{self, Theme};
+use glurmo_model::theme::{self, Theme};
 
 /// The colors one frame draws with.
 #[derive(Clone, Debug, PartialEq)]

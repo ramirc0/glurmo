@@ -16,7 +16,7 @@ pub mod usage;
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::JobId;
+/// use glurmo_model::JobId;
 ///
 /// assert_eq!(serde_json::to_string(&JobId(4242)).unwrap(), "4242");
 /// ```
@@ -29,7 +29,7 @@ pub struct JobId(pub u32);
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::UnixTime;
+/// use glurmo_model::UnixTime;
 ///
 /// assert!(UnixTime(10) < UnixTime(20));
 /// assert_eq!(serde_json::to_string(&UnixTime(10)).unwrap(), "10");
@@ -48,7 +48,7 @@ impl UnixTime {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::UnixTime;
+    /// use glurmo_model::UnixTime;
     ///
     /// assert!(UnixTime::now() > UnixTime(1_700_000_000));
     /// ```
@@ -66,7 +66,7 @@ impl UnixTime {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{AttemptKey, JobId, UnixTime};
+/// use glurmo_model::{AttemptKey, JobId, UnixTime};
 ///
 /// let first = AttemptKey { job: JobId(7), submit: UnixTime(100) };
 /// let requeued = AttemptKey { job: JobId(7), submit: UnixTime(500) };
@@ -85,7 +85,7 @@ pub struct AttemptKey {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Login;
+/// use glurmo_model::Login;
 ///
 /// let login: Login = serde_json::from_str(r#""otter""#).unwrap();
 /// assert_eq!(login, Login("otter".into()));
@@ -99,7 +99,7 @@ pub struct Login(pub String);
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::NodeName;
+/// use glurmo_model::NodeName;
 ///
 /// assert_eq!(serde_json::to_string(&NodeName("z1001".into())).unwrap(), r#""z1001""#);
 /// ```
@@ -112,7 +112,7 @@ pub struct NodeName(pub String);
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::PartitionName;
+/// use glurmo_model::PartitionName;
 ///
 /// assert_eq!(serde_json::to_string(&PartitionName("5days".into())).unwrap(), r#""5days""#);
 /// ```
@@ -125,7 +125,7 @@ pub struct PartitionName(pub String);
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{EndState, JobState};
+/// use glurmo_model::{EndState, JobState};
 ///
 /// let state: JobState = serde_json::from_str(r#"{"ended": "timeout"}"#).unwrap();
 /// assert_eq!(state, JobState::Ended(EndState::Timeout));
@@ -150,7 +150,7 @@ pub enum JobState {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::EndState;
+/// use glurmo_model::EndState;
 ///
 /// let state: EndState = serde_json::from_str(r#""out_of_memory""#).unwrap();
 /// assert_eq!(state, EndState::OutOfMemory);
@@ -184,7 +184,7 @@ impl EndState {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::EndState;
+    /// use glurmo_model::EndState;
     ///
     /// assert!(EndState::Timeout.is_failure());
     /// assert!(!EndState::Cancelled.is_failure());
@@ -202,7 +202,7 @@ impl EndState {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{ArrayTasks, JobId};
+/// use glurmo_model::{ArrayTasks, JobId};
 ///
 /// let tasks = ArrayTasks { job: JobId(3441951), spec: "0-3,8%2".into(), count: 5 };
 /// assert_eq!(tasks.count, 5);
@@ -228,7 +228,7 @@ pub struct ArrayTasks {
 /// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
 /// #     "nodes": ["z1001"], "reason": null, "name": "align"
 /// # }"#;
-/// use rtviz_model::{Attempt, JobState};
+/// use glurmo_model::{Attempt, JobState};
 ///
 /// let attempt: Attempt = serde_json::from_str(json).unwrap();
 /// assert_eq!(attempt.state, JobState::Running);
@@ -280,7 +280,7 @@ impl Attempt {
     /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": null, "end": null,
     /// #     "nodes": [], "reason": "Priority", "name": "align"
     /// # }"#;
-    /// use rtviz_model::Attempt;
+    /// use glurmo_model::Attempt;
     ///
     /// let mut attempt: Attempt = serde_json::from_str(json).unwrap();
     /// assert_eq!(attempt.tasks(), 4);
@@ -302,7 +302,7 @@ impl Attempt {
     /// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": null, "end": null,
     /// #     "nodes": [], "reason": null, "name": "align"
     /// # }"#;
-    /// use rtviz_model::Attempt;
+    /// use glurmo_model::Attempt;
     ///
     /// let mut attempt: Attempt = serde_json::from_str(json).unwrap();
     /// assert_eq!(attempt.printed_id(), "4242_8");
@@ -322,7 +322,7 @@ impl Attempt {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::NodeState;
+/// use glurmo_model::NodeState;
 ///
 /// assert_eq!(serde_json::to_string(&NodeState::Draining).unwrap(), r#""draining""#);
 /// ```
@@ -350,7 +350,7 @@ pub enum NodeState {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::NodeFlag;
+/// use glurmo_model::NodeFlag;
 ///
 /// let flag: NodeFlag = serde_json::from_str(r#""not_responding""#).unwrap();
 /// assert_eq!(flag, NodeFlag::NotResponding);
@@ -379,7 +379,7 @@ pub enum NodeFlag {
 /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
 /// #     "gpu_model": "V100", "features": ["avx512"]
 /// # }"#;
-/// use rtviz_model::{Node, NodeState};
+/// use glurmo_model::{Node, NodeState};
 ///
 /// let node: Node = serde_json::from_str(json).unwrap();
 /// assert_eq!(node.state, NodeState::Mixed);
@@ -437,7 +437,7 @@ impl Node {
     /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
     /// #     "gpu_model": "V100", "features": ["avx512"]
     /// # }"#;
-    /// use rtviz_model::Node;
+    /// use glurmo_model::Node;
     ///
     /// let mut node: Node = serde_json::from_str(json).unwrap();
     /// assert_eq!(node.cpus_per_core(), 2);
@@ -459,7 +459,7 @@ impl Node {
     /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
     /// #     "gpu_model": "V100", "features": ["avx512"]
     /// # }"#;
-    /// use rtviz_model::{Node, NodeState};
+    /// use glurmo_model::{Node, NodeState};
     ///
     /// let mut node: Node = serde_json::from_str(json).unwrap();
     /// assert!(node.is_usable());
@@ -484,7 +484,7 @@ impl Node {
     /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
     /// #     "gpu_model": "V100", "features": ["avx512"]
     /// # }"#;
-    /// use rtviz_model::{Node, NodeFlag, NodeState};
+    /// use glurmo_model::{Node, NodeFlag, NodeState};
     ///
     /// let mut node: Node = serde_json::from_str(json).unwrap();
     /// assert_eq!(node.trouble(), None);
@@ -512,7 +512,7 @@ impl Node {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Partition;
+/// use glurmo_model::Partition;
 ///
 /// let json = r#"{"name": "5days", "nodes": ["z1001"], "max_time_s": 432000,
 ///                "default": false, "hidden": false, "state_raw": "UP"}"#;
@@ -540,7 +540,7 @@ pub struct Partition {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{NodeCells, NodeName};
+/// use glurmo_model::{NodeCells, NodeName};
 ///
 /// let cells = NodeCells {
 ///     node: NodeName("z1001".into()),
@@ -570,7 +570,7 @@ pub struct NodeCells {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Placement;
+/// use glurmo_model::Placement;
 ///
 /// let placement: Placement = serde_json::from_str(
 ///     r#"[{"node": "z1001", "cores": [0, 1], "unplaced": 0, "gpus": [], "mem_mb": null}]"#,
@@ -588,7 +588,7 @@ impl Placement {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::{NodeCells, NodeName, Placement};
+    /// use glurmo_model::{NodeCells, NodeName, Placement};
     ///
     /// let mut cells = NodeCells { node: NodeName("z1".into()), cores: vec![0], unplaced: 0, gpus: vec![], mem_mb: None };
     /// assert!(Placement(vec![cells.clone()]).is_exact());
@@ -605,7 +605,7 @@ impl Placement {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Stats;
+/// use glurmo_model::Stats;
 ///
 /// let stats = Stats { jobs_started: Some(1_200), ..Stats::default() };
 /// assert_eq!(stats.jobs_completed, None);
@@ -641,7 +641,7 @@ pub struct Stats {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::RpcCount;
+/// use glurmo_model::RpcCount;
 ///
 /// let rpc = RpcCount { kind: "REQUEST_JOB_INFO".into(), count: 9, total_us: 270_000 };
 /// assert_eq!(rpc.total_us / rpc.count, 30_000);
@@ -661,7 +661,7 @@ pub struct RpcCount {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{Login, User};
+/// use glurmo_model::{Login, User};
 ///
 /// let user: User = serde_json::from_str(r#"{"login": "otter", "name": null, "color_slot": 3}"#).unwrap();
 /// assert_eq!(user.login, Login("otter".into()));
@@ -681,7 +681,7 @@ pub struct User {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{Outage, UnixTime};
+/// use glurmo_model::{Outage, UnixTime};
 ///
 /// let outage = Outage { since: UnixTime(1_700_000_000), error: "squeue timed out".into() };
 /// assert_eq!(outage.since, UnixTime(1_700_000_000));
@@ -699,7 +699,7 @@ pub struct Outage {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{AttemptKey, Event, JobId, UnixTime};
+/// use glurmo_model::{AttemptKey, Event, JobId, UnixTime};
 ///
 /// let event: Event = serde_json::from_str(
 ///     r#"{"ended": {"key": {"job": 7, "submit": 100}, "at": 200, "state": null}}"#,
@@ -765,7 +765,7 @@ pub enum Event {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{Delta, Event};
+/// use glurmo_model::{Delta, Event};
 ///
 /// let delta: Delta = serde_json::from_str(r#"{"seq": 3, "at": 200, "events": [{"outage": null}]}"#).unwrap();
 /// assert_eq!(delta.events, [Event::Outage(None)]);
@@ -791,7 +791,7 @@ pub struct Delta {
 /// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
 /// #     "nodes": ["z1001"], "reason": null, "name": "align"
 /// # }"#;
-/// use rtviz_model::{Attempt, Running};
+/// use glurmo_model::{Attempt, Running};
 ///
 /// let running = Running { attempt: serde_json::from_str(json).unwrap(), placement: None };
 /// assert!(running.placement.is_none());
@@ -809,7 +809,7 @@ pub struct Running {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::Cluster;
+/// use glurmo_model::Cluster;
 ///
 /// let cluster: Cluster = serde_json::from_str(
 ///     r#"{"at": null, "nodes": [], "partitions": [], "running": [], "queue": [],
@@ -880,7 +880,7 @@ fn keyed<'de, V: Deserialize<'de> + Keyed, D: Deserializer<'de>>(
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{AttemptKey, JobId, Owner, UnixTime};
+/// use glurmo_model::{AttemptKey, JobId, Owner, UnixTime};
 ///
 /// let owner = Owner::Attempt(AttemptKey { job: JobId(7), submit: UnixTime(100) });
 /// assert_ne!(owner, Owner::Hidden);
@@ -899,7 +899,7 @@ pub enum Owner {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{Occupancy, Owner};
+/// use glurmo_model::{Occupancy, Owner};
 ///
 /// let occupancy = Occupancy { cores: vec![Some(Owner::Hidden), None], gpus: vec![] };
 /// assert_eq!(occupancy.cores.iter().flatten().count(), 1);
@@ -917,7 +917,7 @@ pub struct Occupancy {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::{Cluster, Occupancies};
+/// use glurmo_model::{Cluster, Occupancies};
 ///
 /// let occupancy: Occupancies = Cluster::default().occupancy();
 /// assert!(occupancy.is_empty());
@@ -936,11 +936,11 @@ impl Cluster {
     /// #     "mem_mb": 16000, "gpus": 1, "time_limit_s": 86400, "start": 1700000100, "end": null,
     /// #     "nodes": ["z1001"], "reason": null, "name": "align"
     /// # }"#;
-    /// use rtviz_model::{Cluster, Delta, Event};
+    /// use glurmo_model::{Cluster, Delta, Event};
     ///
     /// let mut cluster = Cluster::default();
     /// let attempt = serde_json::from_str(json).unwrap();
-    /// cluster.apply(&Delta { seq: 1, at: rtviz_model::UnixTime(200), events: vec![Event::Started { attempt }] });
+    /// cluster.apply(&Delta { seq: 1, at: glurmo_model::UnixTime(200), events: vec![Event::Started { attempt }] });
     /// assert_eq!(cluster.running.len(), 1);
     /// ```
     pub fn apply(&mut self, delta: &Delta) {
@@ -1009,7 +1009,7 @@ impl Cluster {
     /// #     "mem_mb": 64000, "mem_alloc_mb": 16000, "mem_free_mb": 40000, "gpus": 2, "gpus_used": 1,
     /// #     "gpu_model": "V100", "features": ["avx512"]
     /// # }"#;
-    /// use rtviz_model::{Cluster, Delta, Event, NodeName, UnixTime};
+    /// use glurmo_model::{Cluster, Delta, Event, NodeName, UnixTime};
     ///
     /// let mut cluster = Cluster { nodes: vec![serde_json::from_str(node).unwrap()], ..Cluster::default() };
     /// let attempt = serde_json::from_str(json).unwrap();
@@ -1105,7 +1105,7 @@ impl Cluster {
     /// #     "mem_mb": 64000, "mem_alloc_mb": 0, "mem_free_mb": null, "gpus": 2, "gpus_used": 0,
     /// #     "gpu_model": "V100", "features": []
     /// # }"#;
-    /// use rtviz_model::{Cluster, Delta, Event, NodeState, UnixTime};
+    /// use glurmo_model::{Cluster, Delta, Event, NodeState, UnixTime};
     ///
     /// let mut cluster = Cluster { nodes: vec![serde_json::from_str(node).unwrap()], ..Cluster::default() };
     /// let attempt = serde_json::from_str(json).unwrap();

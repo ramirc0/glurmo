@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use rtviz_model::theme::{Color, Fonts, States, Theme, Ui};
+use glurmo_model::theme::{Color, Fonts, States, Theme, Ui};
 
 /// The theme a base16 scheme describes, drawn in `fonts`.
 ///
-/// `base00` to `base05` run from the background to the text, as rtviz's UI colors do. Free cores take
+/// `base00` to `base05` run from the background to the text, as glurmo's UI colors do. Free cores take
 /// the selection background `base02`, down nodes the red `base08` and draining ones the yellow `base0A`.
 /// Users take the remaining accents, so none of them looks like a node in trouble.
 pub fn theme(scheme: &str, fonts: Fonts) -> Result<Theme, String> {

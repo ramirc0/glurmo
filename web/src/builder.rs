@@ -1,8 +1,8 @@
 //! The panel builder: covers to pick panels by and drag them onto each other to swap them, grips to
 //! resize panes by, and the sidebar half that edits the picked pane.
 
+use glurmo_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span};
 use leptos::prelude::*;
-use rtviz_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span};
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, PointerEvent};
 

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use super::fields::{
     columns, format_spec, gpu_count, gpu_model, gres, integer, is_placeholder, megabytes,
 };
-use rtviz_model::{Node, NodeFlag, NodeName, NodeState, PartitionName};
+use glurmo_model::{Node, NodeFlag, NodeName, NodeState, PartitionName};
 
 /// The `-O` fields, in the order [`parse`] reads them. Free text goes last.
 pub const FIELDS: [&str; 14] = [

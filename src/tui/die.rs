@@ -10,10 +10,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
 use super::view::{Focus, Scene, scrolled};
-use rtviz_model::layout::Grouping;
-use rtviz_model::summary::{NodeGroup, node_groups};
-use rtviz_model::units::{load, thousands};
-use rtviz_model::{Node, NodeFlag, NodeState};
+use glurmo_model::layout::Grouping;
+use glurmo_model::summary::{NodeGroup, node_groups};
+use glurmo_model::units::{load, thousands};
+use glurmo_model::{Node, NodeFlag, NodeState};
 
 /// Columns between node entries.
 const GAP: u16 = 3;

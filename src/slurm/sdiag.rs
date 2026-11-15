@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 
 use super::fields::integer;
-use rtviz_model::{RpcCount, Stats};
+use glurmo_model::{RpcCount, Stats};
 
 /// The command.
 pub fn argv() -> Vec<String> {

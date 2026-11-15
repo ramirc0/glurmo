@@ -11,11 +11,11 @@ use crate::config::Tui;
 use crate::hub::Message;
 use crate::library::Library;
 use crate::slurm::Site;
-use rtviz_model::layout::{Layout, Pane};
-use rtviz_model::summary::Ticker;
-use rtviz_model::theme::Theme;
-use rtviz_model::usage::Usage;
-use rtviz_model::{Cluster, Delta, Login};
+use glurmo_model::layout::{Layout, Pane};
+use glurmo_model::summary::Ticker;
+use glurmo_model::theme::Theme;
+use glurmo_model::usage::Usage;
+use glurmo_model::{Cluster, Delta, Login};
 
 /// Text that narrows what the panels show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -229,7 +229,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use rtviz_model::{Attempt, AttemptKey, Event, JobId, JobState, PartitionName, UnixTime};
+    use glurmo_model::{Attempt, AttemptKey, Event, JobId, JobState, PartitionName, UnixTime};
 
     fn app() -> App {
         App::new(

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::layout::{Layout, Pane};
+/// use glurmo_model::layout::{Layout, Pane};
 ///
 /// let layout = Layout { name: "bare".into(), root: Pane::Users };
 /// assert_eq!(layout.root, Pane::Users);
@@ -26,7 +26,7 @@ pub struct Layout {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::layout::{Direction, Pane, Size};
+/// use glurmo_model::layout::{Direction, Pane, Size};
 ///
 /// let pane = Pane::Split(Direction::Vertical, vec![(Size::Length(1), Pane::Header), (Size::Fill(1), Pane::Users)]);
 /// assert!(matches!(pane, Pane::Split(Direction::Vertical, _)));
@@ -73,7 +73,7 @@ pub enum Pane {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::layout::Direction;
+/// use glurmo_model::layout::Direction;
 ///
 /// assert_ne!(Direction::Vertical, Direction::Horizontal);
 /// ```
@@ -91,7 +91,7 @@ pub enum Direction {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::layout::Size;
+/// use glurmo_model::layout::Size;
 ///
 /// let size: Size = serde_json::from_str(r#"{"Percentage": 66}"#).unwrap();
 /// assert_eq!(size, Size::Percentage(66));
@@ -113,7 +113,7 @@ pub enum Size {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::layout::Grouping;
+/// use glurmo_model::layout::Grouping;
 ///
 /// assert_eq!(serde_json::to_string(&Grouping::Hardware).unwrap(), r#""Hardware""#);
 /// ```
@@ -130,7 +130,7 @@ pub enum Grouping {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::layout::QueueBy;
+/// use glurmo_model::layout::QueueBy;
 ///
 /// assert_eq!(serde_json::to_string(&QueueBy::Login).unwrap(), r#""Login""#);
 /// ```
@@ -147,7 +147,7 @@ pub enum QueueBy {
 /// # Examples
 ///
 /// ```
-/// use rtviz_model::layout::Span;
+/// use glurmo_model::layout::Span;
 ///
 /// assert_eq!(serde_json::to_string(&Span::Hours(24)).unwrap(), r#"{"Hours":24}"#);
 /// ```
@@ -165,7 +165,7 @@ impl Span {
     /// # Examples
     ///
     /// ```
-    /// use rtviz_model::layout::Span;
+    /// use glurmo_model::layout::Span;
     ///
     /// assert_eq!(Span::Hours(2).seconds(), 7_200);
     /// assert_eq!(Span::Days(1).seconds(), 86_400);
