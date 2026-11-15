@@ -221,23 +221,27 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
             replay::seek(state, at);
         }
     };
+    // Wheel input gathers here and moves the timeline once per frame, since each move redraws the chart.
+    let wheeling = StoredValue::new(None::<Timeline>);
     let wheeled = move |event: web_sys::WheelEvent| {
         if state.editing() {
             return;
         }
-        let Some(spot) = Spot::of(&event, span_s.get_untracked()) else {
+        let pending = wheeling.get_value();
+        let base = pending.unwrap_or_else(|| state.timeline.get_untracked());
+        let span = base.span_s.unwrap_or_else(|| span_s.get_untracked());
+        let Some(spot) = Spot::of(&event, span) else {
             return;
         };
         event.prevent_default();
-        let end = view_end(state);
-        if event.ctrl_key() || event.shift_key() {
+        let end = base.end.map_or_else(|| crate::paint::now().0, |end| end.0);
+        let next = if event.ctrl_key() || event.shift_key() {
             // Browsers turn a shifted wheel into a horizontal one.
             let wheel = if event.delta_y() == 0.0 {
                 event.delta_x()
             } else {
                 event.delta_y()
             };
-            let span = span_s.get_untracked();
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_precision_loss,
@@ -251,13 +255,10 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
                 reason = "seconds fit in an f64 and back"
             )]
             let anchored = end - (spot.before_end_s * (1.0 - zoomed as f64 / span as f64)) as i64;
-            let follows = state
-                .timeline
-                .with_untracked(|timeline| timeline.end.is_none());
-            state.timeline.set(Timeline {
+            Timeline {
                 span_s: Some(zoomed),
-                end: if follows { None } else { follow_now(anchored) },
-            });
+                end: base.end.and_then(|_| follow_now(anchored)),
+            }
         } else {
             let wheel = if event.delta_x().abs() > event.delta_y().abs() {
                 event.delta_x()
@@ -266,9 +267,19 @@ fn Scrub(span_s: Signal<i64>, children: Children) -> impl IntoView {
             };
             #[expect(clippy::cast_possible_truncation, reason = "seconds fit in an i64")]
             let shift = (wheel * spot.per_px) as i64;
-            state
-                .timeline
-                .update(|timeline| timeline.end = follow_now(end + shift));
+            Timeline {
+                end: follow_now(end + shift),
+                ..base
+            }
+        };
+        wheeling.set_value(Some(next));
+        if pending.is_none() {
+            request_animation_frame(move || {
+                if let Some(Some(next)) = wheeling.try_get_value() {
+                    wheeling.set_value(None);
+                    state.timeline.try_set(next);
+                }
+            });
         }
     };
     view! {
