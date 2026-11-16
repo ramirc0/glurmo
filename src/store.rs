@@ -951,8 +951,9 @@ pub struct Copied {
 /// no history yet. A store opened on the copy carries on where the SQLite one stood: its first listing
 /// finds a gap, and accounting fills it.
 ///
-/// The source is read in one transaction, so a sampler may keep writing to it. Each day of attempts
-/// and of usage is written in a transaction of its own.
+/// The source is read in one transaction, so a sampler may keep writing to it. The target is written
+/// in one transaction too, so a copy that fails leaves it empty, ready for another try. Attempts and
+/// usage are read a day at a time.
 ///
 /// # Errors
 ///
@@ -975,11 +976,10 @@ pub fn copy(source: &Path, url: &str) -> Result<Vec<Copied>> {
             bail!("the TimescaleDB database already holds history in {table}");
         }
     }
+    let tx = target.transaction()?;
     for (table, columns, day_column) in TABLES {
         let Some(day_column) = day_column else {
-            let tx = target.transaction()?;
             copy_rows(&snapshot, &tx, table, columns, "")?;
-            tx.commit()?;
             continue;
         };
         let (first, last): (Option<i64>, Option<i64>) = snapshot.query_row(
@@ -994,12 +994,11 @@ pub fn copy(source: &Path, url: &str) -> Result<Vec<Copied>> {
         while day <= last {
             let next = day + DAY_S;
             let within = format!("WHERE {day_column} >= {day} AND {day_column} < {next}");
-            let tx = target.transaction()?;
             copy_rows(&snapshot, &tx, table, columns, &within)?;
-            tx.commit()?;
             day = next;
         }
     }
+    tx.commit()?;
     // The planner knows nothing of the new rows until the server analyzes them, which can take a while.
     target.execute_batch("ANALYZE")?;
     TABLES
@@ -2497,6 +2496,37 @@ mod tests {
             format!("{refused:#}").contains("already holds"),
             "{refused:#}"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    async fn a_copy_that_fails_leaves_nothing_behind_and_can_run_again() {
+        let (sqlite_home, ..) = busy_store_in(StoreHome::sqlite()).await;
+        let timescale_home = StoreHome::timescale();
+        let server = timescale_home.server().unwrap();
+        let source = rusqlite::Connection::open(sqlite_home.path()).unwrap();
+        // PostgreSQL refuses text that holds a NUL, and the last bin is copied last.
+        source
+            .execute_batch(
+                "CREATE TABLE last_bin AS SELECT * FROM usage WHERE bin = (SELECT max(bin) FROM usage);
+                 UPDATE usage SET login = login || char(0) WHERE bin = (SELECT max(bin) FROM usage)",
+            )
+            .unwrap();
+        assert!(copy(&sqlite_home.path(), &server).is_err());
+        let target = timescale_home.read();
+        for (table, ..) in TABLES {
+            assert_eq!(history_rows(&target, table).unwrap(), 0, "{table}");
+        }
+        source
+            .execute_batch(
+                "DELETE FROM usage WHERE bin = (SELECT max(bin) FROM last_bin);
+                 INSERT INTO usage SELECT * FROM last_bin;
+                 DROP TABLE last_bin",
+            )
+            .unwrap();
+        for rows in copy(&sqlite_home.path(), &server).unwrap() {
+            assert_eq!(rows.source, rows.target, "{rows:?}");
+        }
     }
 
     /// Checks that both histories of the busy quarter hour that `hub` published give the same answers.
