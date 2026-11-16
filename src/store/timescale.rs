@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::BytesMut;
 use postgres::types::{IsNull, ToSql, Type, to_sql_checked};
 use postgres::{Client, Config, NoTls, Statement};
@@ -101,14 +102,17 @@ impl Timescale {
         Ok(Self { work })
     }
 
-    /// Runs `work` on the client's thread and waits for its answer.
+    /// Runs `work` on the client's thread and waits for its answer. A panic in `work` fails this call
+    /// only. The client stays usable, because it skips the rest of an answer that nobody waits for.
     fn call<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Session) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let (answer, answered) = mpsc::sync_channel(1);
         let work: Work = Box::new(move |session| {
-            let _ = answer.send(work(session));
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| work(session)))
+                .unwrap_or_else(|_| Err(anyhow!("a TimescaleDB call panicked")));
+            let _ = answer.send(outcome);
         });
         self.work.send(work).ok().context(STOPPED)?;
         answered.recv().context(STOPPED)?
@@ -367,6 +371,16 @@ mod tests {
             Some("-c lock_timeout=30s -c statement_timeout=5min")
         );
         assert!(parse("host=db port=five").is_err());
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn a_call_that_panics_fails_alone() {
+        let server = std::env::var("GLURMO_TEST_TIMESCALE").unwrap();
+        let db = Timescale::connect(&parse(&server).unwrap()).unwrap();
+        let panicked = db.call(|_| -> Result<()> { panic!("a bug") }).unwrap_err();
+        assert!(format!("{panicked:#}").contains("panicked"), "{panicked:#}");
+        assert_eq!(db.query("SELECT 1", &[]).unwrap().len(), 1);
     }
 
     #[test]
