@@ -84,12 +84,13 @@ A systemd user unit keeps the server running after you log out, and restarts it 
 5. Read its messages with `journalctl --user -u glurmo`. Some clusters make the user journal unreadable. There, send them to a file instead:
 
    ```sh
-   printf '\n[Service]\nStandardError=append:%%S/glurmo/serve.log\n' >> "$units/glurmo.service.d/host.conf"
+   mkdir -p ~/.local/state/glurmo
+   printf '\n[Service]\nStandardError=append:%%h/.local/state/glurmo/serve.log\n' >> "$units/glurmo.service.d/host.conf"
    systemctl --user daemon-reload
    systemctl --user restart glurmo
    ```
 
-   `%S` is `~/.local/state`.
+   The path is spelled out because systemd 252, as RHEL 9 ships it, expands `%S` to `~/.config` in a user unit.
 
 To upgrade, replace the binary and run `systemctl --user restart glurmo`, or run `just install` in a clone.
 
