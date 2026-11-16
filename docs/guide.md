@@ -272,7 +272,7 @@ systemctl --user start glurmo
 
 #### Limits
 
-A statement fails after 5 minutes, and a wait on a lock after 30 s. A failed write opens a gap, which accounting fills once writes work again. To change the limits, set them in the connection string's `options`, such as `options='-c lock_timeout=10s'`. Over TCP, a server that stops answering fails a call within a minute.
+A statement fails after 5 minutes, and a wait on a lock after 30 s. A failed write opens a gap, which accounting fills once writes work again. To change the limits, set them in the connection string's `options`, such as `options='-c lock_timeout=10s'`. A call that has waited 30 s checks the server with a query on a new connection. When that query gets no answer within 10 s, as from a stopped server or one stuck on its disk, the call fails. Later calls then fail at once until the server catches up. Over TCP, a lost connection fails a call within a minute.
 
 #### Upkeep
 

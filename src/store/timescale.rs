@@ -1,5 +1,6 @@
 //! The TimescaleDB side of the connection layer: a PostgreSQL client on a thread of its own.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::panic::{self, AssertUnwindSafe};
@@ -16,10 +17,20 @@ use super::connection::Value;
 /// What a call reports once the client's thread has gone.
 const STOPPED: &str = "the TimescaleDB client's thread has stopped";
 
+/// What a call reports while the server has not answered an earlier one.
+const UNANSWERED: &str = "the TimescaleDB server has stopped answering";
+
 /// Server settings that bound a call, unless the connection string's `options` set them. A lock held
 /// elsewhere fails a statement after 30 s, and any statement fails after 5 minutes. The first prune of
 /// a year of compressed history is the slowest statement the store runs.
 const LIMITS: [(&str, &str); 2] = [("lock_timeout", "30s"), ("statement_timeout", "5min")];
+
+/// How long a call waits for its answer before it checks that the server still answers. A stopped
+/// server, or one stuck on its disk, answers nothing and fails no timeout of its own.
+const PATIENCE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
+
+/// How long that check waits for a query on a new connection.
+const PROBE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 10 });
 
 /// Reads a connection string, such as `host=db user=glurmo dbname=glurmo` or a `postgres://` URL.
 /// Unless it sets them, connecting gives up after 10 s, and over TCP, a server that stops
@@ -66,8 +77,16 @@ pub fn parse(url: &str) -> Result<Config> {
 /// panics when that happens on one of its workers. The sampler calls the store from a worker. So the
 /// client lives on a thread of its own, and each call here hands that thread a closure and waits for
 /// its answer. The thread ends, and the client drops on it, when this value drops.
+///
+/// A call gives up on a server that stops answering, and later calls fail at once until the thread
+/// has finished the call that was given up on. A transaction it was in is rolled back then.
 pub struct Timescale {
     work: mpsc::Sender<Work>,
+    config: Box<Config>,
+    /// Hears once the thread has finished the calls given up on.
+    behind: Cell<Option<mpsc::Receiver<()>>>,
+    /// Whether a transaction began and has not ended.
+    in_transaction: Cell<bool>,
 }
 
 /// One call, run on the client's thread.
@@ -82,11 +101,11 @@ impl Timescale {
     pub fn connect(config: &Config) -> Result<Self> {
         let (work, queue) = mpsc::channel::<Work>();
         let (connected, outcome) = mpsc::sync_channel(1);
-        let config = config.clone();
+        let session_config = config.clone();
         std::thread::Builder::new()
             .name("timescaledb".to_owned())
             .spawn(move || {
-                let mut session = match Session::open(config) {
+                let mut session = match Session::open(session_config) {
                     Ok(session) => session,
                     Err(error) => {
                         let _ = connected.send(Err(error));
@@ -98,24 +117,58 @@ impl Timescale {
                     work(&mut session);
                 }
             })?;
-        outcome.recv().context(STOPPED)??;
-        Ok(Self { work })
+        outcome
+            .recv_timeout(PATIENCE)
+            .map_err(|_| anyhow!(UNANSWERED))??;
+        Ok(Self {
+            work,
+            config: Box::new(config.clone()),
+            behind: Cell::new(None),
+            in_transaction: Cell::new(false),
+        })
     }
 
     /// Runs `work` on the client's thread and waits for its answer. A panic in `work` fails this call
     /// only. The client stays usable, because it skips the rest of an answer that nobody waits for.
+    /// After [`PATIENCE`], a call that a probe finds the server unable to answer is given up on.
     fn call<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Session) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        if let Some(caught_up) = self.behind.take()
+            && let Err(mpsc::TryRecvError::Empty) = caught_up.try_recv()
+        {
+            self.behind.set(Some(caught_up));
+            bail!(UNANSWERED);
+        }
         let (answer, answered) = mpsc::sync_channel(1);
-        let work: Work = Box::new(move |session| {
+        self.send(Box::new(move |session| {
             let outcome = panic::catch_unwind(AssertUnwindSafe(|| work(session)))
                 .unwrap_or_else(|_| Err(anyhow!("a TimescaleDB call panicked")));
             let _ = answer.send(outcome);
-        });
-        self.work.send(work).ok().context(STOPPED)?;
-        answered.recv().context(STOPPED)?
+        }))?;
+        loop {
+            match answered.recv_timeout(PATIENCE) {
+                Ok(outcome) => return outcome,
+                Err(mpsc::RecvTimeoutError::Disconnected) => bail!(STOPPED),
+                Err(mpsc::RecvTimeoutError::Timeout) if answers(&self.config) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.in_transaction.replace(false) {
+                        self.send(Box::new(Session::roll_back))?;
+                    }
+                    let (caught_up, behind) = mpsc::sync_channel(1);
+                    self.send(Box::new(move |_| {
+                        let _ = caught_up.send(());
+                    }))?;
+                    self.behind.set(Some(behind));
+                    bail!(UNANSWERED);
+                }
+            }
+        }
+    }
+
+    fn send(&self, work: Work) -> Result<()> {
+        self.work.send(work).ok().context(STOPPED)
     }
 
     /// Runs one statement and returns how many rows it changed.
@@ -164,20 +217,29 @@ impl Timescale {
     ///
     /// Fails when the server cannot be reached.
     pub fn begin(&self) -> Result<()> {
-        self.call(|session| {
+        self.in_transaction.set(true);
+        let begun = self.call(|session| {
             session.reconnect_between_transactions()?;
             session.client.batch_execute("BEGIN")?;
             session.in_transaction = true;
             Ok(())
-        })
+        });
+        if begun.is_err() {
+            self.in_transaction.set(false);
+        }
+        begun
     }
 
     /// Ends the transaction: commits it when `commit`, else rolls it back.
     ///
     /// # Errors
     ///
-    /// Fails when the server refuses or cannot be reached. The transaction is over either way.
+    /// Fails when the server refuses or cannot be reached, or the transaction was rolled back when the
+    /// server stopped answering. The transaction is over either way.
     pub fn end(&self, commit: bool) -> Result<()> {
+        if !self.in_transaction.replace(false) {
+            bail!("the transaction was rolled back when the TimescaleDB server stopped answering");
+        }
         self.call(move |session| {
             session.in_transaction = false;
             let ending = if commit { "COMMIT" } else { "ROLLBACK" };
@@ -216,6 +278,13 @@ impl Session {
         Ok(())
     }
 
+    /// Rolls back a transaction that the caller gave up on. A server that has dropped the connection
+    /// rolled it back already.
+    fn roll_back(&mut self) {
+        self.in_transaction = false;
+        let _ = self.client.batch_execute("ROLLBACK");
+    }
+
     /// The prepared statement for `sql`, which is prepared at its first use.
     fn statement(&mut self, sql: &str) -> Result<Statement> {
         self.reconnect_between_transactions()?;
@@ -226,6 +295,23 @@ impl Session {
         self.statements.insert(sql.to_owned(), statement.clone());
         Ok(statement)
     }
+}
+
+/// Whether the server answers a query on a new connection within [`PROBE`]. A probe that gets no
+/// answer is left to finish on its own thread.
+fn answers(config: &Config) -> bool {
+    let (answer, answered) = mpsc::sync_channel(1);
+    let config = config.clone();
+    let probe = std::thread::Builder::new()
+        .name("timescaledb-probe".to_owned())
+        .spawn(move || {
+            let answered = connect(&config).and_then(|mut client| {
+                client.batch_execute("SELECT 1")?;
+                Ok(())
+            });
+            let _ = answer.send(answered.is_ok());
+        });
+    probe.is_ok() && answered.recv_timeout(PROBE).unwrap_or(false)
 }
 
 fn connect(config: &Config) -> Result<Client> {
@@ -304,6 +390,14 @@ fn dollar_numbered(sql: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    use postgres::config::Host;
+
     use super::*;
 
     #[test]
@@ -396,5 +490,102 @@ mod tests {
             format!("{slept:#}").contains("statement timeout"),
             "{slept:#}"
         );
+    }
+
+    /// A Unix socket that relays connections to the test server, and the switch that freezes it. A
+    /// frozen relay accepts connections and passes nothing on, as a stopped server does.
+    struct Relay {
+        dir: tempfile::TempDir,
+        port: u16,
+        frozen: Arc<AtomicBool>,
+    }
+
+    impl Relay {
+        fn new() -> Self {
+            let server = parse(&std::env::var("GLURMO_TEST_TIMESCALE").unwrap()).unwrap();
+            let Some(Host::Unix(server_dir)) = server.get_hosts().first() else {
+                panic!("the relay needs a server on a Unix socket");
+            };
+            let port = server.get_ports().first().copied().unwrap_or(5432);
+            let socket = format!(".s.PGSQL.{port}");
+            let target = server_dir.join(&socket);
+            let dir = tempfile::tempdir().unwrap();
+            let listener = UnixListener::bind(dir.path().join(&socket)).unwrap();
+            let frozen = Arc::new(AtomicBool::new(false));
+            let switch = Arc::clone(&frozen);
+            std::thread::spawn(move || {
+                for client in listener.incoming().flatten() {
+                    let server = UnixStream::connect(&target).unwrap();
+                    let back = (server.try_clone().unwrap(), client.try_clone().unwrap());
+                    for (from, to) in [(client, server), back] {
+                        let frozen = Arc::clone(&switch);
+                        std::thread::spawn(move || pass_on(from, to, &frozen));
+                    }
+                }
+            });
+            Self { dir, port, frozen }
+        }
+
+        fn config(&self) -> Config {
+            parse(&format!(
+                "host={} port={} dbname=glurmo",
+                self.dir.path().display(),
+                self.port
+            ))
+            .unwrap()
+        }
+
+        fn freeze(&self, frozen: bool) {
+            self.frozen.store(frozen, Ordering::SeqCst);
+        }
+    }
+
+    fn pass_on(mut from: UnixStream, mut to: UnixStream, frozen: &AtomicBool) {
+        let mut buffer = [0; 8192];
+        while let Ok(read @ 1..) = from.read(&mut buffer) {
+            while frozen.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if to.write_all(&buffer[..read]).is_err() {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn a_server_that_stops_answering_fails_calls_and_rolls_back_once_it_answers() {
+        let relay = Relay::new();
+        let db = Timescale::connect(&relay.config()).unwrap();
+        db.execute_batch("CREATE TEMP TABLE t (x BIGINT)").unwrap();
+        db.begin().unwrap();
+        db.execute("INSERT INTO t VALUES (1)", &[]).unwrap();
+
+        relay.freeze(true);
+        let frozen_at = Instant::now();
+        assert!(db.execute("INSERT INTO t VALUES (2)", &[]).is_err());
+        assert!(frozen_at.elapsed() < PATIENCE + PROBE + Duration::from_secs(1));
+        let failed_at = Instant::now();
+        assert!(db.query("SELECT 1", &[]).is_err());
+        assert!(db.end(true).is_err(), "no commit");
+        assert!(failed_at.elapsed() < Duration::from_millis(100), "at once");
+
+        relay.freeze(false);
+        let rows = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(50));
+                db.query("SELECT x FROM t", &[]).ok()
+            })
+            .expect("calls work once the server answers");
+        assert_eq!(rows.len(), 0, "the transaction rolled back");
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn a_slow_statement_on_a_server_that_answers_runs_to_the_end() {
+        let relay = Relay::new();
+        let db = Timescale::connect(&relay.config()).unwrap();
+        let sleep = format!("SELECT pg_sleep({})", 2 * PATIENCE.as_secs());
+        db.execute_batch(&sleep).unwrap();
     }
 }
