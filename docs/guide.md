@@ -44,7 +44,8 @@ Config(
 store: (timescale: "host=db user=glurmo dbname=glurmo", keep: Forever, backfill: Days(30)),
 ```
 
-* The server needs PostgreSQL 16 to 18 with `shared_preload_libraries = 'timescaledb'`. glurmo is tested with TimescaleDB 2.31.
+* The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later, with `shared_preload_libraries = 'timescaledb'`. Earlier releases can miss open attempts in compressed chunks. glurmo is tested with TimescaleDB 2.31.
+* Give glurmo a role of its own that owns the database. It needs no superuser rights.
 * glurmo creates its tables at its first start, and the `timescaledb` extension when the database lacks it. The extension is trusted, so the owner of the database can create it without superuser rights.
 * Attempts and usage bins are hypertables in 30-day chunks. Chunks older than 7 days are compressed where the server's license covers compression. The Apache-licensed build keeps them uncompressed, and glurmo says so once.
 * The connection uses no TLS. Keep it on a Unix socket or a network you trust.
