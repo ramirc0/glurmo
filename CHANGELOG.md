@@ -16,6 +16,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- The outage banner ends at the first listing that slurmctld answers. Before, it stayed up until the listing that failed last ran again, which backoff could put 80 minutes away for partitions.
 - A TimescaleDB server that stops answering, as a stopped process or a stuck disk does, no longer holds up the sampler. A call that waits 30 s checks the server on a new connection, and fails when that check gets no answer within 10 s. Before, the live view stopped until the server answered.
 - A bin roll that fails after its tick is written is retried at the next tick. Before, the bins of attempts whose cores the first node listing counted kept their old totals until a restart.
 - The guide's example config no longer names a store under `/scratch`. It documents the default, `$XDG_STATE_HOME/glurmo/<cluster>.sqlite`, and puts the Apptainer TimescaleDB under `$XDG_DATA_HOME`.

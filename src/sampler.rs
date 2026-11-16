@@ -345,20 +345,22 @@ impl Sampler {
     }
 
     /// Ticks until `until`, or forever when it is `None`. A replay also stops once it runs out of answers.
-    /// A failed call is logged and ends its tick early. An [`Outage`] lasts while the last call of any listing failed.
+    /// A failed call is logged and ends its tick early. An [`Outage`] lasts while the latest listing call failed.
+    /// Every listing asks the same slurmctld, so one that answers ends it.
     pub async fn run(&mut self, until: Option<UnixTime>) {
         loop {
             let at = self.slurm.now();
             let mut tick = Tick::default();
-            if let Err(error) = self.list(at, &mut tick).await {
-                if error.is::<Exhausted>() {
-                    return;
+            let failing = match self.list(at, &mut tick).await {
+                Ok(()) => None,
+                Err(error) if error.is::<Exhausted>() => return,
+                Err(error) => {
+                    eprintln!("tick at {} cut short: {error:#}", at.0);
+                    Some(format!("{error:#}"))
                 }
-                eprintln!("tick at {} cut short: {error:#}", at.0);
-            }
+            };
             let Tick { events, listed } = tick;
             let mut events = self.archive(at, events, listed).await;
-            let failing = self.failing();
             if failing.is_some() != self.in_outage {
                 self.in_outage = failing.is_some();
                 events.push(Event::Outage(
@@ -378,19 +380,6 @@ impl Sampler {
             }
             self.slurm.sleep_until(next).await;
         }
-    }
-
-    /// Why the first listing whose last call failed failed, if any did.
-    fn failing(&self) -> Option<String> {
-        [
-            &self.jobs.calls,
-            &self.nodes.calls,
-            &self.partitions.calls,
-            &self.placing,
-        ]
-        .into_iter()
-        .find(|calls| calls.failing)
-        .and_then(|calls| calls.last_error.clone())
     }
 
     fn health(&self) -> Health {
@@ -724,17 +713,16 @@ mod tests {
     async fn store_agrees_with_the_deltas_after_a_controller_outage() {
         let slurm = busy_quarter_hour_with_an_outage().await;
         let (home, deltas) = assert_store_agrees_with_the_deltas(slurm, 0, None).await;
-        let outages: Vec<Option<&str>> = deltas
-            .iter()
-            .flat_map(|delta| &delta.events)
-            .filter_map(|event| match event {
-                Event::Outage(outage) => Some(outage.as_ref().map(|outage| outage.error.as_str())),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(outages.len(), 2, "{outages:?}");
-        assert!(outages[0].is_some_and(|error| error.contains("slurmctld did not answer")));
-        assert_eq!(outages[1], None);
+        let outages = outages(&deltas);
+        assert!(
+            outages[0].is_some_and(|error| error.contains("slurmctld did not answer")),
+            "{outages:?}"
+        );
+        assert_eq!(
+            outages.last(),
+            Some(&None),
+            "node listings answer in between"
+        );
         let last = deltas.last().unwrap().at;
         assert!(
             last.0 - complete_to(&home) > 300,
@@ -936,11 +924,8 @@ mod tests {
         assert_eq!(sampler.lookups.len(), 0);
     }
 
-    /// The kinds of event in the first delta of the busy quarter hour, with the first answer to `failing`
-    /// replaced by an error, and how many deltas the run published.
-    async fn first_delta_when_the_first_call_fails(
-        failing: Call,
-    ) -> (HashSet<&'static str>, usize) {
+    /// The deltas of the busy quarter hour, with the first answer to `failing` replaced by an error.
+    async fn deltas_when_the_first_call_fails(failing: Call) -> Vec<std::sync::Arc<Delta>> {
         let mut failed = false;
         let slurm = busy_quarter_hour_with(|exchange| {
             if exchange.call == failing && !failed {
@@ -953,8 +938,25 @@ mod tests {
         Sampler::new(slurm, &zlurm_config(), None, hub.clone())
             .run(None)
             .await;
-        let deltas = hub.deltas();
-        let kinds = deltas[0]
+        hub.deltas()
+    }
+
+    /// The outages that `deltas` begin, as their errors, and end, as `None`.
+    fn outages(deltas: &[std::sync::Arc<Delta>]) -> Vec<Option<&str>> {
+        deltas
+            .iter()
+            .flat_map(|delta| &delta.events)
+            .filter_map(|event| match event {
+                Event::Outage(outage) => Some(outage.as_ref().map(|outage| outage.error.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_listing_keeps_the_node_and_partition_listings_before_it() {
+        let deltas = deltas_when_the_first_call_fails(Call::Jobs).await;
+        let kinds: HashSet<&str> = deltas[0]
             .events
             .iter()
             .map(|event| match event {
@@ -965,16 +967,20 @@ mod tests {
                 _ => "other",
             })
             .collect();
-        (kinds, deltas.len())
-    }
-
-    #[tokio::test]
-    async fn a_failed_job_listing_keeps_the_node_and_partition_listings_before_it() {
-        let (kinds, _) = first_delta_when_the_first_call_fails(Call::Jobs).await;
         assert!(kinds.contains("nodes"), "{kinds:?}");
         assert!(kinds.contains("partitions"), "{kinds:?}");
         assert!(kinds.contains("outage"), "{kinds:?}");
         assert!(!kinds.contains("started"), "{kinds:?}");
+    }
+
+    #[tokio::test]
+    async fn a_healthy_job_listing_ends_an_outage_that_a_partition_listing_began() {
+        let deltas = deltas_when_the_first_call_fails(Call::Partitions).await;
+        assert_eq!(
+            outages(&deltas),
+            [Some("slurmctld did not answer"), None],
+            "backoff puts the next partition listing past the replay"
+        );
     }
 
     #[tokio::test]
