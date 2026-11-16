@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::Serialize;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 
 use crate::config::{Config, Names, Reach};
 use crate::diff::{Known, placed};
 use crate::hub::Hub;
-use crate::logging;
+use crate::logging::{self, Streak};
 use crate::passwd;
 use crate::slurm::recording::Exhausted;
 use crate::slurm::{Lookup, Slurm, Source};
@@ -55,8 +56,11 @@ fn name_gpus(nodes: &mut [Node], models: &BTreeMap<String, String>) {
 }
 
 /// How one kind of call has fared since the sampler started.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Calls {
+    /// What the calls read, such as `jobs`.
+    #[serde(skip)]
+    name: &'static str,
     /// Calls made.
     pub count: u64,
     /// Calls that failed.
@@ -67,23 +71,59 @@ pub struct Calls {
     pub last_error: Option<String>,
     /// Whether the last call failed.
     pub failing: bool,
+    /// The run of failures the calls are in, if any.
+    #[serde(skip)]
+    streak: Streak,
 }
 
 impl Calls {
+    /// No calls yet to what `name` names, such as `jobs`.
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            count: 0,
+            failures: 0,
+            last_ms: None,
+            last_error: None,
+            failing: false,
+            streak: Streak::default(),
+        }
+    }
+
     /// Runs one call and counts it. Also returns whether it was healthy: it worked, and within 2 s.
     async fn time<T>(&mut self, call: impl Future<Output = Result<T>>) -> (Result<T>, bool) {
         let started = Instant::now();
         let result = call.await;
-        let took = started.elapsed();
+        let healthy = self.tally(started.elapsed(), result.as_ref().err());
+        (result, healthy)
+    }
+
+    /// Counts one call that took `took` and failed with `error`, if it failed. Returns whether it was
+    /// healthy: it worked, and within 2 s.
+    fn tally(&mut self, took: Duration, error: Option<&anyhow::Error>) -> bool {
         self.count += 1;
         self.last_ms = Some(u64::try_from(took.as_millis()).unwrap_or(u64::MAX));
-        self.failing = result.is_err();
-        if let Err(error) = &result {
-            self.failures += 1;
-            self.last_error = Some(format!("{error:#}"));
+        self.failing = error.is_some();
+        match error {
+            Some(error) => {
+                self.failures += 1;
+                self.last_error = Some(format!("{error:#}"));
+                if !error.is::<Exhausted>() {
+                    self.streak.failed(self.name, error);
+                }
+            }
+            None => self.streak.worked(self.name),
         }
-        let healthy = result.is_ok() && took <= SLOW;
-        (result, healthy)
+        error.is_none() && took <= SLOW
+    }
+
+    /// The calls' health, made every `every_s` if on a schedule.
+    fn health(&self, every_s: Option<u64>) -> CallHealth {
+        CallHealth {
+            call: self.name,
+            every_s,
+            calls: self.clone(),
+        }
     }
 }
 
@@ -104,14 +144,6 @@ pub struct CallHealth {
 #[serde(transparent)]
 pub struct Health(pub Vec<CallHealth>);
 
-fn unpaced(call: &'static str, calls: &Calls) -> CallHealth {
-    CallHealth {
-        call,
-        every_s: None,
-        calls: calls.clone(),
-    }
-}
-
 /// When one kind of call is made next, how far backoff has stretched its interval, and how its calls went.
 struct Pace {
     every_s: u64,
@@ -123,14 +155,14 @@ struct Pace {
 }
 
 impl Pace {
-    fn new(every_s: u64, most_s: u64) -> Self {
+    fn new(name: &'static str, every_s: u64, most_s: u64) -> Self {
         Self {
             every_s,
             most_s,
             slowdown: 1,
             healthy: 0,
             next: UnixTime(0),
-            calls: Calls::default(),
+            calls: Calls::new(name),
         }
     }
 
@@ -167,12 +199,8 @@ impl Pace {
         result
     }
 
-    fn health(&self, call: &'static str) -> CallHealth {
-        CallHealth {
-            call,
-            every_s: Some(self.interval_s()),
-            calls: self.calls.clone(),
-        }
+    fn health(&self) -> CallHealth {
+        self.calls.health(Some(self.interval_s()))
     }
 }
 
@@ -251,7 +279,7 @@ async fn read_history(
     answers: mpsc::Sender<Read>,
 ) {
     let mut slurm: Option<Slurm> = None;
-    let mut calls = Calls::default();
+    let mut calls = Calls::new("history");
     while let Some(window) = asked.recv().await {
         let read = async {
             let slurm = match &mut slurm {
@@ -291,6 +319,8 @@ pub struct Sampler {
     looking_up: Calls,
     settling: Calls,
     backfilling: Calls,
+    /// Writes to the store and its upkeep.
+    storing: Calls,
     /// Started attempts that still need a placement lookup, oldest first.
     lookups: VecDeque<Attempt>,
     budget: u64,
@@ -324,13 +354,14 @@ impl Sampler {
         Self {
             slurm,
             known: Known::default(),
-            jobs: Pace::new(intervals.jobs_s, jobs_most_s),
-            nodes: Pace::new(intervals.nodes_s, u64::MAX),
-            partitions: Pace::new(intervals.partitions_s, u64::MAX),
-            placing: Calls::default(),
-            looking_up: Calls::default(),
-            settling: Calls::default(),
-            backfilling: Calls::default(),
+            jobs: Pace::new("jobs", intervals.jobs_s, jobs_most_s),
+            nodes: Pace::new("nodes", intervals.nodes_s, u64::MAX),
+            partitions: Pace::new("partitions", intervals.partitions_s, u64::MAX),
+            placing: Calls::new("placements"),
+            looking_up: Calls::new("lookups"),
+            settling: Calls::new("outcomes"),
+            backfilling: Calls::new("history"),
+            storing: Calls::new("store"),
             lookups: VecDeque::new(),
             budget: intervals.lookups,
             cold: true,
@@ -356,7 +387,7 @@ impl Sampler {
                 Ok(()) => None,
                 Err(error) if error.is::<Exhausted>() => return,
                 Err(error) => {
-                    tracing::warn!("tick cut short: {error:#}");
+                    tracing::debug!("tick cut short: {error:#}");
                     Some(format!("{error:#}"))
                 }
             };
@@ -369,8 +400,10 @@ impl Sampler {
                 ));
             }
             self.hub.publish(at, events);
-            if listed && let Err(error) = self.backfill(at).await {
-                tracing::warn!("history upkeep failed: {error:#}");
+            if listed && self.store.is_some() {
+                let started = Instant::now();
+                let upkeep = self.backfill(at).await;
+                self.storing.tally(started.elapsed(), upkeep.as_ref().err());
             }
             self.hub.report(self.health());
             // A replay never waits on its own, and subscribers in the same task need a turn.
@@ -385,13 +418,14 @@ impl Sampler {
 
     fn health(&self) -> Health {
         Health(vec![
-            self.jobs.health("jobs"),
-            self.nodes.health("nodes"),
-            self.partitions.health("partitions"),
-            unpaced("placements", &self.placing),
-            unpaced("lookups", &self.looking_up),
-            unpaced("outcomes", &self.settling),
-            unpaced("history", &self.backfilling),
+            self.jobs.health(),
+            self.nodes.health(),
+            self.partitions.health(),
+            self.placing.health(None),
+            self.looking_up.health(None),
+            self.settling.health(None),
+            self.backfilling.health(None),
+            self.storing.health(None),
         ])
     }
 
@@ -460,16 +494,18 @@ impl Sampler {
         };
         let active = listed.then(|| self.known.active());
         let min_job_age_s = self.slurm.site().min_job_age_s;
+        let started = Instant::now();
         let (store, (mut events, users)) = blocking(store, move |store| {
             let users = archive(store, now, &events, active.as_ref(), min_job_age_s);
             (events, users)
         })
         .await;
         self.store = Some(store);
-        match users {
-            Ok(users) if !users.is_empty() => events.push(Event::Users(self.name(users).await)),
-            Ok(_) => {}
-            Err(error) => tracing::warn!("cannot write the tick to the store: {error:#}"),
+        self.storing.tally(started.elapsed(), users.as_ref().err());
+        if let Ok(users) = users
+            && !users.is_empty()
+        {
+            events.push(Event::Users(self.name(users).await));
         }
         events
     }
@@ -481,17 +517,30 @@ impl Sampler {
             return Ok(());
         };
         let mut read = None;
-        if let Some(historian) = &mut self.historian
-            && let Ok(answer) = historian.reads.try_recv()
+        let answer = match self
+            .historian
+            .as_mut()
+            .map(|historian| historian.reads.try_recv())
         {
-            historian.reading = false;
+            Some(Ok(answer)) => Some(answer),
+            Some(Err(TryRecvError::Disconnected)) => {
+                tracing::error!("the history task stopped, so history waits for a restart");
+                self.historian = None;
+                None
+            }
+            Some(Err(TryRecvError::Empty)) | None => None,
+        };
+        if let Some(answer) = answer {
+            if let Some(historian) = &mut self.historian {
+                historian.reading = false;
+            }
             self.backfilling = answer.calls;
             self.backfill_span_s = next_span(self.backfill_span_s, answer.attempts.is_ok());
             match answer.attempts {
                 Ok(attempts) => read = Some((answer.window, attempts)),
                 Err(error) => {
                     let Window { from, to, .. } = answer.window;
-                    tracing::warn!(
+                    tracing::debug!(
                         "cannot read history from {} to {}: {error:#}",
                         logging::local(from),
                         logging::local(to)
@@ -555,11 +604,11 @@ impl Sampler {
         };
         if let Some(store) = self.store.take() {
             let stored = names.clone();
+            let started = Instant::now();
             let (store, outcome) = blocking(store, move |store| store.name_users(&stored)).await;
             self.store = Some(store);
-            if let Err(error) = outcome {
-                tracing::warn!("cannot store full names: {error:#}");
-            }
+            self.storing
+                .tally(started.elapsed(), outcome.as_ref().err());
         }
         for user in &mut users {
             if let Some(name) = names.get(&user.login) {
@@ -582,7 +631,7 @@ impl Sampler {
                 Ok(Lookup::Found(found)) => events.extend(placed(&attempt, found)),
                 Ok(Lookup::Gone) => {}
                 Err(error) => {
-                    tracing::warn!("lookup of job {} failed: {error:#}", attempt.key.job.0);
+                    tracing::debug!("lookup of job {} failed: {error:#}", attempt.key.job.0);
                     self.lookups.push_back(attempt);
                     break;
                 }
@@ -600,7 +649,7 @@ impl Sampler {
         match self.settling.time(self.slurm.outcomes(&jobs)).await.0 {
             Ok(outcomes) => self.known.settle(&outcomes),
             Err(error) => {
-                tracing::warn!("cannot read how {} jobs ended: {error:#}", jobs.len());
+                tracing::debug!("cannot read how {} jobs ended: {error:#}", jobs.len());
                 Vec::new()
             }
         }
@@ -680,6 +729,31 @@ mod tests {
         .await
     }
 
+    #[tokio::test]
+    async fn a_run_of_failed_calls_logs_where_it_starts_and_ends() {
+        let slurm = busy_quarter_hour_with_an_outage().await;
+        let hub = Hub::new(slurm.site().clone());
+        let (subscriber, captured) = crate::logging::capturing("info");
+        let _logging = tracing::subscriber::set_default(subscriber);
+        Sampler::new(slurm, &zlurm_config(), None, hub)
+            .run(None)
+            .await;
+        let text = captured.text();
+        let lines: Vec<&str> = text.lines().collect();
+        let failing: Vec<&&str> = lines.iter().filter(|line| line.contains("WARN")).collect();
+        assert_eq!(failing.len(), 1, "{text}");
+        assert!(
+            failing[0].contains("jobs failing: slurmctld did not answer"),
+            "{text}"
+        );
+        let recovered: Vec<&&str> = lines
+            .iter()
+            .filter(|line| line.contains("jobs answers again"))
+            .collect();
+        assert_eq!(recovered.len(), 1, "{text}");
+        assert!(recovered[0].contains("7 of 10 calls failed"), "{text}");
+    }
+
     /// When the store's coverage ends, in seconds since the epoch.
     fn complete_to(home: &StoreHome) -> i64 {
         home.read()
@@ -700,7 +774,7 @@ mod tests {
                 let read = Read {
                     window,
                     attempts: Ok(Vec::new()),
-                    calls: Calls::default(),
+                    calls: Calls::new("history"),
                 };
                 if answers.send(read).await.is_err() {
                     return;
@@ -1107,7 +1181,7 @@ mod tests {
 
     #[test]
     fn backoff_doubles_to_eight_times_and_recovers_after_three_healthy_calls() {
-        let mut pace = Pace::new(10, 150);
+        let mut pace = Pace::new("jobs", 10, 150);
         let intervals: Vec<i64> = [
             false, false, false, false, true, true, true, true, true, true,
         ]
@@ -1146,7 +1220,7 @@ mod tests {
 
     #[test]
     fn backoff_stays_under_the_cap() {
-        let mut pace = Pace::new(10, 30);
+        let mut pace = Pace::new("jobs", 10, 30);
         for _ in 0..4 {
             pace.record(UnixTime(0), false);
         }

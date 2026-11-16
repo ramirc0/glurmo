@@ -12,6 +12,7 @@ use std::sync::{Mutex, PoisonError};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::logging;
 use crate::rollup::{BIN_S, Span, bin_of, rollup};
 use connection::{Connection, Location, Value, params};
 use glurmo_model::usage::Step;
@@ -489,6 +490,11 @@ impl Store {
             Coverage::Behind { .. } => false,
         };
         if gap {
+            tracing::info!(
+                "history has a gap from {} to {}, which accounting will fill",
+                logging::local(last),
+                logging::local(at)
+            );
             self.coverage = Coverage::Behind { since: at };
         }
         if self.coverage == Coverage::Current {
@@ -597,9 +603,14 @@ impl Store {
         }
         tx.commit()?;
         if !window.gap {
+            tracing::debug!("history reaches back to {}", logging::local(window.from));
             self.set_meta("history_from", window.from)?;
         } else if let Coverage::Behind { since } = self.coverage {
             if window.to >= since {
+                tracing::info!(
+                    "the gap in history up to {} is filled",
+                    logging::local(since)
+                );
                 self.coverage = Coverage::Current;
                 self.set_meta("complete_to", now)?;
             } else {

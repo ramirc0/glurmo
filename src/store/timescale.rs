@@ -135,11 +135,12 @@ impl Timescale {
         &self,
         work: impl FnOnce(&mut Session) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        if let Some(caught_up) = self.behind.take()
-            && let Err(mpsc::TryRecvError::Empty) = caught_up.try_recv()
-        {
-            self.behind.set(Some(caught_up));
-            bail!(UNANSWERED);
+        if let Some(caught_up) = self.behind.take() {
+            if let Err(mpsc::TryRecvError::Empty) = caught_up.try_recv() {
+                self.behind.set(Some(caught_up));
+                bail!(UNANSWERED);
+            }
+            tracing::info!("the TimescaleDB client has finished the calls it gave up on");
         }
         let (answer, answered) = mpsc::sync_channel(1);
         self.send(Box::new(move |session| {
@@ -161,6 +162,9 @@ impl Timescale {
                         let _ = caught_up.send(());
                     }))?;
                     self.behind.set(Some(behind));
+                    tracing::warn!(
+                        "the TimescaleDB server answered neither a call within {PATIENCE:?} nor a probe within {PROBE:?}, so calls fail until the client finishes it"
+                    );
                     bail!(UNANSWERED);
                 }
             }
@@ -274,6 +278,7 @@ impl Session {
         if self.client.is_closed() && !self.in_transaction {
             self.client = connect(&self.config)?;
             self.statements.clear();
+            tracing::info!("reconnected to the TimescaleDB server");
         }
         Ok(())
     }

@@ -23,6 +23,7 @@ use tokio::net::TcpStream;
 use super::Lookup;
 use super::recording::{Answer, Call};
 use super::scontrol::Placed;
+use crate::logging::Streak;
 use glurmo_model::{Attempt, Login, UnixTime};
 use pack::{Pack, Unpack};
 
@@ -372,6 +373,8 @@ pub struct Wire {
     accounting: Vec<String>,
     logins: HashMap<u32, Login>,
     unknown: HashSet<u32>,
+    /// The run of failed login lookups, if any.
+    looking_up_logins: Streak,
     /// The placements from the last job listing, for a placement call that comes right after it.
     next_placements: Option<Result<Vec<Placed>>>,
 }
@@ -398,6 +401,7 @@ impl Wire {
             accounting: Vec::new(),
             logins: HashMap::new(),
             unknown: HashSet::new(),
+            looking_up_logins: Streak::default(),
             next_placements: None,
         })
     }
@@ -587,8 +591,9 @@ impl Wire {
                 self.unknown
                     .extend(new.iter().filter(|uid| !found.contains_key(uid)));
                 self.logins.extend(found);
+                self.looking_up_logins.worked("login lookup");
             }
-            Err(error) => tracing::warn!("cannot look up logins: {error:#}"),
+            Err(error) => self.looking_up_logins.failed("login lookup", error),
         }
     }
 }
@@ -758,6 +763,7 @@ mod tests {
             accounting: Vec::new(),
             logins: HashMap::new(),
             unknown: HashSet::new(),
+            looking_up_logins: Streak::default(),
             next_placements: None,
         }
     }

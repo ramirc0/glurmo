@@ -36,6 +36,56 @@ pub fn local(at: UnixTime) -> String {
     clock(at, &TimeZone::system(), "%Y-%m-%dT%H:%M:%S%:z")
 }
 
+/// Calls in a row that must work before a run of failures counts as over, so a flaky dependency
+/// logs one run rather than a pair of lines per failure.
+const RECOVERED_AFTER: u32 = 3;
+
+/// A run of failed calls to one dependency. Its first failure logs a warning, and the call that
+/// ends it logs how long it lasted and how many calls failed. Failures in between log at debug.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Streak {
+    /// When the run's first failure came, while a run is on.
+    since: Option<std::time::Instant>,
+    failed: u64,
+    calls: u64,
+    /// Calls that worked since the last failure.
+    worked: u32,
+}
+
+impl Streak {
+    /// Counts a failed call to `what`.
+    pub fn failed(&mut self, what: &str, error: impl std::fmt::Display) {
+        self.failed += 1;
+        self.calls += 1;
+        self.worked = 0;
+        if self.since.is_none() {
+            self.since = Some(std::time::Instant::now());
+            tracing::warn!("{what} failing: {error:#}");
+        } else {
+            tracing::debug!("{what} failed again: {error:#}");
+        }
+    }
+
+    /// Counts a call to `what` that worked.
+    pub fn worked(&mut self, what: &str) {
+        let Some(since) = self.since else {
+            return;
+        };
+        self.calls += 1;
+        self.worked += 1;
+        if self.worked == RECOVERED_AFTER {
+            let lasted = i64::try_from(since.elapsed().as_secs()).unwrap_or(i64::MAX);
+            tracing::info!(
+                "{what} answers again after {}: {} of {} calls failed",
+                glurmo_model::units::span(lasted),
+                self.failed,
+                self.calls
+            );
+            *self = Self::default();
+        }
+    }
+}
+
 fn info() -> Targets {
     Targets::new().with_default(tracing::Level::INFO)
 }
@@ -113,6 +163,10 @@ impl std::io::Write for Captured {
 /// A subscriber that logs as glurmo does, at `levels`, into the returned [`Captured`].
 #[cfg(test)]
 pub fn capturing(levels: &str) -> (impl Subscriber + Send + Sync, Captured) {
+    // While one dispatcher is registered, a callsite that another test's thread reaches first takes
+    // that thread's interest alone and never logs here. A second dispatcher makes tracing ask all.
+    static SECOND: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+    SECOND.get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
     let captured = Captured::default();
     let writer = captured.clone();
     (
