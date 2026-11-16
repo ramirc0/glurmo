@@ -1,11 +1,123 @@
 //! Replays of recorded zlurm traffic for tests.
 
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use crate::config::{Config, from_ron};
 use crate::hub::Hub;
 use crate::sampler::Sampler;
 use crate::slurm::recording::{Exchange, Replay};
 use crate::slurm::{Slurm, Source};
-use crate::store::{Settings, Store};
+use crate::store::connection::Connection;
+use crate::store::timescale::{self, Timescale};
+use crate::store::{History, Settings, Store};
+
+/// The variable that names a TimescaleDB server for tests, as a key-value connection string.
+const TIMESCALE: &str = "GLURMO_TEST_TIMESCALE";
+
+/// How many schemas this process has made, so each gets a name of its own.
+static SCHEMAS: AtomicU32 = AtomicU32::new(0);
+
+/// Where a test keeps its store: a SQLite file in a temporary directory, or a schema of its own on a
+/// TimescaleDB server. The directory and the schema are deleted when this drops.
+pub struct StoreHome {
+    dir: tempfile::TempDir,
+    /// The server and the schema on it, for a store on TimescaleDB.
+    schema: Option<(String, String)>,
+}
+
+impl StoreHome {
+    /// A home on the TimescaleDB server that `GLURMO_TEST_TIMESCALE` names, or in SQLite without it.
+    pub fn new() -> Self {
+        if std::env::var_os(TIMESCALE).is_some() {
+            Self::timescale()
+        } else {
+            Self::sqlite()
+        }
+    }
+
+    /// A home in SQLite.
+    pub fn sqlite() -> Self {
+        Self {
+            dir: tempfile::tempdir().unwrap(),
+            schema: None,
+        }
+    }
+
+    /// A home on the TimescaleDB server that `GLURMO_TEST_TIMESCALE` names.
+    pub fn timescale() -> Self {
+        let server = std::env::var(TIMESCALE).expect("GLURMO_TEST_TIMESCALE names a server");
+        let schema = format!(
+            "glurmo_test_{}_{}",
+            std::process::id(),
+            SCHEMAS.fetch_add(1, Ordering::Relaxed)
+        );
+        Timescale::connect(&timescale::parse(&server).unwrap())
+            .unwrap()
+            .execute_batch(&format!("CREATE SCHEMA {schema}"))
+            .unwrap();
+        let mut home = Self::sqlite();
+        home.schema = Some((server, schema));
+        home
+    }
+
+    /// Opens the store, which is created at its first opening.
+    pub fn open(&self, backfill_days: u32) -> Store {
+        let settings = self.settings(backfill_days);
+        match self.server() {
+            Some(server) => Store::connect(&server, settings),
+            None => Store::open(&self.path(), settings),
+        }
+        .unwrap()
+    }
+
+    /// Settings that keep everything and put a SQLite store's backup in this home's directory.
+    pub fn settings(&self, backfill_days: u32) -> Settings {
+        Settings {
+            backfill_days,
+            keep_days: None,
+            backup: self.dir.path().join("backup/glurmo.sqlite"),
+        }
+    }
+
+    /// A connection that reads what the store holds.
+    pub fn read(&self) -> Connection {
+        match self.server() {
+            Some(server) => Connection::Timescale(
+                Timescale::connect(&timescale::parse(&server).unwrap()).unwrap(),
+            ),
+            None => Connection::Sqlite(rusqlite::Connection::open(self.path()).unwrap()),
+        }
+    }
+
+    /// This home's directory.
+    pub fn dir(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Where a SQLite store's file is.
+    pub fn path(&self) -> PathBuf {
+        self.dir.path().join("glurmo.sqlite")
+    }
+
+    /// The connection string that reaches this home's schema, for a store on TimescaleDB.
+    pub fn server(&self) -> Option<String> {
+        self.schema.as_ref().map(|(server, schema)| {
+            format!("{server} application_name={schema} options='-c search_path={schema},public'")
+        })
+    }
+}
+
+impl Drop for StoreHome {
+    fn drop(&mut self) {
+        if let Some((server, schema)) = &self.schema
+            && let Ok(config) = timescale::parse(server)
+            && let Ok(db) = Timescale::connect(&config)
+        {
+            let _ = db.execute_batch(&format!("DROP SCHEMA {schema} CASCADE"));
+        }
+    }
+}
 
 /// The defaults, with zlurm's GPU models.
 pub fn zlurm_config() -> Config {
@@ -46,23 +158,18 @@ pub async fn busy_stored_hub() -> Hub {
     busy_store().await.1
 }
 
-/// The busy quarter hour sampled into a store, kept until the directory drops, and the hub it published
-/// to.
-pub async fn busy_store() -> (tempfile::TempDir, Hub) {
-    let dir = tempfile::tempdir().unwrap();
-    let settings = Settings {
-        backfill_days: 0,
-        keep_days: None,
-        backup: dir.path().join("backup.sqlite"),
-    };
-    let store = Store::open(&store_path(&dir), settings).unwrap();
-    let hub = sample_busy_quarter_hour(Some(store)).await;
-    (dir, hub)
+/// The busy quarter hour sampled into a store, kept until its home drops, the hub it published to,
+/// and the store's history.
+pub async fn busy_store() -> (StoreHome, Hub, History) {
+    busy_store_in(StoreHome::new()).await
 }
 
-/// Where [`busy_store`] keeps its store.
-pub fn store_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
-    dir.path().join("glurmo.sqlite")
+/// The busy quarter hour sampled into a store in `home`, as [`busy_store`] gives it.
+pub async fn busy_store_in(home: StoreHome) -> (StoreHome, Hub, History) {
+    let store = home.open(0);
+    let history = store.history();
+    let hub = sample_busy_quarter_hour(Some(store)).await;
+    (home, hub, history)
 }
 
 async fn sample_busy_quarter_hour(store: Option<Store>) -> Hub {

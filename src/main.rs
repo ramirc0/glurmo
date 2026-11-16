@@ -35,7 +35,7 @@ use sampler::Sampler;
 use slurm::Source;
 use slurm::recording::{Recorder, Replay};
 use slurm::{Sample, Slurm};
-use store::{History, Settings, Store};
+use store::{Settings, Store};
 
 /// Live view of who holds which cores and GPUs on a cluster.
 #[derive(Parser)]
@@ -74,6 +74,13 @@ enum Command {
     },
     /// Print site facts, capabilities, each command's cost, and suggested intervals.
     Probe,
+    /// Copy the history in a SQLite store into a TimescaleDB database that holds none yet.
+    Copy {
+        /// The SQLite store. A server may be writing to it.
+        sqlite: PathBuf,
+        /// The TimescaleDB server, as a connection string such as `host=db user=glurmo dbname=glurmo`.
+        timescale: String,
+    },
     /// Sample the cluster and print each tick's changes as a line of JSON.
     Sample {
         /// Read everything once, print it as JSON and exit.
@@ -137,6 +144,18 @@ async fn main() -> Result<()> {
             let mut slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
             print!("{}", slurm::probe::probe(&mut slurm).await?);
         }
+        Command::Copy { sqlite, timescale } => {
+            let copied = store::copy(&sqlite, &timescale)?;
+            for rows in &copied {
+                println!(
+                    "{}: {} rows in SQLite, {} in TimescaleDB",
+                    rows.table, rows.source, rows.target
+                );
+            }
+            if copied.iter().any(|rows| rows.source != rows.target) {
+                anyhow::bail!("the copy does not hold what the SQLite store held");
+            }
+        }
         Command::Sample {
             once,
             replay,
@@ -153,8 +172,7 @@ async fn main() -> Result<()> {
                 summarize(&sample);
             } else {
                 let store = if store {
-                    let path = store_path(&config.store, &slurm.site().cluster)?;
-                    Some(open_store(&config.store, &path)?)
+                    Some(open_store(&config.store, &slurm.site().cluster)?)
                 } else {
                     None
                 };
@@ -212,34 +230,32 @@ async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()>
 /// are read from `$XDG_CONFIG_HOME/glurmo`. With `replay`, the samples come from a recording, played
 /// `speed` times faster than it was recorded, and the store is a temporary one.
 async fn sample_and_serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()> {
-    let (slurm, path, store, _scratch) = if let Some(recording) = replay {
+    let (slurm, store, _scratch) = if let Some(recording) = replay {
         let scratch = tempfile::tempdir()?;
         let slurm =
             Slurm::connect(Source::Replay(Replay::open(recording)?.paced(speed)), None).await?;
-        let path = scratch.path().join("replay.sqlite");
         let settings = Settings {
             backfill_days: 0,
             keep_days: None,
             backup: scratch.path().join("backup.sqlite"),
         };
-        let store = Store::open(&path, settings)?;
-        (slurm, path, store, Some(scratch))
+        let store = Store::open(&scratch.path().join("replay.sqlite"), settings)?;
+        (slurm, store, Some(scratch))
     } else {
         let slurm = Slurm::connect(Source::live(&config.slurm)?, None).await?;
-        let path = store_path(&config.store, &slurm.site().cluster)?;
-        let store = open_store(&config.store, &path)?;
-        (slurm, path, store, None)
+        let store = open_store(&config.store, &slurm.site().cluster)?;
+        (slurm, store, None)
     };
     let hub = Hub::new(slurm.site().clone());
     let dir = xdg::config_home()?.join("glurmo");
     let (library, _) = watch::channel(Library::load(&dir));
-    let router = server::router(hub.clone(), History::open(&path), library.subscribe());
-    let mut sampler = Sampler::new(slurm, config, Some(store), hub);
+    let router = server::router(hub.clone(), store.history(), library.subscribe());
     eprintln!(
         "serving on http://{} with history in {}",
         config.server.listen,
-        path.display()
+        store.location()
     );
+    let mut sampler = Sampler::new(slurm, config, Some(store), hub);
     let sample = async {
         sampler.run(None).await;
         if replay.is_some() {
@@ -254,28 +270,30 @@ async fn sample_and_serve(config: &Config, replay: Option<&Path>, speed: u32) ->
     }
 }
 
-/// Where the config puts the store, by default `$XDG_STATE_HOME/glurmo/<cluster>.sqlite`.
-fn store_path(storage: &Storage, cluster: &str) -> Result<PathBuf> {
-    Ok(match &storage.path {
-        Some(path) => path.clone(),
-        None => xdg::state_home()?
-            .join("glurmo")
-            .join(format!("{cluster}.sqlite")),
-    })
-}
-
-/// Opens the store at `path`. Its nightly backup goes to `$XDG_DATA_HOME/glurmo` under the same file name.
-fn open_store(storage: &Storage, path: &Path) -> Result<Store> {
-    let name = path.file_name().context("the store path names no file")?;
-    let settings = Settings {
+/// Opens the store the config names: the TimescaleDB server, or else the SQLite file, by default
+/// `$XDG_STATE_HOME/glurmo/<cluster>.sqlite`. A SQLite store's nightly backup goes to
+/// `$XDG_DATA_HOME/glurmo` under the same file name.
+fn open_store(storage: &Storage, cluster: &str) -> Result<Store> {
+    let mut settings = Settings {
         backfill_days: storage.backfill.0,
         keep_days: match storage.keep {
             Keep::Forever => None,
             Keep::Days(days) => Some(days),
         },
-        backup: xdg::data_home()?.join("glurmo").join(name),
+        backup: PathBuf::new(),
     };
-    Store::open(path, settings)
+    if let Some(server) = &storage.timescale {
+        return Store::connect(server, settings);
+    }
+    let path = match &storage.path {
+        Some(path) => path.clone(),
+        None => xdg::state_home()?
+            .join("glurmo")
+            .join(format!("{cluster}.sqlite")),
+    };
+    let name = path.file_name().context("the store path names no file")?;
+    settings.backup = xdg::data_home()?.join("glurmo").join(name);
+    Store::open(&path, settings)
 }
 
 /// Samples until `until`, printing each delta on stdout and a summary of the cluster after it on stderr.

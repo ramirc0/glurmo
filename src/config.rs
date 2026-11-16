@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use ron::extensions::Extensions;
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,9 @@ pub struct Reach {
 pub struct Storage {
     /// The SQLite file, which must be on a local disk. `None` puts it under `$XDG_STATE_HOME/glurmo`.
     pub path: Option<PathBuf>,
+    /// The TimescaleDB server that holds history in place of a SQLite file, as a connection string
+    /// such as `host=db user=glurmo dbname=glurmo`.
+    pub timescale: Option<String>,
     /// How long to keep history.
     pub keep: Keep,
     /// How much accounting to read into a new store.
@@ -57,6 +60,7 @@ impl Default for Storage {
     fn default() -> Self {
         Self {
             path: None,
+            timescale: None,
             keep: Keep::Forever,
             backfill: Days(30),
         }
@@ -133,7 +137,8 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Fails when the file cannot be read or does not parse, or `path` names a missing file.
+    /// Fails when the file cannot be read or does not parse, `path` names a missing file, or the
+    /// store has both a SQLite path and a TimescaleDB server.
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let path = if let Some(path) = path {
             path.to_owned()
@@ -146,7 +151,15 @@ impl Config {
         };
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("cannot read {}", path.display()))?;
-        from_ron(&text).with_context(|| format!("{} does not parse", path.display()))
+        let config: Self =
+            from_ron(&text).with_context(|| format!("{} does not parse", path.display()))?;
+        if config.store.path.is_some() && config.store.timescale.is_some() {
+            bail!(
+                "{} gives the store both a path and a TimescaleDB server",
+                path.display()
+            );
+        }
+        Ok(config)
     }
 }
 
@@ -246,6 +259,7 @@ mod tests {
             config.store,
             Storage {
                 path: Some("/scratch/otter/glurmo/zlurm.sqlite".into()),
+                timescale: None,
                 keep: Keep::Days(365),
                 backfill: Days(7),
             }
@@ -256,6 +270,25 @@ mod tests {
         assert_eq!(config.tui.layout, "wide");
         assert_eq!(config.tui.me, Some(Login("otter".into())));
         assert_eq!(config.gpu_models["gpuh200"], "H200");
+    }
+
+    #[test]
+    fn the_store_takes_a_timescale_server_or_a_path_and_not_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.ron");
+        let server = r#"timescale: "host=db user=otter dbname=glurmo""#;
+        std::fs::write(&path, format!("(store: ({server}, backfill: Days(7)))")).unwrap();
+        let config = Config::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.store.timescale.as_deref(),
+            Some("host=db user=otter dbname=glurmo")
+        );
+        assert_eq!(config.store.path, None);
+
+        let both = format!(r#"(store: ({server}, path: "/scratch/otter/zlurm.sqlite"))"#);
+        std::fs::write(&path, both).unwrap();
+        let error = Config::load(Some(&path)).unwrap_err();
+        assert!(format!("{error:#}").contains("both"), "{error:#}");
     }
 
     #[test]

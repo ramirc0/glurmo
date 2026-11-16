@@ -8,7 +8,7 @@ A live view of who holds which cores and GPUs on a Slurm cluster.
 
 glurmo draws every core and GPU of a Slurm cluster in the color of the user who holds it. Panels beside the cores show users, the queue, node health and usage history.
 
-* `glurmo serve` samples the cluster, keeps its history in SQLite, and streams the changes to a web view sized for a desk or a wall display.
+* `glurmo serve` samples the cluster, keeps its history in SQLite or TimescaleDB, and streams the changes to a web view sized for a desk or a wall display.
 * `glurmo tui` shows the same stream in a terminal.
 * glurmo speaks Slurm's protocol to slurmctld and slurmdbd. It runs no Slurm commands, and one call places every core of every job.
 

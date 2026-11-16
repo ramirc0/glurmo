@@ -46,6 +46,32 @@ hover-check port="8793": web
     SCRATCH="$dir" node web/check.mjs http://127.0.0.1:{{port}} "$dir/jobs.png" \
         --query '?layout=jobs' --eval "$(cat web/hover-check.js)"
 
+# Run the tests with the store on TimescaleDB, and the ignored store tests that need a server: start
+# TimescaleDB 2.31.0 on PostgreSQL 18 from its image under Apptainer, on a Unix socket in a scratch
+# directory, and stop it afterwards. Its database sorts text by English rules, as many servers do.
+timescale-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    image=docker://timescale/timescaledb@sha256:0fcff5761363809d1242f2261a3482197b5a5337407f8b97a976fb174206d579
+    scratch="${SCRATCH:-${TMPDIR:-/tmp}}"
+    export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$scratch/apptainer}"
+    mkdir -p "$APPTAINER_CACHEDIR"
+    dir=$(mktemp -d -p "$scratch")
+    in_image() { apptainer exec --bind "$dir" "$image" "$@"; }
+    trap 'in_image pg_ctl -D "$dir/data" -m fast -w stop > /dev/null || true; rm -rf "$dir"' EXIT
+    in_image initdb -D "$dir/data" --auth=trust > "$dir/initdb.log"
+    in_image postgres -D "$dir/data" -k "$dir" -c listen_addresses= \
+        -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off \
+        > "$dir/server.log" 2>&1 &
+    server=$!
+    until in_image pg_isready -q -h "$dir"; do kill -0 "$server"; sleep 0.2; done
+    in_image psql -q -h "$dir" -d postgres -c "CREATE DATABASE glurmo TEMPLATE template0
+        LOCALE_PROVIDER icu ICU_LOCALE 'en-US' LOCALE 'C.UTF-8'"
+    in_image psql -q -h "$dir" -d glurmo -c 'CREATE EXTENSION timescaledb'
+    export GLURMO_TEST_TIMESCALE="host=$dir dbname=glurmo"
+    cargo test
+    cargo test -- --ignored store::
+
 # Build a static musl binary at target/x86_64-unknown-linux-musl/release/glurmo. It runs on any x86-64 Linux.
 static: web
     cargo build --release --target x86_64-unknown-linux-musl
