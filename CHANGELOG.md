@@ -4,6 +4,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-15
+
 ### Added
 
 - A logo, the foreman in `docs/media/logo.svg`. Its head and hard hat are the web view's favicon.
@@ -14,9 +16,6 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - The web server keeps accepting connections while the store waits on a slow disk or a lock. Before, a store call that waited stopped it, because the sampler ran on the server's task.
 - A tick that the store fails to write opens a gap, so accounting fills in the tick's starts and ends once writes work again. Accounting keeps no placements, so the tick's are lost. The tick is written whole or not at all, and no accounting is read while writes fail. Before, its starts and ends were lost for good. A node's health change that failed to be written was never written again, and a first node listing that failed left cores uncounted until a restart.
-
-### Fixed
-
 - `systemd/glurmo.service` starts only on the host its `ConditionHost` names, which its header asks you to set. Before, a home directory shared with compute nodes could start another server wherever a Slurm job started your systemd user manager.
 
 ## [0.4.0] - 2026-11-15
@@ -133,7 +132,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - `glurmo record`, `pseudonymize`, `convert` and `serve --replay --speed`, for recordings, demos and test fixtures.
 - Account lookups through `/etc/passwd` and SSSD's socket, so the static binary sees directory users.
 
-[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ramirc0/glurmo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ramirc0/glurmo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ramirc0/glurmo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ramirc0/glurmo/compare/v0.1.0...v0.2.0
