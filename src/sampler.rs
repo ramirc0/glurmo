@@ -1,7 +1,7 @@
 //! The tick loop. It makes the calls that are due, diffs their answers, places started jobs and
 //! publishes each tick's changes to the [`Hub`].
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -15,7 +15,7 @@ use crate::passwd;
 use crate::slurm::recording::Exhausted;
 use crate::slurm::{Lookup, Slurm, Source};
 use crate::store::{Store, Window};
-use glurmo_model::{Attempt, Event, Login, Node, Outage, UnixTime, User};
+use glurmo_model::{Attempt, AttemptKey, Event, Login, Node, Outage, UnixTime, User};
 
 /// A call slower than this counts against its kind, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
@@ -175,6 +175,43 @@ impl Pace {
     }
 }
 
+/// Writes a tick's events to `store`. After a jobs tick, which `active` holds the queue of, it also
+/// closes attempts that vanished while no listing came in, because the sampler or the controller was
+/// down, and rolls up closed bins. Returns the users seen for the first time.
+fn archive(
+    store: &mut Store,
+    now: UnixTime,
+    events: &[Event],
+    active: Option<&HashSet<AttemptKey>>,
+    min_job_age_s: u64,
+) -> Result<Vec<User>> {
+    store.record(now, events)?;
+    if let Some(active) = active {
+        if store.sampled(now, i64::try_from(min_job_age_s)?)? {
+            let closed = store.recover(active)?;
+            if closed > 0 {
+                eprintln!("{closed} attempts left the queue while no listing came in");
+            }
+        }
+        store.roll(now)?;
+    }
+    store.new_users()
+}
+
+/// Runs `work` on `store` on a thread meant for blocking, so a slow disk or database server holds up
+/// no task, and hands the store back.
+async fn blocking<T: Send + 'static>(
+    mut store: Store,
+    work: impl FnOnce(&mut Store) -> T + Send + 'static,
+) -> (Store, T) {
+    let done = tokio::task::spawn_blocking(move || {
+        let answer = work(&mut store);
+        (store, answer)
+    })
+    .await;
+    done.unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()))
+}
+
 /// One window of accounting, read on the history task.
 struct Read {
     window: Window,
@@ -319,12 +356,8 @@ impl Sampler {
                 }
                 eprintln!("tick at {} cut short: {error:#}", at.0);
             }
-            let Tick { mut events, listed } = tick;
-            match self.archive(at, &events, listed) {
-                Ok(users) if !users.is_empty() => events.push(Event::Users(self.name(users).await)),
-                Ok(_) => {}
-                Err(error) => eprintln!("store at {}: {error:#}", at.0),
-            }
+            let Tick { events, listed } = tick;
+            let mut events = self.archive(at, events, listed).await;
             let failing = self.failing();
             if failing.is_some() != self.in_outage {
                 self.in_outage = failing.is_some();
@@ -333,7 +366,7 @@ impl Sampler {
                 ));
             }
             self.hub.publish(at, events);
-            if listed && let Err(error) = self.backfill(at) {
+            if listed && let Err(error) = self.backfill(at).await {
                 eprintln!("store at {}: {error:#}", at.0);
             }
             self.hub.report(self.health());
@@ -429,59 +462,78 @@ impl Sampler {
         Ok(())
     }
 
-    /// Writes a tick's events to the store. After a jobs tick it also closes attempts that vanished
-    /// while no listing came in, because the sampler or the controller was down, and rolls up closed
-    /// bins. A failure here never drops the tick. Returns the users seen for the first time.
-    fn archive(&mut self, now: UnixTime, events: &[Event], listed: bool) -> Result<Vec<User>> {
-        let Some(store) = &mut self.store else {
-            return Ok(Vec::new());
+    /// Writes a tick's events to the store, and returns them with the users seen for the first time
+    /// added. A failure here never drops the tick.
+    async fn archive(&mut self, now: UnixTime, events: Vec<Event>, listed: bool) -> Vec<Event> {
+        let Some(store) = self.store.take() else {
+            return events;
         };
-        store.record(now, events)?;
-        if listed {
-            let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
-            if store.sampled(now, min_job_age_s)? {
-                let closed = store.recover(&self.known.active())?;
-                if closed > 0 {
-                    eprintln!("{closed} attempts left the queue while no listing came in");
-                }
-            }
-            store.roll(now)?;
+        let active = listed.then(|| self.known.active());
+        let min_job_age_s = self.slurm.site().min_job_age_s;
+        let (store, (mut events, users)) = blocking(store, move |store| {
+            let users = archive(store, now, &events, active.as_ref(), min_job_age_s);
+            (events, users)
+        })
+        .await;
+        self.store = Some(store);
+        match users {
+            Ok(users) if !users.is_empty() => events.push(Event::Users(self.name(users).await)),
+            Ok(_) => {}
+            Err(error) => eprintln!("store at {}: {error:#}", now.0),
         }
-        store.new_users()
+        events
     }
 
     /// Writes a window of accounting that came back into the store, sends out the next one if none is
     /// out, then runs the daily upkeep. The reads run on their own task, because one can take a minute.
-    fn backfill(&mut self, now: UnixTime) -> Result<()> {
-        let Some(store) = &mut self.store else {
+    async fn backfill(&mut self, now: UnixTime) -> Result<()> {
+        let Some(store) = self.store.take() else {
             return Ok(());
         };
-        if let Some(historian) = &mut self.historian {
-            if let Ok(read) = historian.reads.try_recv() {
-                historian.reading = false;
-                self.backfilling = read.calls;
-                self.backfill_span_s = next_span(self.backfill_span_s, read.attempts.is_ok());
-                match read.attempts {
-                    Ok(attempts) => {
-                        store.backfill(read.window, &attempts, &self.known.active(), now)?;
-                    }
-                    Err(error) => {
-                        let Window { from, to, .. } = read.window;
-                        eprintln!("history from {} to {}: {error:#}", from.0, to.0);
-                        self.backfill_after = UnixTime(now.0 + BACKFILL_RETRY_S);
-                    }
+        let mut read = None;
+        if let Some(historian) = &mut self.historian
+            && let Ok(answer) = historian.reads.try_recv()
+        {
+            historian.reading = false;
+            self.backfilling = answer.calls;
+            self.backfill_span_s = next_span(self.backfill_span_s, answer.attempts.is_ok());
+            match answer.attempts {
+                Ok(attempts) => read = Some((answer.window, attempts)),
+                Err(error) => {
+                    let Window { from, to, .. } = answer.window;
+                    eprintln!("history from {} to {}: {error:#}", from.0, to.0);
+                    self.backfill_after = UnixTime(now.0 + BACKFILL_RETRY_S);
                 }
             }
-            let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
-            if !historian.reading
-                && now >= self.backfill_after
-                && let Some(window) =
-                    store.next_backfill(now, min_job_age_s, self.backfill_span_s)?
-            {
-                historian.reading = historian.windows.try_send(window).is_ok();
-            }
         }
-        store.maintain(now)
+        let ask = self
+            .historian
+            .as_ref()
+            .is_some_and(|historian| !historian.reading)
+            && now >= self.backfill_after;
+        let active = read.as_ref().map(|_| self.known.active());
+        let min_job_age_s = i64::try_from(self.slurm.site().min_job_age_s)?;
+        let span_s = self.backfill_span_s;
+        let (store, next) = blocking(store, move |store| {
+            if let (Some((window, attempts)), Some(active)) = (read, active) {
+                store.backfill(window, &attempts, &active, now)?;
+            }
+            let next = if ask {
+                store.next_backfill(now, min_job_age_s, span_s)?
+            } else {
+                None
+            };
+            store.maintain(now)?;
+            Ok::<_, anyhow::Error>(next)
+        })
+        .await;
+        self.store = Some(store);
+        if let Some(window) = next?
+            && let Some(historian) = &mut self.historian
+        {
+            historian.reading = historian.windows.try_send(window).is_ok();
+        }
+        Ok(())
     }
 
     /// Gives new users their full names when the config asks for them, from the store or the system.
@@ -507,10 +559,13 @@ impl Sampler {
                 return users;
             }
         };
-        if let Some(store) = &mut self.store
-            && let Err(error) = store.name_users(&names)
-        {
-            eprintln!("cannot store full names: {error:#}");
+        if let Some(store) = self.store.take() {
+            let stored = names.clone();
+            let (store, outcome) = blocking(store, move |store| store.name_users(&stored)).await;
+            self.store = Some(store);
+            if let Err(error) = outcome {
+                eprintln!("cannot store full names: {error:#}");
+            }
         }
         for user in &mut users {
             if let Some(name) = names.get(&user.login) {
@@ -787,6 +842,26 @@ mod tests {
         assert_eq!(users, cluster.users.len());
         drop(db);
         (home, deltas)
+    }
+
+    #[tokio::test]
+    async fn a_store_that_waits_on_a_lock_holds_up_no_other_task() {
+        let home = StoreHome::sqlite();
+        let store = home.open(0);
+        let locker = rusqlite::Connection::open(home.path()).unwrap();
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let slurm = busy_quarter_hour().await;
+        let hub = Hub::new(slurm.site().clone());
+        let mut sampler = Sampler::new(slurm, &zlurm_config(), Some(store), hub);
+        let started = Instant::now();
+        let other_task = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let waited = started.elapsed();
+            locker.execute_batch("COMMIT").unwrap();
+            waited
+        };
+        let ((), waited) = tokio::join!(sampler.run(None), other_task);
+        assert!(waited < Duration::from_secs(2), "it waited {waited:?}");
     }
 
     #[tokio::test]

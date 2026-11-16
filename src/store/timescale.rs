@@ -15,9 +15,16 @@ use super::connection::Value;
 /// What a call reports once the client's thread has gone.
 const STOPPED: &str = "the TimescaleDB client's thread has stopped";
 
+/// Server settings that bound a call, unless the connection string's `options` set them. A lock held
+/// elsewhere fails a statement after 30 s, and any statement fails after 5 minutes. The first prune of
+/// a year of compressed history is the slowest statement the store runs.
+const LIMITS: [(&str, &str); 2] = [("lock_timeout", "30s"), ("statement_timeout", "5min")];
+
 /// Reads a connection string, such as `host=db user=glurmo dbname=glurmo` or a `postgres://` URL.
-/// Unless it sets them, connecting gives up after 10 s, and a server that stops acknowledging data
-/// fails a call after 30 s, so a dead server cannot hang its caller.
+/// Unless it sets them, connecting gives up after 10 s, and over TCP, a server that stops
+/// acknowledging data, or a host that stops answering keepalives, fails a call within a minute. The
+/// server bounds lock waits and statements as [`LIMITS`] says. So a dead server or a held lock cannot
+/// hang its caller.
 ///
 /// # Errors
 ///
@@ -32,6 +39,23 @@ pub fn parse(url: &str) -> Result<Config> {
     if config.get_tcp_user_timeout().is_none() {
         config.tcp_user_timeout(Duration::from_secs(30));
     }
+    // The parsed idle time has a default, so only the string tells whether it was set.
+    if !url.contains("keepalives_idle") {
+        config.keepalives_idle(Duration::from_secs(30));
+    }
+    if config.get_keepalives_interval().is_none() {
+        config.keepalives_interval(Duration::from_secs(10));
+    }
+    if config.get_keepalives_retries().is_none() {
+        config.keepalives_retries(3);
+    }
+    let mut options = config.get_options().unwrap_or_default().to_owned();
+    for (setting, limit) in LIMITS {
+        if !options.contains(setting) {
+            options = format!("{options} -c {setting}={limit}");
+        }
+    }
+    config.options(options.trim_start());
     Ok(config)
 }
 
@@ -315,12 +339,48 @@ mod tests {
 
     #[test]
     fn a_connection_string_keeps_its_own_timeouts_and_gets_the_missing_ones() {
-        let config = parse("host=/run/postgresql dbname=glurmo connect_timeout=3").unwrap();
+        let config = parse(
+            "host=/run/postgresql dbname=glurmo connect_timeout=3 keepalives_idle=600 \
+             options='-c search_path=otter -c lock_timeout=1s'",
+        )
+        .unwrap();
         assert_eq!(config.get_connect_timeout(), Some(&Duration::from_secs(3)));
         assert_eq!(
             config.get_tcp_user_timeout(),
             Some(&Duration::from_secs(30))
         );
+        assert_eq!(config.get_keepalives_idle(), Duration::from_secs(600));
+        assert_eq!(
+            config.get_options(),
+            Some("-c search_path=otter -c lock_timeout=1s -c statement_timeout=5min")
+        );
+
+        let config = parse("host=db dbname=glurmo").unwrap();
+        assert_eq!(config.get_keepalives_idle(), Duration::from_secs(30));
+        assert_eq!(
+            config.get_keepalives_interval(),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(config.get_keepalives_retries(), Some(3));
+        assert_eq!(
+            config.get_options(),
+            Some("-c lock_timeout=30s -c statement_timeout=5min")
+        );
         assert!(parse("host=db port=five").is_err());
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn a_statement_that_runs_too_long_fails() {
+        let server = std::env::var("GLURMO_TEST_TIMESCALE").unwrap();
+        let db = Timescale::connect(&parse(&server).unwrap()).unwrap();
+        let limit: Vec<postgres::Row> = db.query("SHOW statement_timeout", &[]).unwrap();
+        assert_eq!(limit[0].get::<_, String>(0), "5min");
+        db.execute_batch("SET statement_timeout = '100ms'").unwrap();
+        let slept = db.execute_batch("SELECT pg_sleep(5)").unwrap_err();
+        assert!(
+            format!("{slept:#}").contains("statement timeout"),
+            "{slept:#}"
+        );
     }
 }

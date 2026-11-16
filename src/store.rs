@@ -2715,6 +2715,30 @@ mod tests {
 
     #[test]
     #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn a_timescale_write_that_waits_on_a_lock_fails() {
+        let home = StoreHome::timescale();
+        drop(home.open(2));
+        let impatient = home
+            .server()
+            .unwrap()
+            .replace("options='", "options='-c lock_timeout=1s ");
+        let mut store = Store::connect(&impatient, home.settings(2)).unwrap();
+        let mut locker = home.read();
+        let lock = locker.transaction().unwrap();
+        lock.execute_batch("LOCK TABLE users IN ACCESS EXCLUSIVE MODE")
+            .unwrap();
+        let started = std::time::Instant::now();
+        let tick = [Event::Started {
+            attempt: running(1),
+        }];
+        assert!(store.record(UnixTime(T0), &tick).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        drop(lock);
+        store.record(UnixTime(T0 + 10), &tick).unwrap();
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
     fn a_timescale_store_from_a_newer_glurmo_does_not_open() {
         let home = StoreHome::timescale();
         home.open(2).set_meta("schema", UnixTime(99)).unwrap();
