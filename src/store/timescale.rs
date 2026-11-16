@@ -36,7 +36,7 @@ const PROBE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 10 });
 /// Unless it sets them, connecting gives up after 10 s, and over TCP, a server that stops
 /// acknowledging data, or a host that stops answering keepalives, fails a call within a minute. The
 /// server bounds lock waits and statements as [`LIMITS`] says. So a dead server or a held lock cannot
-/// hang its caller.
+/// hang its caller. The server's warnings are logged as warnings, and its other notices at debug.
 ///
 /// # Errors
 ///
@@ -68,6 +68,13 @@ pub fn parse(url: &str) -> Result<Config> {
         }
     }
     config.options(options.trim_start());
+    config.notice_callback(|notice| {
+        if notice.severity() == "WARNING" {
+            tracing::warn!("TimescaleDB warns: {}", notice.message());
+        } else {
+            tracing::debug!("TimescaleDB notes: {}", notice.message());
+        }
+    });
     Ok(config)
 }
 

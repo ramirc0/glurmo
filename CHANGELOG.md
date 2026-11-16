@@ -9,6 +9,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - The units append their logs to `~/.local/state/glurmo`: `serve.log`, `postgres.log` and `backup.log`. Each adds a dated line from systemd when its process ends, which records crashes and OOM kills.
 - `glurmo-logrotate.timer` rotates those logs weekly, or once one passes 50 MB, and keeps a year of them compressed with zstd. `just install` installs its config as `~/.config/glurmo/logrotate.conf`.
 - The Apptainer TimescaleDB logs lock waits over 1 s and statements over 5 s.
+- TimescaleDB warnings reach glurmo's log as warnings. Its other notices, such as `relation "meta" already exists`, log at debug.
 - `just install` builds the static binary and installs it as `~/.local/bin/glurmo` with the systemd user units. It then restarts glurmo if it is running.
 - `systemd/glurmo-timescaledb.service` runs the Apptainer TimescaleDB the guide sets up. `glurmo-backup.timer` dumps it nightly to `~/.local/share/glurmo/glurmo.dump`.
 
