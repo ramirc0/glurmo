@@ -22,6 +22,9 @@ use glurmo_model::{Attempt, AttemptKey, Event, Login, Node, Outage, UnixTime, Us
 /// A call slower than this counts against its kind, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
 
+/// How often the log sums up how the calls fared.
+const SUMMARY_S: i64 = 3600;
+
 /// How far a call's interval can stretch under backoff.
 const MAX_SLOWDOWN: u64 = 8;
 
@@ -71,6 +74,8 @@ pub struct Calls {
     pub last_error: Option<String>,
     /// Whether the last call failed.
     pub failing: bool,
+    /// How long the slowest call took since the last hourly summary. For history, since the start.
+    pub slowest_ms: Option<u64>,
     /// The run of failures the calls are in, if any.
     #[serde(skip)]
     streak: Streak,
@@ -86,6 +91,7 @@ impl Calls {
             last_ms: None,
             last_error: None,
             failing: false,
+            slowest_ms: None,
             streak: Streak::default(),
         }
     }
@@ -103,6 +109,7 @@ impl Calls {
     fn tally(&mut self, took: Duration, error: Option<&anyhow::Error>) -> bool {
         self.count += 1;
         self.last_ms = Some(u64::try_from(took.as_millis()).unwrap_or(u64::MAX));
+        self.slowest_ms = self.slowest_ms.max(self.last_ms);
         self.failing = error.is_some();
         match error {
             Some(error) => {
@@ -321,6 +328,10 @@ pub struct Sampler {
     backfilling: Calls,
     /// Writes to the store and its upkeep.
     storing: Calls,
+    /// How the calls stood at the last hourly summary.
+    summarized: Health,
+    /// When the next hourly summary is due, once the first tick has run.
+    next_summary: Option<UnixTime>,
     /// Started attempts that still need a placement lookup, oldest first.
     lookups: VecDeque<Attempt>,
     budget: u64,
@@ -362,6 +373,8 @@ impl Sampler {
             settling: Calls::new("outcomes"),
             backfilling: Calls::new("history"),
             storing: Calls::new("store"),
+            summarized: Health::default(),
+            next_summary: None,
             lookups: VecDeque::new(),
             budget: intervals.lookups,
             cold: true,
@@ -406,6 +419,11 @@ impl Sampler {
                 self.storing.tally(started.elapsed(), upkeep.as_ref().err());
             }
             self.hub.report(self.health());
+            let summary = *self.next_summary.get_or_insert(UnixTime(at.0 + SUMMARY_S));
+            if at >= summary {
+                self.summarize();
+                self.next_summary = Some(UnixTime(at.0 + SUMMARY_S));
+            }
             // A replay never waits on its own, and subscribers in the same task need a turn.
             tokio::task::yield_now().await;
             let next = self.next_due();
@@ -413,6 +431,68 @@ impl Sampler {
                 return;
             }
             self.slurm.sleep_until(next).await;
+        }
+    }
+
+    /// Logs the running and pending jobs and the nodes that cannot run jobs. Then, for each kind of call
+    /// made since the last summary, how many were made and failed, the slowest, and the interval.
+    fn summarize(&mut self) {
+        let health = self.health();
+        let calls: Vec<String> = health
+            .0
+            .iter()
+            .filter_map(|now| {
+                let before = self
+                    .summarized
+                    .0
+                    .iter()
+                    .find(|before| before.call == now.call);
+                let made = now.calls.count - before.map_or(0, |before| before.calls.count);
+                let failed = now.calls.failures - before.map_or(0, |before| before.calls.failures);
+                let every = now
+                    .every_s
+                    .map_or_else(String::new, |every_s| format!(", every {every_s} s"));
+                (made > 0).then(|| {
+                    format!(
+                        "{} {made} calls, {failed} failed, slowest {} ms{every}",
+                        now.call,
+                        now.calls.slowest_ms.unwrap_or(0)
+                    )
+                })
+            })
+            .collect();
+        let (running, pending, nodes, unusable) = self.hub.read(|cluster| {
+            let unusable = cluster
+                .nodes
+                .iter()
+                .filter(|node| !node.is_usable())
+                .count();
+            (
+                cluster.running.len(),
+                cluster.queue.len(),
+                cluster.nodes.len(),
+                unusable,
+            )
+        });
+        let calls = if calls.is_empty() {
+            "no calls".to_owned()
+        } else {
+            calls.join("; ")
+        };
+        tracing::info!(
+            "{running} running, {pending} pending, {unusable} of {nodes} nodes cannot run jobs. Since the last summary: {calls}"
+        );
+        self.summarized = health;
+        for calls in [
+            &mut self.jobs.calls,
+            &mut self.nodes.calls,
+            &mut self.partitions.calls,
+            &mut self.placing,
+            &mut self.looking_up,
+            &mut self.settling,
+            &mut self.storing,
+        ] {
+            calls.slowest_ms = None;
         }
     }
 
@@ -752,6 +832,31 @@ mod tests {
             .collect();
         assert_eq!(recovered.len(), 1, "{text}");
         assert!(recovered[0].contains("7 of 10 calls failed"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn the_summary_counts_the_calls_since_the_last_one_and_the_queue() {
+        let slurm = busy_quarter_hour().await;
+        let hub = Hub::new(slurm.site().clone());
+        let mut sampler = Sampler::new(slurm, &zlurm_config(), None, hub);
+        sampler.run(None).await;
+        let (subscriber, captured) = crate::logging::capturing("info");
+        let _logging = tracing::subscriber::set_default(subscriber);
+        sampler.summarize();
+        sampler.summarize();
+        let text = captured.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        let jobs = sampler.jobs.calls.count;
+        assert!(lines[0].contains(&format!("jobs {jobs} calls, ")), "{text}");
+        assert!(
+            lines[0].contains(" running, ") && lines[0].contains(" pending, "),
+            "{text}"
+        );
+        assert!(
+            lines[1].ends_with("Since the last summary: no calls"),
+            "{text}"
+        );
     }
 
     /// When the store's coverage ends, in seconds since the epoch.

@@ -12,7 +12,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 ### Changed
 
 - A run of failures logs a warning when it starts and one line when 3 calls in a row have worked again, with how long it lasted and how many calls failed. That holds for each Slurm call, the store, and login lookups. Failures in between log at debug, where before each one logged a line, and a failing store two a tick.
-- `/api/health` lists the store's writes as `store`.
+- `/api/health` lists the store's writes as `store`, and each call's `slowest_ms` since the last hourly summary.
+- Each hour the log sums up running and pending jobs, nodes that cannot run jobs, and for each kind of call how many were made and failed, the slowest, and the interval. A missing summary marks the server or host down.
 - The log says when history has a gap and when accounting has filled it, when the TimescaleDB client gives up on a silent server and catches up, when it reconnects, and when the history task stops.
 - Every message is a log line with the local time, its offset and a level. `GLURMO_LOG` sets the levels, such as `debug` or `glurmo=debug,warn`. Panics and fatal errors are logged too.
 - `glurmo serve` logs its version, the cluster, the Slurm version and the store at start, the protocol and auth it settles on, `serving on` once the port is bound, and the signal that stops it. A request that fails with a 500 is logged. Accounting records that do not convert take one line per read, not one each.
