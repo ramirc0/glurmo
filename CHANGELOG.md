@@ -16,6 +16,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- A bin roll that fails after its tick is written is retried at the next tick. Before, the bins of attempts whose cores the first node listing counted kept their old totals until a restart.
 - The guide's example config no longer names a store under `/scratch`. It documents the default, `$XDG_STATE_HOME/glurmo/<cluster>.sqlite`, and puts the Apptainer TimescaleDB under `$XDG_DATA_HOME`.
 
 ## [0.5.0] - 2026-11-15

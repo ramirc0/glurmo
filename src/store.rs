@@ -309,13 +309,15 @@ impl Store {
         Ok(store)
     }
 
-    /// Rolls up again the closed bins from where a migration changed attempts.
+    /// Rolls up again the closed bins from `stale_from`, where a migration or a tick changed attempts.
+    /// The key stays until the roll succeeds, so a failed one is retried.
     fn roll_stale_bins(&mut self) -> Result<()> {
-        if let (Some(stale), Some(history_from), Some(rolled_to)) = (
-            self.meta("stale_from")?,
-            self.meta("history_from")?,
-            self.meta("rolled_to")?,
-        ) {
+        let Some(stale) = self.meta("stale_from")? else {
+            return Ok(());
+        };
+        if let (Some(history_from), Some(rolled_to)) =
+            (self.meta("history_from")?, self.meta("rolled_to")?)
+        {
             self.roll_bins(bin_of(stale.max(history_from)), rolled_to, rolled_to)?;
         }
         self.db
@@ -324,17 +326,19 @@ impl Store {
     }
 
     /// Writes one tick's events, all of them or none. A tick that fails opens a gap: the next
-    /// [`Store::sampled`] reports one, so accounting fills in what the tick held.
+    /// [`Store::sampled`] reports one, so accounting fills in what the tick held. Then rolls up again
+    /// the closed bins of attempts whose cores the run's first node listing counted.
     ///
     /// # Errors
     ///
-    /// Fails when a write fails.
+    /// Fails when a write fails. A roll that fails after the tick is written opens no gap, and the
+    /// next call retries it.
     pub fn record(&mut self, at: UnixTime, events: &[Event]) -> Result<()> {
-        let written = self.write_tick(at, events);
-        if written.is_err() {
+        if let Err(error) = self.write_tick(at, events) {
             self.coverage = Coverage::Unchecked;
+            return Err(error);
         }
-        written
+        self.roll_stale_bins()
     }
 
     /// Writes one tick's events in one transaction. What the store remembers of the nodes changes
@@ -343,7 +347,6 @@ impl Store {
         let mut cpus_per_core = Cow::Borrowed(&self.cpus_per_core);
         let mut health_changes = Vec::new();
         let tx = self.db.transaction()?;
-        let mut uncounted_since = None;
         for event in events {
             match event {
                 Event::Started { attempt } | Event::Withdrawn { attempt } => {
@@ -384,8 +387,13 @@ impl Store {
                             .iter()
                             .map(|node| (node.name.clone(), node.cpus_per_core())),
                     );
-                    if first_listing {
-                        uncounted_since = count_cores(&tx, &cpus_per_core)?;
+                    if first_listing && let Some(since) = count_cores(&tx, &cpus_per_core)? {
+                        tx.execute(
+                            "INSERT INTO meta VALUES ('stale_from', ?1) ON CONFLICT (key) DO UPDATE
+                             SET value = CASE WHEN excluded.value < meta.value
+                                         THEN excluded.value ELSE meta.value END",
+                            params![since.0],
+                        )?;
                     }
                     for node in nodes {
                         let health = (health(node), node.reason.clone());
@@ -412,13 +420,6 @@ impl Store {
             self.cpus_per_core = listed;
         }
         self.health.extend(health_changes);
-        if let (Some(since), Some(history_from), Some(rolled_to)) = (
-            uncounted_since,
-            self.meta("history_from")?,
-            self.meta("rolled_to")?,
-        ) {
-            self.roll_bins(bin_of(since.max(history_from)), rolled_to, at)?;
-        }
         Ok(())
     }
 
@@ -1928,6 +1929,49 @@ mod tests {
         refuse_writes(&store, false);
         store.record(UnixTime(T0 + 20), &listing).unwrap();
         assert_eq!(row(&store, 1).3, Some(4));
+    }
+
+    fn refuse_bins(store: &Store, refuse: bool) {
+        let sql = match (&store.db, refuse) {
+            (Connection::Sqlite(_), true) => {
+                "CREATE TEMP TRIGGER refuse_bins BEFORE INSERT ON usage
+                 BEGIN SELECT RAISE(ABORT, 'bins refused'); END"
+            }
+            (Connection::Sqlite(_), false) => "DROP TRIGGER refuse_bins",
+            (Connection::Timescale(_), true) => {
+                "CREATE FUNCTION refuse_bins() RETURNS trigger LANGUAGE plpgsql
+                     AS $$ BEGIN RAISE EXCEPTION 'bins refused'; END $$;
+                 CREATE TRIGGER refuse_bins BEFORE INSERT ON usage
+                     FOR EACH ROW EXECUTE FUNCTION refuse_bins()"
+            }
+            (Connection::Timescale(_), false) => {
+                "DROP TRIGGER refuse_bins ON usage; DROP FUNCTION refuse_bins()"
+            }
+        };
+        store.db.execute_batch(sql).unwrap();
+    }
+
+    #[test]
+    fn bins_of_cores_counted_by_a_committed_tick_roll_up_after_a_failed_roll() {
+        let home = StoreHome::new();
+        let mut store = home.open(2);
+        let started = [Event::Started {
+            attempt: running(1),
+        }];
+        store.record(UnixTime(T0), &started).unwrap();
+        store.sampled(UnixTime(T0), 300).unwrap();
+        store.roll(UnixTime(T0 + 600 + GRACE_S)).unwrap();
+        assert_eq!(core_s(&store), 0, "no cores before a node listing");
+
+        let listing = [Event::Nodes(vec![node(NodeState::Mixed)])];
+        refuse_bins(&store, true);
+        assert!(store.record(UnixTime(T0 + 640), &listing).is_err());
+        refuse_bins(&store, false);
+        assert_eq!(row(&store, 1).3, Some(4), "the tick committed");
+
+        store.record(UnixTime(T0 + 650), &listing).unwrap();
+        store.roll(UnixTime(T0 + 650)).unwrap();
+        assert_eq!(core_s(&store), 4 * 600);
     }
 
     #[test]
