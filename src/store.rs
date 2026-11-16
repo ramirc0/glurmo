@@ -534,6 +534,7 @@ impl Store {
 
     /// The next stretch of accounting to read, at most `span_s` long. A gap since the last sample comes
     /// first, starting `overlap_s` early. Then history goes back a stretch at a time to the backfill horizon.
+    /// Nothing is read until a listing that [`Store::sampled`] noted, as after a failed write.
     ///
     /// # Errors
     ///
@@ -551,12 +552,16 @@ impl Store {
         ) else {
             return Ok(None);
         };
-        if self.coverage != Coverage::Current {
-            return Ok(Some(Window {
-                from: UnixTime(to.0 - overlap_s),
-                to: UnixTime((to.0 + span_s).min(now.0)),
-                gap: true,
-            }));
+        match self.coverage {
+            Coverage::Unchecked => return Ok(None),
+            Coverage::Behind { .. } => {
+                return Ok(Some(Window {
+                    from: UnixTime(to.0 - overlap_s),
+                    to: UnixTime((to.0 + span_s).min(now.0)),
+                    gap: true,
+                }));
+            }
+            Coverage::Current => {}
         }
         let horizon = created.0 - i64::from(self.settings.backfill_days) * DAY_S;
         Ok((from.0 > horizon).then(|| Window {
@@ -1784,6 +1789,11 @@ mod tests {
             attempt: running(1),
         }];
         assert!(store.record(UnixTime(T0 + 10), &started).is_err());
+        assert_eq!(
+            store.next_backfill(UnixTime(T0 + 10), 300, DAY_S).unwrap(),
+            None,
+            "no accounting is read while writes fail"
+        );
         refuse_writes(&store, false);
         store.record(UnixTime(T0 + 20), &[]).unwrap();
         assert!(

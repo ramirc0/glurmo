@@ -13,7 +13,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 ### Fixed
 
 - The web server keeps accepting connections while the store waits on a slow disk or a lock. Before, a store call that waited stopped it, because the sampler ran on the server's task.
-- A tick that the store fails to write opens a gap, so accounting fills in what the tick held once writes work again. The tick is written whole or not at all. Before, its starts, ends and placements were lost for good. A node's health change that failed to be written was never written again, and a first node listing that failed left cores uncounted until a restart.
+- A tick that the store fails to write opens a gap, so accounting fills in the tick's starts and ends once writes work again. Accounting keeps no placements, so the tick's are lost. The tick is written whole or not at all, and no accounting is read while writes fail. Before, its starts and ends were lost for good. A node's health change that failed to be written was never written again, and a first node listing that failed left cores uncounted until a restart.
 
 ## [0.4.0] - 2026-11-15
 
