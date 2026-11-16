@@ -31,6 +31,8 @@ tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["process", "time", "rt", "macros", "sync", "rt-multi-thread", "net", "signal", "io-util"] }
 tokio-stream = "0.1.19"
 rust-embed = "8.13.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "tracing-log"] }
 
 [lints]
 workspace = true

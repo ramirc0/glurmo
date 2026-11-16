@@ -6,6 +6,7 @@ mod diff;
 mod fixture;
 mod hub;
 mod library;
+mod logging;
 mod passwd;
 mod past;
 mod rollup;
@@ -20,6 +21,7 @@ mod xdg;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -122,8 +124,20 @@ enum Command {
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
+    logging::start();
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!("{error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Runs the command `cli` names.
+async fn run(cli: Cli) -> Result<()> {
     let config = Config::load(cli.config.as_deref())?;
     match cli.command {
         Command::Serve { replay, speed } => serve(&config, replay.as_deref(), speed).await?,
