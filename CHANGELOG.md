@@ -8,6 +8,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A logo, the foreman in `docs/media/logo.svg`. Its head and hard hat are the web view's favicon.
 
+### Fixed
+
+- `systemd/glurmo.service` starts only on the host its `ConditionHost` names, which its header asks you to set. Before, a home directory shared with compute nodes could start another server wherever a Slurm job started your systemd user manager.
+
 ## [0.4.0] - 2026-11-15
 
 ### Added

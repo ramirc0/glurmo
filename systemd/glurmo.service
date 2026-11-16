@@ -1,9 +1,14 @@
-# A systemd user unit. Copy the binary to ~/.local/bin and this file to ~/.config/systemd/user, then run
+# A systemd user unit. Copy the binary to ~/.local/bin and this file to ~/.config/systemd/user. Set
+# ConditionHost to the name `hostname` prints on the host that should serve. Globs such as `login*`
+# work. Then run
 #   systemctl --user enable --now glurmo
 # With linger on, it keeps running after you log out.
 [Unit]
 Description=glurmo: sample the cluster and serve its live view
 After=network-online.target
+# Compute nodes share the home directory, so without it every Slurm job that starts your systemd
+# would start another server.
+ConditionHost=login
 
 [Service]
 ExecStart=%h/.local/bin/glurmo serve
