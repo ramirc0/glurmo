@@ -102,9 +102,9 @@ impl StoreHome {
 
     /// The connection string that reaches this home's schema, for a store on TimescaleDB.
     pub fn server(&self) -> Option<String> {
-        self.schema
-            .as_ref()
-            .map(|(server, schema)| format!("{server} options='-c search_path={schema},public'"))
+        self.schema.as_ref().map(|(server, schema)| {
+            format!("{server} application_name={schema} options='-c search_path={schema},public'")
+        })
     }
 }
 

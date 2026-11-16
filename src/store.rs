@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -720,6 +721,7 @@ impl Store {
     pub fn history(&self) -> History {
         History {
             location: self.location.clone(),
+            idle: Mutex::default(),
         }
     }
 
@@ -797,13 +799,60 @@ pub struct NodeHealth {
     pub reason: Option<String>,
 }
 
-/// Reads a store's history, so a server can query while the sampler writes. Each query runs on a
-/// connection of its own. [`Store::history`] makes one.
+/// How many connections a [`History`] keeps open between queries.
+const IDLE_READERS: usize = 4;
+
+/// Reads a store's history, so a server can query while the sampler writes. Queries at the same time
+/// run on connections of their own, and up to 4 connections stay open between queries.
+/// [`Store::history`] makes one.
 pub struct History {
     location: Location,
+    idle: Mutex<Vec<Connection>>,
+}
+
+/// A connection that a [`History`] lends to one query, and takes back when it drops.
+struct Reader<'a> {
+    history: &'a History,
+    db: Option<Connection>,
+}
+
+impl std::ops::Deref for Reader<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.db
+            .as_ref()
+            .expect("a reader holds its connection until it drops")
+    }
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        let mut idle = self.history.idle();
+        if idle.len() < IDLE_READERS {
+            idle.extend(self.db.take());
+        }
+    }
 }
 
 impl History {
+    /// An idle connection, or a new one when none is idle.
+    fn reader(&self) -> Result<Reader<'_>> {
+        let idle = self.idle().pop();
+        let db = match idle {
+            Some(db) => db,
+            None => self.location.read()?,
+        };
+        Ok(Reader {
+            history: self,
+            db: Some(db),
+        })
+    }
+
+    fn idle(&self) -> std::sync::MutexGuard<'_, Vec<Connection>> {
+        self.idle.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Core and wait seconds summed per step, by login or partition, in time then key order. Steps with
     /// neither are left out. Bins the sampler has rolled
     /// up come from the usage table. Later bins are rolled up from the attempts, counting up to the
@@ -813,7 +862,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn usage(&self, query: &UsageQuery, now: UnixTime) -> Result<Vec<Step>> {
-        let db = self.location.read()?;
+        let db = self.reader()?;
         let Some(rolled_to) = meta(&db, "rolled_to")? else {
             return Ok(Vec::new());
         };
@@ -879,7 +928,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn starts(&self) -> Result<Option<UnixTime>> {
-        meta(&self.location.read()?, "history_from")
+        meta(&*self.reader()?, "history_from")
     }
 
     /// Attempts submitted by `at` that had not ended by then: those running at `at` and those waiting.
@@ -888,7 +937,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn alive(&self, at: UnixTime) -> Result<Vec<Stored>> {
-        let db = self.location.read()?;
+        let db = self.reader()?;
         let index = index_choice(&db, at, at)?;
         stored(&db, &overlapping(STORED, "<= ?1", index), params![at.0])
     }
@@ -900,7 +949,7 @@ impl History {
     /// Fails when the store cannot be opened or read.
     pub fn touched(&self, from: UnixTime, to: UnixTime) -> Result<Vec<Stored>> {
         stored(
-            &self.location.read()?,
+            &*self.reader()?,
             &format!(
                 r#"SELECT {STORED} FROM attempts WHERE submit > ?1 AND submit <= ?2
                    UNION
@@ -918,7 +967,7 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn node_health(&self, to: UnixTime) -> Result<Vec<NodeHealth>> {
-        let mut changes = self.location.read()?.query_map(
+        let mut changes = self.reader()?.query_map(
             "SELECT node, at, state, reason FROM node_states WHERE at <= ?1",
             params![to.0],
             |row| {
@@ -2772,6 +2821,29 @@ mod tests {
         let index = index_choice(&store.db, UnixTime(T0), UnixTime(T0)).unwrap();
         assert_eq!(index, IndexChoice::Planner);
         assert!(!overlapping("job", "< ?2", index).contains('+'));
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn timescale_history_keeps_its_connections_between_queries() {
+        let home = StoreHome::timescale();
+        let store = home.open(2);
+        let history = store.history();
+        for _ in 0..3 {
+            history.starts().unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let readers: i64 = store
+            .db
+            .query_row(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE application_name = current_setting('application_name')
+                       AND pid != pg_backend_pid()",
+                params![],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(readers, 1);
     }
 
     #[test]
