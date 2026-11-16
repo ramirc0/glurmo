@@ -21,7 +21,9 @@ digraph glurmo {
     label = "Sample"
     sampler [class = step, label = "Diff each tick\nsampler"]
     hub [class = step, label = "Publish deltas\nhub"]
-    store [class = data, label = "cluster.sqlite"]
+    backing [class = decision, label = "TimescaleDB\nconfigured?"]
+    sqlite [class = data, label = "cluster.sqlite"]
+    timescale [class = data, label = "TimescaleDB\nhypertables"]
   }
 
   subgraph cluster_serve {
@@ -44,7 +46,11 @@ digraph glurmo {
   cli -> sampler:n
   wire -> sampler:n
   sampler -> hub -> events
-  sampler -> store -> history
+  sampler -> backing
+  backing -> timescale [label = "yes"]
+  backing -> sqlite [label = "no"]
+  sqlite -> history
+  timescale -> history
   events -> web
   history -> web
   events -> tui

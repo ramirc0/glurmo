@@ -38,19 +38,78 @@ Config(
 
 ### History on TimescaleDB
 
-`timescale` takes the place of `path` and names the server with a PostgreSQL connection string. Setting both is an error.
+A TimescaleDB server can hold history in place of the SQLite file. `timescale` takes the place of `path` and names the server with a PostgreSQL connection string. Setting both is an error.
 
 ```ron
-store: (timescale: "host=db user=glurmo dbname=glurmo", keep: Forever, backfill: Days(30)),
+store: (timescale: "host=/run/postgresql user=glurmo dbname=glurmo", keep: Forever, backfill: Days(30)),
 ```
 
-* The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later, with `shared_preload_libraries = 'timescaledb'`. Earlier releases can miss open attempts in compressed chunks. glurmo is tested with TimescaleDB 2.31.
-* Give glurmo a role of its own that owns the database. It needs no superuser rights.
-* glurmo creates its tables at its first start, and the `timescaledb` extension when the database lacks it. The extension is trusted, so the owner of the database can create it without superuser rights.
+#### The server
+
+The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later. Earlier releases can miss open attempts in compressed chunks. glurmo is tested with TimescaleDB 2.31. The server must load the extension at start, in `postgresql.conf` or on its command line:
+
+```
+shared_preload_libraries = 'timescaledb'
+```
+
+A site without one can run the `timescale/timescaledb` image under Apptainer, on a local disk, with a Unix socket and no TCP port:
+
+```sh
+dir=/scratch/you/timescaledb
+image=docker://timescale/timescaledb:2.31.0-pg18
+mkdir -p "$dir"
+apptainer exec --bind "$dir" "$image" initdb -D "$dir/data"
+apptainer exec --bind "$dir" "$image" postgres -D "$dir/data" -k "$dir" -p 5433 \
+    -c listen_addresses= -c unix_socket_permissions=0700 \
+    -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off
+```
+
+Run the last line under systemd, as `systemd/glurmo.service` runs glurmo, and give glurmo's unit `After=` and `Wants=` on it.
+
+#### The role and the database
+
+Give glurmo a role of its own that owns its database. It needs no superuser rights. As a superuser:
+
+```sql
+CREATE ROLE glurmo LOGIN;
+CREATE DATABASE glurmo OWNER glurmo;
+```
+
+glurmo creates its tables at its first start, and the `timescaledb` extension when the database lacks it. The extension is trusted, so the database's owner may create it.
+
+Over a Unix socket, peer authentication lets an operating-system user log in as the role of the same name. To log in as `glurmo` from another account, map it in `pg_ident.conf`, and use the map in `pg_hba.conf` above the line for all databases. Then reload the server:
+
+```
+# pg_ident.conf
+glurmo          you                     glurmo
+
+# pg_hba.conf
+local   glurmo          glurmo                                  peer map=glurmo
+```
+
+Over TCP, put `password=` in the connection string, and keep the config file readable by you alone. glurmo does not read `~/.pgpass`. The connection uses no TLS, so keep it on a network you trust.
+
+#### Limits
+
+A statement fails after 5 minutes, and a wait on a lock after 30 s. A failed write opens a gap, which accounting fills once writes work again. To change the limits, set them in the connection string's `options`, such as `options='-c lock_timeout=10s'`. Over TCP, a server that stops answering fails a call within a minute.
+
+#### Upkeep
+
 * Attempts and usage bins are hypertables in 30-day chunks. Chunks older than 7 days are compressed where the server's license covers compression. The Apache-licensed build keeps them uncompressed, and glurmo says so once.
-* The connection uses no TLS. Keep it on a Unix socket or a network you trust.
-* glurmo makes no nightly copy of this store. Back it up with the server's tools.
-* `glurmo copy STORE.sqlite "host=db user=glurmo dbname=glurmo"` copies an existing SQLite store into an empty database and prints each table's row count on both sides. The server on SQLite may keep running meanwhile. A server started on the copy fills the time since the copy from accounting.
+* `keep` prunes old history, as it does in SQLite.
+* glurmo makes no nightly copy of this store. Back it up with the server's tools, such as `pg_dump`.
+
+#### Moving from SQLite
+
+A new database backfills from accounting as far as `backfill` reaches, as a new SQLite store does. Accounting keeps no placements and no node health, so history from before the new store has neither.
+
+To keep them, copy the SQLite store into the empty database before glurmo first starts on it:
+
+```sh
+glurmo copy STORE.sqlite "host=/run/postgresql user=glurmo dbname=glurmo"
+```
+
+It prints each table's row count on both sides. The server on SQLite may keep running meanwhile. A copy that fails leaves the database empty, so it can run again. A server started on the copy fills the time since the copy from accounting, and users keep their colors.
 
 ## Run
 
