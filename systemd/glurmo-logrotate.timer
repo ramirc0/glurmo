@@ -1,0 +1,10 @@
+[Unit]
+Description=Rotate glurmo's logs daily
+ConditionHost=login
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

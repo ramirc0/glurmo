@@ -1,0 +1,10 @@
+# Rotates the logs in ~/.local/state/glurmo as ~/.config/glurmo/logrotate.conf says.
+# glurmo-logrotate.timer runs it.
+[Unit]
+Description=Rotate glurmo's logs
+ConditionHost=login
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate --state %h/.local/state/glurmo/logrotate.state %h/.config/glurmo/logrotate.conf
+StandardError=append:%h/.local/state/glurmo/logrotate.log

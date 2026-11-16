@@ -13,7 +13,16 @@ ExecStart=/usr/bin/apptainer exec \
     %h/.local/share/glurmo/timescaledb/timescaledb-2.31.0-pg18.sif \
     postgres -D %h/.local/share/glurmo/timescaledb/data -k %t/glurmo-timescaledb -p 5433 \
     -c listen_addresses= -c unix_socket_permissions=0700 \
-    -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off
+    -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off \
+    -c log_lock_waits=on -c log_min_duration_statement=5s
+# Holds back glurmo, which starts after this unit, until the server takes connections. The socket
+# alone does not tell, because the server listens on it before recovery ends.
+ExecStartPost=/bin/sh -c 'until /usr/bin/apptainer exec --bind %t/glurmo-timescaledb \
+    %h/.local/share/glurmo/timescaledb/timescaledb-2.31.0-pg18.sif \
+    pg_isready -q -h %t/glurmo-timescaledb -p 5433; do sleep 1; done'
+TimeoutStartSec=10min
+StandardError=append:%h/.local/state/glurmo/postgres.log
+ExecStopPost=/bin/sh -c 'echo "$$(date -Iseconds) %N ended: $$SERVICE_RESULT ($$EXIT_CODE $$EXIT_STATUS)" >&2'
 # Fast shutdown. SIGTERM would wait for glurmo's connections to close.
 KillSignal=SIGINT
 Restart=on-failure

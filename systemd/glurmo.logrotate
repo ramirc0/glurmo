@@ -1,0 +1,18 @@
+# glurmo's logs, kept a year in weekly files compressed with zstd. Install it as
+# ~/.config/glurmo/logrotate.conf. glurmo-logrotate.timer runs it daily, so a log past 50 MB rotates
+# early. copytruncate loses nothing here, because systemd opens the logs to append.
+~/.local/state/glurmo/*.log ~/.local/state/glurmo/unparsed.jsonl {
+    weekly
+    maxsize 50M
+    rotate 52
+    dateext
+    dateformat -%Y%m%d-%H%M%S
+    compress
+    compresscmd /usr/bin/zstd
+    compressoptions -q
+    compressext .zst
+    delaycompress
+    copytruncate
+    missingok
+    notifempty
+}

@@ -14,6 +14,10 @@ ConditionHost=login
 ExecStart=%h/.local/bin/glurmo serve
 Restart=on-failure
 RestartSec=10
+# Some clusters make the user journal unreadable, so the log is a file. glurmo-logrotate.timer rotates it.
+StandardError=append:%h/.local/state/glurmo/serve.log
+# A crash or an OOM kill leaves no line of glurmo's own.
+ExecStopPost=/bin/sh -c 'echo "$$(date -Iseconds) %N ended: $$SERVICE_RESULT ($$EXIT_CODE $$EXIT_STATUS)" >&2'
 
 [Install]
 WantedBy=default.target

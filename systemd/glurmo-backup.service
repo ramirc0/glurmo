@@ -12,3 +12,6 @@ ExecStart=/usr/bin/apptainer exec \
     %h/.local/share/glurmo/timescaledb/timescaledb-2.31.0-pg18.sif \
     pg_dump -h %t/glurmo-timescaledb -p 5433 -U glurmo -d glurmo -Fc -f %h/.local/share/glurmo/glurmo.dump.part
 ExecStart=/usr/bin/mv %h/.local/share/glurmo/glurmo.dump.part %h/.local/share/glurmo/glurmo.dump
+StandardOutput=append:%h/.local/state/glurmo/backup.log
+StandardError=append:%h/.local/state/glurmo/backup.log
+ExecStopPost=/bin/sh -c 'echo "$$(date -Iseconds) %N ended: $$SERVICE_RESULT ($$EXIT_CODE $$EXIT_STATUS)" >&2'

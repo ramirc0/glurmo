@@ -78,12 +78,14 @@ timescale-check:
 static: web
     cargo build --release --target x86_64-unknown-linux-musl
 
-# Install the static binary as ~/.local/bin/glurmo and the systemd user units, then restart glurmo if
-# it runs. Host settings live in the units' drop-ins, which this leaves alone.
+# Install the static binary as ~/.local/bin/glurmo, the systemd user units, and the logrotate config as
+# ~/.config/glurmo/logrotate.conf, then restart glurmo if it runs. Host settings live in the units'
+# drop-ins, which this leaves alone.
 install: static
-    mkdir -p ~/.local/bin "{{units}}"
+    mkdir -p ~/.local/bin "{{units}}" ~/.config/glurmo ~/.local/state/glurmo
     install -m 755 target/x86_64-unknown-linux-musl/release/glurmo ~/.local/bin/
-    install -m 644 systemd/* "{{units}}"
+    install -m 644 systemd/*.service systemd/*.timer "{{units}}"
+    install -m 644 systemd/glurmo.logrotate ~/.config/glurmo/logrotate.conf
     systemctl --user daemon-reload
     systemctl --user try-restart glurmo
 

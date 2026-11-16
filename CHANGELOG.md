@@ -6,6 +6,9 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Added
 
+- The units append their logs to `~/.local/state/glurmo`: `serve.log`, `postgres.log` and `backup.log`. Each adds a dated line from systemd when its process ends, which records crashes and OOM kills.
+- `glurmo-logrotate.timer` rotates those logs weekly, or once one passes 50 MB, and keeps a year of them compressed with zstd. `just install` installs its config as `~/.config/glurmo/logrotate.conf`.
+- The Apptainer TimescaleDB logs lock waits over 1 s and statements over 5 s.
 - `just install` builds the static binary and installs it as `~/.local/bin/glurmo` with the systemd user units. It then restarts glurmo if it is running.
 - `systemd/glurmo-timescaledb.service` runs the Apptainer TimescaleDB the guide sets up. `glurmo-backup.timer` dumps it nightly to `~/.local/share/glurmo/glurmo.dump`.
 
@@ -22,6 +25,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- glurmo no longer starts before its TimescaleDB takes connections. `glurmo-timescaledb.service` counts as started only once `pg_isready` passes. Before, each start of both logged `cannot connect to TimescaleDB` and restarted glurmo 10 s later.
 - A backup controller in standby, which answers with `ESLURM_IN_STANDBY_MODE`, now passes a call on to the next controller, as it does for libslurm. Before, after a failover and back, every call failed until a restart. A change of answering controller is logged.
 - A log write that fails, as on a full disk or quota, no longer kills the server. Before, the first message after it panicked.
 - The outage banner ends at the first listing that slurmctld answers. Before, it stayed up until the listing that failed last ran again, which backoff could put 80 minutes away for partitions.

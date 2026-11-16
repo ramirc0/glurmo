@@ -11,7 +11,7 @@ cp target/x86_64-unknown-linux-musl/release/glurmo ~/.local/bin/
 
 The binary is static and runs on any x86-64 Linux host. Building needs Rust 1.100 with the `x86_64-unknown-linux-musl` and `wasm32-unknown-unknown` targets, [just](https://github.com/casey/just) and [trunk](https://trunkrs.dev). `rust-toolchain.toml` pins the version. `just static` builds the web view first and embeds it in the binary.
 
-`just install` builds the binary, installs it in `~/.local/bin`, and copies the units from `systemd/` to `~/.config/systemd/user`. It then restarts glurmo if it is running. It leaves drop-ins alone, so the host settings below survive. It neither enables nor starts a unit.
+`just install` builds the binary, installs it in `~/.local/bin`, copies the units from `systemd/` to `~/.config/systemd/user`, and installs logrotate's config as `~/.config/glurmo/logrotate.conf`. It then restarts glurmo if it is running. It leaves drop-ins alone, so the host settings below survive. It neither enables nor starts a unit.
 
 The host must be able to sign requests as any Slurm client does: with munged and the cluster's key under `auth/munge`, or through slurmd's or sackd's socket under `auth/slurm`. glurmo finds the controller in slurm.conf, as Slurm's own tools do. A host without slurm.conf can name the controller in the config.
 
@@ -47,20 +47,25 @@ Set `tui: (server: "http://127.0.0.1:8765")` in the config to make that the defa
 
 A systemd user unit keeps the server running after you log out, and restarts it when it fails. The commands below are for bash. If your shell is fish or another, run `bash` first.
 
-1. Install the binary as `~/.local/bin/glurmo`, and fetch the unit:
+1. Install the binary as `~/.local/bin/glurmo`. Fetch the unit, the two that rotate its log, and logrotate's config:
 
    ```sh
    units=~/.config/systemd/user
    base=https://raw.githubusercontent.com/ramirc0/glurmo/main/systemd
-   mkdir -p "$units"
-   curl -fsSL -o "$units/glurmo.service" "$base/glurmo.service"
+   mkdir -p "$units" ~/.config/glurmo ~/.local/state/glurmo
+   for unit in glurmo.service glurmo-logrotate.service glurmo-logrotate.timer; do
+       curl -fsSL -o "$units/$unit" "$base/$unit"
+   done
+   curl -fsSL -o ~/.config/glurmo/logrotate.conf "$base/glurmo.logrotate"
    ```
 
 2. Tie it to this host. Compute nodes often share your home directory, and a job that starts your user manager there would start a second server. The unit runs only where `ConditionHost` matches. Set it in a drop-in, a file in `glurmo.service.d/` whose lines override the unit's, so a new unit can replace the old one without losing them:
 
    ```sh
-   mkdir -p "$units/glurmo.service.d"
-   printf '[Unit]\nConditionHost=\nConditionHost=%s\n' "$(hostname)" > "$units/glurmo.service.d/host.conf"
+   for unit in glurmo.service glurmo-logrotate.service glurmo-logrotate.timer; do
+       mkdir -p "$units/$unit.d"
+       printf '[Unit]\nConditionHost=\nConditionHost=%s\n' "$(hostname)" > "$units/$unit.d/host.conf"
+   done
    ```
 
    The empty `ConditionHost=` clears the unit's own value.
@@ -73,28 +78,41 @@ A systemd user unit keeps the server running after you log out, and restarts it 
 
    If it prints `Linger=no`, run `loginctl enable-linger`, or ask an admin to.
 
-4. Start the server, and start it at boot:
+4. Start the server and the log rotation, and start them at boot:
 
    ```sh
    systemctl --user daemon-reload
-   systemctl --user enable --now glurmo
+   systemctl --user enable --now glurmo glurmo-logrotate.timer
    systemctl --user status glurmo
    ```
-
-5. Read its messages with `journalctl --user -u glurmo`. Some clusters make the user journal unreadable. There, send them to a file instead:
-
-   ```sh
-   mkdir -p ~/.local/state/glurmo
-   printf '\n[Service]\nStandardError=append:%%h/.local/state/glurmo/serve.log\n' >> "$units/glurmo.service.d/host.conf"
-   systemctl --user daemon-reload
-   systemctl --user restart glurmo
-   ```
-
-   The path is spelled out because systemd 252, as RHEL 9 ships it, expands `%S` to `~/.config` in a user unit.
 
 To upgrade, replace the binary and run `systemctl --user restart glurmo`, or run `just install` in a clone.
 
 If `enable` fails with "Unit … is transient or generated", a unit of the same name started by `systemd-run` is in the way. Stop it, delete its file under `/run/user/$(id -u)/systemd/transient/`, and run `daemon-reload`.
+
+### Logs
+
+The units write their logs to `~/.local/state/glurmo`, because some clusters make the user journal unreadable.
+
+| File | Holds |
+| --- | --- |
+| `serve.log` | glurmo's messages, and a line from systemd each time it stops |
+| `postgres.log` | The Apptainer TimescaleDB's messages |
+| `backup.log` | What `pg_dump` printed, and a line for each run |
+| `logrotate.log` | Errors from the rotation |
+
+glurmo's lines start with the local time. It logs a warning when a call, the store or a login lookup starts failing, and one line when it works again, with how long the failures lasted. Each hour it sums up the queue and how each kind of call fared, so a missing summary marks the server or host down.
+
+`glurmo-logrotate.timer` rotates the logs weekly, or once one passes 50 MB, and keeps a year of them compressed. Read an old one with `zstdcat`. The newest rotated file stays uncompressed.
+
+For more detail, set `GLURMO_LOG=debug` with `systemctl --user edit glurmo`:
+
+```ini
+[Service]
+Environment=GLURMO_LOG=debug
+```
+
+`glurmo=debug` keeps other crates at their default level. The paths in the units are spelled out because systemd 252, as RHEL 9 ships it, expands `%S` to `~/.config` in a user unit.
 
 ## Configure
 
@@ -254,7 +272,7 @@ Then follow step 9 to keep SQLite history, and restart glurmo. Back the database
 
 | Unit | Does |
 | --- | --- |
-| `glurmo-timescaledb.service` | Runs the server on `~/.local/share/glurmo/timescaledb/data`, with its socket in `$XDG_RUNTIME_DIR/glurmo-timescaledb`. It stops with SIGINT, PostgreSQL's fast shutdown, so open connections do not hold it up. |
+| `glurmo-timescaledb.service` | Runs the server on `~/.local/share/glurmo/timescaledb/data`, with its socket in `$XDG_RUNTIME_DIR/glurmo-timescaledb`. It counts as started once `pg_isready` says the server takes connections, so glurmo starts after that. It stops with SIGINT, PostgreSQL's fast shutdown, so open connections do not hold it up. It logs lock waits over 1 s and statements over 5 s. |
 | `glurmo-backup.service` | Dumps the database with `pg_dump` to `~/.local/share/glurmo/glurmo.dump`. It writes a `.part` file first, so a failed dump leaves the last good one. |
 | `glurmo-backup.timer` | Runs the backup at 03:30, give or take 15 minutes. After downtime it runs at the next start. |
 
@@ -361,5 +379,7 @@ A file in `~/.config/glurmo/themes/` or `~/.config/glurmo/layouts/` adds one, or
 ## Troubleshooting
 
 * A red banner in the header means the server or Slurm stopped answering. It says since when and why. The web view reconnects on its own and catches up without reloading.
+* The [logs](#logs) say when each kind of call started failing and when it worked again. Each hourly summary gives the slowest call of the hour.
+* `backup.log` repeats a `pg_dump` warning about circular foreign keys on `continuous_agg`, a TimescaleDB table. It is harmless for the full dumps the backup makes.
 * A controller older than 23.11 or newer than 27.05 rejects glurmo's protocols, so `glurmo probe` fails there. Set `slurm: (backend: Cli)`.
 * Without munged or a sack socket, glurmo cannot sign requests and exits at once. With munged but the wrong key, every call fails with a munge error.
