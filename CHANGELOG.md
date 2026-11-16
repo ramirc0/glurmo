@@ -4,6 +4,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-16
+
 ### Added
 
 - The units append their logs to `~/.local/state/glurmo`: `serve.log`, `postgres.log` and `backup.log`. Each adds a dated line from systemd when its process ends, which records crashes and OOM kills.
@@ -163,7 +165,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - `glurmo record`, `pseudonymize`, `convert` and `serve --replay --speed`, for recordings, demos and test fixtures.
 - Account lookups through `/etc/passwd` and SSSD's socket, so the static binary sees directory users.
 
-[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ramirc0/glurmo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ramirc0/glurmo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ramirc0/glurmo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ramirc0/glurmo/compare/v0.2.0...v0.3.0
