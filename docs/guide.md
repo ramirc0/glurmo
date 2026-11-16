@@ -21,7 +21,7 @@ Settings live in `~/.config/glurmo/config.ron`. Every field is optional.
 Config(
     slurm: (backend: Wire, controller: ["ctl-1:6817"]),
     sample: (jobs: "10s", nodes: "30s", partitions: "10m", lookups: 25),
-    store: (path: "/scratch/you/glurmo/cluster.sqlite", keep: Forever, backfill: Days(30)),
+    store: (keep: Forever, backfill: Days(30)),
     server: (listen: "127.0.0.1:8765"),
     tui: (server: "http://head:8765", layout: "tui", theme: "rose-pine", me: "otter"),
     names: FullName,
@@ -31,7 +31,7 @@ Config(
 
 * `slurm` picks the backend. `Wire` speaks Slurm's protocol. `Cli` runs `squeue`, `sinfo`, `scontrol`, `sdiag` and `sacct` instead, for a cluster newer than the protocol glurmo knows. `controller` overrides the addresses in slurm.conf.
 * `sample` sets how often each kind of data is read. `lookups` caps placement lookups per tick, and only the `Cli` backend makes them.
-* `store` keeps history in a SQLite file, which must sit on a local disk, such as `/scratch`. SQLite locks are unreliable on NFS, Ceph or Lustre. `backfill` reads that much history from accounting into a new store. A TimescaleDB server can hold history in place of the file, as described below.
+* `store` keeps history in a SQLite file, `$XDG_STATE_HOME/glurmo/<cluster>.sqlite` by default, with a nightly copy in `$XDG_DATA_HOME/glurmo`. The file must sit on a local disk, because SQLite locks are unreliable on NFS, Ceph or Lustre. Where the home directory is on one of those, set `XDG_STATE_HOME` to a local disk, or name the file with `path`. `backfill` reads that much history from accounting into a new store. A TimescaleDB server can hold history in place of the file, as described below.
 * `tui` picks the server the terminal view follows and its first layout and theme. `me` names whose jobs `m` and the `Mine` panel show, in place of `$USER`.
 * `names` shows full names from the account database, or logins with `Login`.
 * `gpu_models` names the GPUs in each partition, for clusters whose GRES lists no GPU type.
@@ -52,10 +52,10 @@ The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later. Earlier re
 shared_preload_libraries = 'timescaledb'
 ```
 
-A site without one can run the `timescale/timescaledb` image under Apptainer, on a local disk, with a Unix socket and no TCP port:
+A site without one can run the `timescale/timescaledb` image under Apptainer, with a Unix socket and no TCP port:
 
 ```sh
-dir=/scratch/you/timescaledb
+dir="${XDG_DATA_HOME:-$HOME/.local/share}/glurmo/timescaledb"
 image=docker://timescale/timescaledb:2.31.0-pg18
 mkdir -p "$dir"
 apptainer exec --bind "$dir" "$image" initdb -D "$dir/data"
@@ -64,7 +64,7 @@ apptainer exec --bind "$dir" "$image" postgres -D "$dir/data" -k "$dir" -p 5433 
     -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off
 ```
 
-Run the last line under systemd, as `systemd/glurmo.service` runs glurmo, and give glurmo's unit `After=` and `Wants=` on it.
+Like the SQLite file, `dir` must sit on a local disk. Run the last line under systemd, as `systemd/glurmo.service` runs glurmo, and give glurmo's unit `After=` and `Wants=` on it.
 
 #### The role and the database
 
