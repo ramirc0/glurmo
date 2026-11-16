@@ -884,8 +884,8 @@ impl History {
     /// Fails when the store cannot be opened or read.
     pub fn alive(&self, at: UnixTime) -> Result<Vec<Stored>> {
         let db = self.location.read()?;
-        let by_end = ends_are_fewer(&db, at, at)?;
-        stored(&db, &overlapping(STORED, "<= ?1", by_end), params![at.0])
+        let index = index_choice(&db, at, at)?;
+        stored(&db, &overlapping(STORED, "<= ?1", index), params![at.0])
     }
 
     /// Attempts submitted, started or ended after `from` and up to `to`.
@@ -1258,10 +1258,26 @@ fn usual(cpus_per_core: &HashMap<NodeName, u32>) -> u32 {
         .map_or(1, |(per_core, _)| per_core)
 }
 
-/// Whether fewer attempts ended after `from` than were submitted before `to`. That decides which index
-/// finds the attempts alive between the two. Both counts run on their own index, and the second stops
-/// once it passes the first.
-fn ends_are_fewer(db: &Connection, from: UnixTime, to: UnixTime) -> Result<bool> {
+/// The index that finds the attempts alive in a stretch of time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndexChoice {
+    /// Attempts by end.
+    ByEnd,
+    /// Attempts by submit time.
+    BySubmit,
+    /// Whichever the database picks.
+    Planner,
+}
+
+/// Picks the index that finds the attempts alive between `from` and `to`. SQLite does not weigh its
+/// indexes by bound values, so it gets the one with fewer attempts to walk: by end when fewer ended
+/// after `from` than were submitted before `to`. Both counts run on their own index, and the second
+/// stops once it passes the first. PostgreSQL weighs them itself. A named index would also keep
+/// TimescaleDB from skipping chunks by submit time and compressed batches by end.
+fn index_choice(db: &Connection, from: UnixTime, to: UnixTime) -> Result<IndexChoice> {
+    if let Connection::Timescale(_) = db {
+        return Ok(IndexChoice::Planner);
+    }
     let ended: i64 = db.query_row(
         r#"SELECT count(*) FROM attempts WHERE "end" > ?1"#,
         params![from.0],
@@ -1272,17 +1288,21 @@ fn ends_are_fewer(db: &Connection, from: UnixTime, to: UnixTime) -> Result<bool>
         params![to.0, ended + 1],
         |row| row.get(0),
     )?;
-    Ok(ended < submitted)
+    Ok(if ended < submitted {
+        IndexChoice::ByEnd
+    } else {
+        IndexChoice::BySubmit
+    })
 }
 
 /// Selects `columns` of the attempts submitted `submitted`, such as `< ?2`, that had not ended by `?1`.
-/// Each half of the union names its index, because SQLite does not weigh the indexes by bound values:
-/// attempts by end when `by_end`, else attempts by submit time.
-fn overlapping(columns: &str, submitted: &str, by_end: bool) -> String {
-    let (end, submit) = if by_end {
-        (r#""end""#, "+submit")
-    } else {
-        (r#"+"end""#, "submit")
+/// A unary plus keeps a column's index out of the first half of the union, which leaves the index
+/// that `index` names.
+fn overlapping(columns: &str, submitted: &str, index: IndexChoice) -> String {
+    let (end, submit) = match index {
+        IndexChoice::ByEnd => (r#""end""#, "+submit"),
+        IndexChoice::BySubmit => (r#"+"end""#, "submit"),
+        IndexChoice::Planner => (r#""end""#, "submit"),
     };
     format!(
         r#"SELECT {columns} FROM attempts WHERE {end} > ?1 AND {submit} {submitted}
@@ -1296,7 +1316,7 @@ fn spans(db: &Connection, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
     let sql = overlapping(
         r#"login, partition, tasks, coalesce(cores, 0), gpus, submit, start, "end", state"#,
         "< ?2",
-        ends_are_fewer(db, from, to)?,
+        index_choice(db, from, to)?,
     );
     db.query_map(&sql, params![from.0, to.0], |row| {
         Ok(Span {
@@ -2178,23 +2198,28 @@ mod tests {
     #[test]
     fn overlapping_attempts_come_through_the_index_named() {
         let home = StoreHome::sqlite();
-        let mut store = home.open(2);
-        let plan = |by_end| -> String {
-            let sql = format!("EXPLAIN QUERY PLAN {}", overlapping("job", "< ?2", by_end));
+        let store = home.open(2);
+        let plan = |index| -> String {
+            let sql = format!("EXPLAIN QUERY PLAN {}", overlapping("job", "< ?2", index));
             let details = store
                 .db
                 .query_map(&sql, params![0_i64, 0_i64], |row| row.get::<String>(3))
                 .unwrap();
             details.join("; ")
         };
-        let near = plan(true);
+        let near = plan(IndexChoice::ByEnd);
         assert!(near.contains("attempts_by_end"), "{near}");
         assert!(!near.contains("attempts_by_submit"), "{near}");
-        let far = plan(false);
+        let far = plan(IndexChoice::BySubmit);
         let (first_half, _) = far.split_once("UNION ALL").unwrap();
         assert!(first_half.contains("attempts_by_submit"), "{far}");
         assert!(!first_half.contains("attempts_by_end"), "{far}");
+    }
 
+    #[test]
+    fn overlapping_attempts_are_the_same_whichever_index_finds_them() {
+        let home = StoreHome::new();
+        let mut store = home.open(2);
         let mut events = vec![Event::Nodes(vec![node(NodeState::Mixed)])];
         for id in 0..40 {
             let start = T0 + i64::from(id) * 300;
@@ -2220,11 +2245,11 @@ mod tests {
             (T0, T0),
             (T0 + 20_000, T0 + 30_000),
         ] {
-            let keys = |by_end| {
+            let keys = |index| {
                 let mut jobs: Vec<u32> = store
                     .db
                     .query_map(
-                        &overlapping("job", "< ?2", by_end),
+                        &overlapping("job", "< ?2", index),
                         params![from, to],
                         |row| row.get(0),
                     )
@@ -2232,14 +2257,16 @@ mod tests {
                 jobs.sort_unstable();
                 jobs
             };
-            assert_eq!(keys(true), keys(false), "{from}..{to}");
-            assert!(!keys(true).is_empty(), "{from}..{to}");
+            let by_end = keys(IndexChoice::ByEnd);
+            assert_ne!(by_end, Vec::<u32>::new(), "{from}..{to}");
+            assert_eq!(keys(IndexChoice::BySubmit), by_end, "{from}..{to}");
+            assert_eq!(keys(IndexChoice::Planner), by_end, "{from}..{to}");
         }
     }
 
     #[test]
     fn the_index_follows_where_attempts_are_dense() {
-        let home = StoreHome::new();
+        let home = StoreHome::sqlite();
         let mut store = home.open(2);
         let ended = |id: u32, submit: i64| Attempt {
             key: AttemptKey {
@@ -2265,12 +2292,16 @@ mod tests {
             .unwrap();
         store.set_meta("complete_to", UnixTime(T0)).unwrap();
         let at = UnixTime(T0 - 45 * DAY_S);
-        assert!(
-            !ends_are_fewer(&store.db, at, at).unwrap(),
+        assert_eq!(
+            index_choice(&store.db, at, at).unwrap(),
+            IndexChoice::BySubmit,
             "5 old, 495 recent"
         );
         let near = UnixTime(T0 - 600);
-        assert!(ends_are_fewer(&store.db, near, near).unwrap());
+        assert_eq!(
+            index_choice(&store.db, near, near).unwrap(),
+            IndexChoice::ByEnd
+        );
     }
 
     #[test]
@@ -2670,6 +2701,16 @@ mod tests {
             })
             .unwrap();
         assert_eq!(left, [1, 2], "a delete");
+    }
+
+    #[test]
+    #[ignore = "needs the TimescaleDB server that GLURMO_TEST_TIMESCALE names"]
+    fn timescale_picks_its_own_index_for_overlapping_attempts() {
+        let home = StoreHome::timescale();
+        let store = home.open(2);
+        let index = index_choice(&store.db, UnixTime(T0), UnixTime(T0)).unwrap();
+        assert_eq!(index, IndexChoice::Planner);
+        assert!(!overlapping("job", "< ?2", index).contains('+'));
     }
 
     #[test]
