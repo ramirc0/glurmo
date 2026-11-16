@@ -11,6 +11,8 @@ cp target/x86_64-unknown-linux-musl/release/glurmo ~/.local/bin/
 
 The binary is static and runs on any x86-64 Linux host. Building needs Rust 1.100 with the `x86_64-unknown-linux-musl` and `wasm32-unknown-unknown` targets, [just](https://github.com/casey/just) and [trunk](https://trunkrs.dev). `rust-toolchain.toml` pins the version. `just static` builds the web view first and embeds it in the binary.
 
+`just install` builds the binary, installs it in `~/.local/bin`, and copies the units from `systemd/` to `~/.config/systemd/user`. It then restarts glurmo if it is running. It leaves drop-ins alone, so the host settings below survive. It neither enables nor starts a unit.
+
 The host must be able to sign requests as any Slurm client does: with munged and the cluster's key under `auth/munge`, or through slurmd's or sackd's socket under `auth/slurm`. glurmo finds the controller in slurm.conf, as Slurm's own tools do. A host without slurm.conf can name the controller in the config.
 
 ## Quick start
@@ -89,7 +91,7 @@ A systemd user unit keeps the server running after you log out, and restarts it 
 
    `%S` is `~/.local/state`.
 
-To upgrade, replace the binary and run `systemctl --user restart glurmo`.
+To upgrade, replace the binary and run `systemctl --user restart glurmo`, or run `just install` in a clone.
 
 If `enable` fails with "Unit … is transient or generated", a unit of the same name started by `systemd-run` is in the way. Stop it, delete its file under `/run/user/$(id -u)/systemd/transient/`, and run `daemon-reload`.
 

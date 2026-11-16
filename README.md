@@ -29,7 +29,7 @@ Full-resolution videos: [web replay](docs/media/web-replay.mp4), [TV mode](docs/
 
 ### Installing
 
-Download the static binary from the [latest release](https://github.com/ramirc0/glurmo/releases/latest), or build it with `just static`.
+Download the static binary from the [latest release](https://github.com/ramirc0/glurmo/releases/latest), or build it with `just static`. `just install` builds it and installs it with the systemd units.
 
 ### Executing program
 

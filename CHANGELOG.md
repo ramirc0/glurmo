@@ -6,6 +6,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Added
 
+- `just install` builds the static binary and installs it as `~/.local/bin/glurmo` with the systemd user units. It then restarts glurmo if it is running.
 - `systemd/glurmo-timescaledb.service` runs the Apptainer TimescaleDB the guide sets up. `glurmo-backup.timer` dumps it nightly to `~/.local/share/glurmo/glurmo.dump`.
 
 ### Changed

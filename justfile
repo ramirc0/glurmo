@@ -1,3 +1,5 @@
+units := env("XDG_CONFIG_HOME", home_directory() / ".config") / "systemd/user"
+
 # List the recipes.
 default:
     @just --list
@@ -75,6 +77,15 @@ timescale-check:
 # Build a static musl binary at target/x86_64-unknown-linux-musl/release/glurmo. It runs on any x86-64 Linux.
 static: web
     cargo build --release --target x86_64-unknown-linux-musl
+
+# Install the static binary as ~/.local/bin/glurmo and the systemd user units, then restart glurmo if
+# it runs. Host settings live in the units' drop-ins, which this leaves alone.
+install: static
+    mkdir -p ~/.local/bin "{{units}}"
+    install -m 755 target/x86_64-unknown-linux-musl/release/glurmo ~/.local/bin/
+    install -m 644 systemd/* "{{units}}"
+    systemctl --user daemon-reload
+    systemctl --user try-restart glurmo
 
 # Build a dynamic glibc binary at target/release/glurmo. It runs only where glibc is at least as new as here.
 release: web
