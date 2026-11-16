@@ -56,15 +56,18 @@ A site without one can run the `timescale/timescaledb` image under Apptainer, wi
 
 ```sh
 dir="${XDG_DATA_HOME:-$HOME/.local/share}/glurmo/timescaledb"
-image=docker://timescale/timescaledb:2.31.0-pg18
 mkdir -p "$dir"
-apptainer exec --bind "$dir" "$image" initdb -D "$dir/data"
-apptainer exec --bind "$dir" "$image" postgres -D "$dir/data" -k "$dir" -p 5433 \
-    -c listen_addresses= -c unix_socket_permissions=0700 \
-    -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off
+apptainer pull "$dir/timescaledb-2.31.0-pg18.sif" docker://timescale/timescaledb:2.31.0-pg18
+apptainer exec --bind "$dir" "$dir/timescaledb-2.31.0-pg18.sif" initdb -D "$dir/data"
 ```
 
-Like the SQLite file, `dir` must sit on a local disk. Run the last line under systemd, as `systemd/glurmo.service` runs glurmo, and give glurmo's unit `After=` and `Wants=` on it.
+`systemd/glurmo-timescaledb.service` runs the server, with its socket in `$XDG_RUNTIME_DIR/glurmo-timescaledb`, so the connection string's host is that directory. Install it as `systemd/glurmo.service` is installed. Then order glurmo after it with a drop-in, `~/.config/systemd/user/glurmo.service.d/timescaledb.conf`:
+
+```ini
+[Unit]
+After=glurmo-timescaledb.service
+Wants=glurmo-timescaledb.service
+```
 
 #### The role and the database
 
@@ -97,7 +100,7 @@ A statement fails after 5 minutes, and a wait on a lock after 30 s. A failed wri
 
 * Attempts and usage bins are hypertables in 30-day chunks. Chunks older than 7 days are compressed where the server's license covers compression. The Apache-licensed build keeps them uncompressed, and glurmo says so once.
 * `keep` prunes old history, as it does in SQLite.
-* glurmo makes no nightly copy of this store. Back it up with the server's tools, such as `pg_dump`.
+* glurmo makes no nightly copy of this store. `systemd/glurmo-backup.timer` runs `glurmo-backup.service`, which dumps it nightly to `~/.local/share/glurmo/glurmo.dump` with `pg_dump`.
 
 #### Moving from SQLite
 

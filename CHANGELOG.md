@@ -4,6 +4,14 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- `systemd/glurmo-timescaledb.service` runs the Apptainer TimescaleDB the guide sets up. `glurmo-backup.timer` dumps it nightly to `~/.local/share/glurmo/glurmo.dump`.
+
+### Changed
+
+- The guide's Apptainer TimescaleDB keeps its image and data in `$XDG_DATA_HOME/glurmo/timescaledb`.
+
 ### Fixed
 
 - The guide's example config no longer names a store under `/scratch`. It documents the default, `$XDG_STATE_HOME/glurmo/<cluster>.sqlite`, and puts the Apptainer TimescaleDB under `$XDG_DATA_HOME`.

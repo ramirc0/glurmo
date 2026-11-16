@@ -1,0 +1,14 @@
+# Dumps glurmo's TimescaleDB, which glurmo does not back up itself. glurmo-backup.timer runs it.
+[Unit]
+Description=Dump glurmo's TimescaleDB to ~/.local/share/glurmo
+ConditionHost=login
+Requires=glurmo-timescaledb.service
+After=glurmo-timescaledb.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/apptainer exec \
+    --bind %h/.local/share/glurmo --bind %t/glurmo-timescaledb \
+    %h/.local/share/glurmo/timescaledb/timescaledb-2.31.0-pg18.sif \
+    pg_dump -h %t/glurmo-timescaledb -p 5433 -U glurmo -d glurmo -Fc -f %h/.local/share/glurmo/glurmo.dump.part
+ExecStart=/usr/bin/mv %h/.local/share/glurmo/glurmo.dump.part %h/.local/share/glurmo/glurmo.dump
