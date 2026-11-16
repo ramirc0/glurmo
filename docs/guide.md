@@ -13,6 +13,86 @@ The binary is static and runs on any x86-64 Linux host. Building needs Rust 1.10
 
 The host must be able to sign requests as any Slurm client does: with munged and the cluster's key under `auth/munge`, or through slurmd's or sackd's socket under `auth/slurm`. glurmo finds the controller in slurm.conf, as Slurm's own tools do. A host without slurm.conf can name the controller in the config.
 
+## Quick start
+
+Check that glurmo can reach Slurm, and what each call costs the controller:
+
+```sh
+glurmo probe
+```
+
+Start the server:
+
+```sh
+glurmo serve
+```
+
+It samples the cluster, keeps history in a SQLite file, and serves the web view on `http://127.0.0.1:8765/`. A new store first reads 30 days of history from accounting, which can take a few minutes. From your own machine, forward the port and open that address:
+
+```sh
+ssh -L 8765:127.0.0.1:8765 login-node
+```
+
+`ctrl-c` stops the server. In another terminal, follow it in the terminal view:
+
+```sh
+glurmo tui --server http://127.0.0.1:8765
+```
+
+Set `tui: (server: "http://127.0.0.1:8765")` in the config to make that the default. With no server named, `glurmo tui` samples the cluster itself and backfills the last day. `--me otter` shows another login's jobs as yours, as `?me=` does on the web.
+
+## Run as a service
+
+A systemd user unit keeps the server running after you log out, and restarts it when it fails. The commands below are for bash. If your shell is fish or another, run `bash` first.
+
+1. Install the binary as `~/.local/bin/glurmo`, and fetch the unit:
+
+   ```sh
+   units=~/.config/systemd/user
+   base=https://raw.githubusercontent.com/ramirc0/glurmo/main/systemd
+   mkdir -p "$units"
+   curl -fsSL -o "$units/glurmo.service" "$base/glurmo.service"
+   ```
+
+2. Tie it to this host. Compute nodes often share your home directory, and a job that starts your user manager there would start a second server. The unit runs only where `ConditionHost` matches. Set it in a drop-in, a file in `glurmo.service.d/` whose lines override the unit's, so a new unit can replace the old one without losing them:
+
+   ```sh
+   mkdir -p "$units/glurmo.service.d"
+   printf '[Unit]\nConditionHost=\nConditionHost=%s\n' "$(hostname)" > "$units/glurmo.service.d/host.conf"
+   ```
+
+   The empty `ConditionHost=` clears the unit's own value.
+
+3. Check that your user manager outlives your login:
+
+   ```sh
+   loginctl show-user "$USER" -p Linger
+   ```
+
+   If it prints `Linger=no`, run `loginctl enable-linger`, or ask an admin to.
+
+4. Start the server, and start it at boot:
+
+   ```sh
+   systemctl --user daemon-reload
+   systemctl --user enable --now glurmo
+   systemctl --user status glurmo
+   ```
+
+5. Read its messages with `journalctl --user -u glurmo`. Some clusters make the user journal unreadable. There, send them to a file instead:
+
+   ```sh
+   printf '\n[Service]\nStandardError=append:%%S/glurmo/serve.log\n' >> "$units/glurmo.service.d/host.conf"
+   systemctl --user daemon-reload
+   systemctl --user restart glurmo
+   ```
+
+   `%S` is `~/.local/state`.
+
+To upgrade, replace the binary and run `systemctl --user restart glurmo`.
+
+If `enable` fails with "Unit … is transient or generated", a unit of the same name started by `systemd-run` is in the way. Stop it, delete its file under `/run/user/$(id -u)/systemd/transient/`, and run `daemon-reload`.
+
 ## Configure
 
 Settings live in `~/.config/glurmo/config.ron`. Every field is optional.
@@ -38,66 +118,118 @@ Config(
 
 ### History on TimescaleDB
 
-A TimescaleDB server can hold history in place of the SQLite file. `timescale` takes the place of `path` and names the server with a PostgreSQL connection string. Setting both is an error.
+SQLite needs nothing set up, but its file must sit on a local disk. A TimescaleDB server can hold history instead. Use one where no local disk keeps files across reboots, or where the site already runs PostgreSQL. It also compresses history older than 7 days.
 
-```ron
-store: (timescale: "host=/run/postgresql user=glurmo dbname=glurmo", keep: Forever, backfill: Days(30)),
-```
+You can run TimescaleDB yourself from its container image under Apptainer, with no admin rights, as below. To use a server that already exists, skip to [Use an existing PostgreSQL server](#use-an-existing-postgresql-server).
 
-#### The server
+#### Set it up under Apptainer
 
-The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later. Earlier releases can miss open attempts in compressed chunks. glurmo is tested with TimescaleDB 2.31. The server must load the extension at start, in `postgresql.conf` or on its command line:
+These steps assume glurmo already runs as a service. Run them in bash, in one session, on the host that serves.
+
+1. Name the paths the units expect. The units use these exact paths, so keep them:
+
+   ```sh
+   dir=~/.local/share/glurmo/timescaledb
+   sif="$dir/timescaledb-2.31.0-pg18.sif"
+   sock="$XDG_RUNTIME_DIR/glurmo-timescaledb"
+   units=~/.config/systemd/user
+   base=https://raw.githubusercontent.com/ramirc0/glurmo/main/systemd
+   ```
+
+2. Download the image, about 380 MB:
+
+   ```sh
+   mkdir -p "$dir"
+   apptainer pull "$sif" docker://timescale/timescaledb:2.31.0-pg18
+   ```
+
+3. Create the database files. `initdb` makes an empty PostgreSQL data directory. Your login becomes its superuser, and peer authentication lets only the matching operating-system user in:
+
+   ```sh
+   apptainer exec --bind "$dir" "$sif" initdb -D "$dir/data" --auth-local=peer --auth-host=scram-sha-256
+   ```
+
+4. Let glurmo log in. glurmo runs as you but logs in as a role named `glurmo`, which peer authentication would refuse. A map in `pg_ident.conf` allows it. Its line in `pg_hba.conf` must come first, because the first matching line wins:
+
+   ```sh
+   echo "glurmo $USER glurmo" >> "$dir/data/pg_ident.conf"
+   { echo 'local glurmo glurmo peer map=glurmo'; cat "$dir/data/pg_hba.conf"; } > "$dir/data/pg_hba.new"
+   mv "$dir/data/pg_hba.new" "$dir/data/pg_hba.conf"
+   ```
+
+5. Install the server's units, with the same host drop-in as `glurmo.service`:
+
+   ```sh
+   for unit in glurmo-timescaledb.service glurmo-backup.service glurmo-backup.timer; do
+       curl -fsSL -o "$units/$unit" "$base/$unit"
+       mkdir -p "$units/$unit.d"
+       printf '[Unit]\nConditionHost=\nConditionHost=%s\n' "$(hostname)" > "$units/$unit.d/host.conf"
+   done
+   ```
+
+   Then make glurmo start after the server, in a second drop-in:
+
+   ```sh
+   printf '[Unit]\nAfter=glurmo-timescaledb.service\nWants=glurmo-timescaledb.service\n' > "$units/glurmo.service.d/timescaledb.conf"
+   ```
+
+6. Start the server. Its socket appears in `$sock`:
+
+   ```sh
+   systemctl --user daemon-reload
+   systemctl --user enable --now glurmo-timescaledb
+   ls -a "$sock"
+   ```
+
+   The listing shows `.s.PGSQL.5433`.
+
+7. Create glurmo's role and its database. `psql` comes with the image:
+
+   ```sh
+   apptainer exec --bind "$sock" "$sif" psql -h "$sock" -p 5433 -d postgres \
+       -c 'CREATE ROLE glurmo LOGIN' -c 'CREATE DATABASE glurmo OWNER glurmo'
+   ```
+
+   glurmo creates its tables and the `timescaledb` extension when it first starts.
+
+8. Point glurmo at it. The config cannot expand variables, so print the socket's path:
+
+   ```sh
+   echo "$sock"
+   ```
+
+   Then set the store in `~/.config/glurmo/config.ron`, with that path as the host:
+
+   ```ron
+   store: (timescale: "host=/run/user/1000/glurmo-timescaledb port=5433 user=glurmo dbname=glurmo", backfill: Days(30)),
+   ```
+
+9. Optionally, keep your SQLite history. Accounting keeps no placements and no node health, so a new database has neither for the time before it. Copy the SQLite store in before glurmo first starts on the database:
+
+   ```sh
+   glurmo copy ~/.local/state/glurmo/CLUSTER.sqlite "host=$sock port=5433 user=glurmo dbname=glurmo"
+   ```
+
+   It prints each table's row count on both sides. glurmo may keep running on SQLite meanwhile. A copy that fails leaves the database empty, so it can run again.
+
+10. Restart glurmo, and start the nightly backup:
+
+    ```sh
+    systemctl --user restart glurmo
+    systemctl --user enable --now glurmo-backup.timer
+    ```
+
+    glurmo's first message now ends "with history in the TimescaleDB database glurmo".
+
+The data stays in `$dir/data`. Each night `glurmo-backup.service` dumps it to `~/.local/share/glurmo/glurmo.dump`.
+
+#### Use an existing PostgreSQL server
+
+The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later. Earlier releases can miss open attempts in compressed chunks. glurmo is tested with TimescaleDB 2.31. The server must load the extension at start, in `postgresql.conf`:
 
 ```
 shared_preload_libraries = 'timescaledb'
 ```
-
-A site without one can run the `timescale/timescaledb` image under Apptainer, with a Unix socket and no TCP port:
-
-```sh
-dir="${XDG_DATA_HOME:-$HOME/.local/share}/glurmo/timescaledb"
-mkdir -p "$dir"
-apptainer pull "$dir/timescaledb-2.31.0-pg18.sif" docker://timescale/timescaledb:2.31.0-pg18
-apptainer exec --bind "$dir" "$dir/timescaledb-2.31.0-pg18.sif" initdb -D "$dir/data"
-```
-
-#### systemd
-
-`systemd/` holds user units for this server beside `glurmo.service`:
-
-| Unit | Does |
-| --- | --- |
-| `glurmo-timescaledb.service` | Runs the server on the data in `~/.local/share/glurmo/timescaledb`. It stops it with SIGINT, PostgreSQL's fast shutdown, so open glurmo connections do not hold it up. |
-| `glurmo-backup.service` | Dumps the database with `pg_dump` to `~/.local/share/glurmo/glurmo.dump`. It writes a `.part` file first, so a failed dump leaves the last good one. |
-| `glurmo-backup.timer` | Runs the backup at 03:30, give or take 15 minutes, and catches up after downtime. |
-
-The server's socket is in `$XDG_RUNTIME_DIR/glurmo-timescaledb`, so the store names that directory as its host:
-
-```ron
-store: (timescale: "host=/run/user/1000/glurmo-timescaledb port=5433 user=glurmo dbname=glurmo"),
-```
-
-Copy the units to `~/.config/systemd/user`. Each has `ConditionHost=login`, because compute nodes that share the home directory start user managers too. Set the host, and order glurmo after the server, in drop-ins rather than in the units:
-
-```ini
-# ~/.config/systemd/user/glurmo.service.d/host.conf
-[Unit]
-ConditionHost=
-ConditionHost=login*
-After=glurmo-timescaledb.service
-Wants=glurmo-timescaledb.service
-```
-
-Give `glurmo-timescaledb.service`, `glurmo-backup.service` and `glurmo-backup.timer` a drop-in with the same two `ConditionHost` lines. Then start them:
-
-```sh
-systemctl --user daemon-reload
-systemctl --user enable --now glurmo-timescaledb glurmo glurmo-backup.timer
-```
-
-Where the user journal is unreadable, add `StandardError=append:%S/glurmo/serve.log` under `[Service]` in a drop-in, which sends a unit's errors to `~/.local/state/glurmo`. Remove any unit of the same name started with `systemd-run` first. Its transient file shadows the installed one, and `enable` fails.
-
-#### The role and the database
 
 Give glurmo a role of its own that owns its database. It needs no superuser rights. As a superuser:
 
@@ -106,19 +238,35 @@ CREATE ROLE glurmo LOGIN;
 CREATE DATABASE glurmo OWNER glurmo;
 ```
 
-glurmo creates its tables at its first start, and the `timescaledb` extension when the database lacks it. The extension is trusted, so the database's owner may create it.
+glurmo creates the `timescaledb` extension itself. The extension is trusted, so the database's owner may create it.
 
-Over a Unix socket, peer authentication lets an operating-system user log in as the role of the same name. To log in as `glurmo` from another account, map it in `pg_ident.conf`, and use the map in `pg_hba.conf` above the line for all databases. Then reload the server:
+Name the server in `store`, with a PostgreSQL connection string in place of `path`. Setting both is an error.
 
+* Over a Unix socket, name its directory as the host, as in `host=/run/postgresql user=glurmo dbname=glurmo`. Peer authentication lets in only the operating-system user of the role's name, so map your login to `glurmo` as step 4 above does.
+* Over TCP, put `password=` in the connection string, and keep the config file readable by you alone. glurmo does not read `~/.pgpass`. The connection uses no TLS, so keep it on a network you trust.
+
+Then follow step 9 to keep SQLite history, and restart glurmo. Back the database up with the server's tools, such as `pg_dump`.
+
+#### The units
+
+| Unit | Does |
+| --- | --- |
+| `glurmo-timescaledb.service` | Runs the server on `~/.local/share/glurmo/timescaledb/data`, with its socket in `$XDG_RUNTIME_DIR/glurmo-timescaledb`. It stops with SIGINT, PostgreSQL's fast shutdown, so open connections do not hold it up. |
+| `glurmo-backup.service` | Dumps the database with `pg_dump` to `~/.local/share/glurmo/glurmo.dump`. It writes a `.part` file first, so a failed dump leaves the last good one. |
+| `glurmo-backup.timer` | Runs the backup at 03:30, give or take 15 minutes. After downtime it runs at the next start. |
+
+To restore a dump, stop glurmo, then recreate the database and load the dump between TimescaleDB's restore calls. The image must carry the same TimescaleDB version that made the dump. With the paths from step 1:
+
+```sh
+systemctl --user stop glurmo
+apptainer exec --bind "$sock" "$sif" psql -h "$sock" -p 5433 -d postgres \
+    -c 'DROP DATABASE glurmo' -c 'CREATE DATABASE glurmo OWNER glurmo'
+apptainer exec --bind "$sock" "$sif" psql -h "$sock" -p 5433 -d glurmo \
+    -c 'CREATE EXTENSION timescaledb' -c 'SELECT timescaledb_pre_restore()'
+apptainer exec --bind "$sock" "$sif" pg_restore -h "$sock" -p 5433 -d glurmo ~/.local/share/glurmo/glurmo.dump
+apptainer exec --bind "$sock" "$sif" psql -h "$sock" -p 5433 -d glurmo -c 'SELECT timescaledb_post_restore()'
+systemctl --user start glurmo
 ```
-# pg_ident.conf
-glurmo          you                     glurmo
-
-# pg_hba.conf
-local   glurmo          glurmo                                  peer map=glurmo
-```
-
-Over TCP, put `password=` in the connection string, and keep the config file readable by you alone. glurmo does not read `~/.pgpass`. The connection uses no TLS, so keep it on a network you trust.
 
 #### Limits
 
@@ -128,42 +276,6 @@ A statement fails after 5 minutes, and a wait on a lock after 30 s. A failed wri
 
 * Attempts and usage bins are hypertables in 30-day chunks. Chunks older than 7 days are compressed where the server's license covers compression. The Apache-licensed build keeps them uncompressed, and glurmo says so once.
 * `keep` prunes old history, as it does in SQLite.
-* glurmo makes no nightly copy of this store. `glurmo-backup.timer` dumps it, as [systemd](#systemd) describes.
-
-#### Moving from SQLite
-
-A new database backfills from accounting as far as `backfill` reaches, as a new SQLite store does. Accounting keeps no placements and no node health, so history from before the new store has neither.
-
-To keep them, copy the SQLite store into the empty database before glurmo first starts on it:
-
-```sh
-glurmo copy STORE.sqlite "host=/run/postgresql user=glurmo dbname=glurmo"
-```
-
-It prints each table's row count on both sides. The server on SQLite may keep running meanwhile. A copy that fails leaves the database empty, so it can run again. A server started on the copy fills the time since the copy from accounting, and users keep their colors.
-
-## Run
-
-Check what the cluster allows and what each call costs the controller:
-
-```
-glurmo probe
-```
-
-Run the server. `systemd/glurmo.service` runs it as a user unit, and its header says how to install it.
-
-```
-glurmo serve
-```
-
-Follow a server in the terminal, or the server that the config names. Without a server, `--embedded` samples the cluster in-process and backfills the last day. `--me` shows another login's jobs as yours, as `?me=` does on the web.
-
-```
-glurmo tui --server http://head:8765
-glurmo tui
-glurmo tui --embedded
-glurmo tui --me otter
-```
 
 ## Web view
 

@@ -10,6 +10,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Changed
 
+- The guide walks through running glurmo as a service and setting up TimescaleDB step by step, including how to restore a dump.
 - The guide's Apptainer TimescaleDB keeps its image and data in `$XDG_DATA_HOME/glurmo/timescaledb`.
 
 ### Fixed

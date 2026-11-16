@@ -36,10 +36,10 @@ Download the static binary from the [latest release](https://github.com/ramirc0/
 ```
 glurmo probe
 glurmo serve
-glurmo tui
+glurmo tui --server http://127.0.0.1:8765
 ```
 
-Then open the server's address, `http://127.0.0.1:8765/` by default. The [guide](docs/guide.md) covers configuration, the views, keys, themes, layouts and recordings. [How glurmo talks to Slurm](docs/protocol.md) shows the architecture and the protocol.
+Then open the server's address, `http://127.0.0.1:8765/` by default. The [guide](docs/guide.md) walks through [running it as a service](docs/guide.md#run-as-a-service) and [keeping history on TimescaleDB](docs/guide.md#set-it-up-under-apptainer). It also covers configuration, the views, keys, themes, layouts and recordings. [How glurmo talks to Slurm](docs/protocol.md) shows the architecture and the protocol.
 
 ## Help
 
