@@ -918,8 +918,8 @@ impl History {
     ///
     /// Fails when the store cannot be opened or read.
     pub fn node_health(&self, to: UnixTime) -> Result<Vec<NodeHealth>> {
-        self.location.read()?.query_map(
-            "SELECT node, at, state, reason FROM node_states WHERE at <= ?1 ORDER BY at, node",
+        let mut changes = self.location.read()?.query_map(
+            "SELECT node, at, state, reason FROM node_states WHERE at <= ?1",
             params![to.0],
             |row| {
                 let health: String = row.get(2)?;
@@ -932,7 +932,10 @@ impl History {
                     reason: row.get(3)?,
                 })
             },
-        )
+        )?;
+        // Sorted here, because a server's collation can order names apart from SQLite's bytes.
+        changes.sort_unstable_by(|a, b| (a.at, &a.node.0).cmp(&(b.at, &b.node.0)));
+        Ok(changes)
     }
 }
 
@@ -1765,6 +1768,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn node_health_sorts_names_by_their_bytes_whatever_the_database_collation() {
+        let home = StoreHome::new();
+        let mut store = home.open(2);
+        let nodes = ["a1", "B2", "b1"]
+            .into_iter()
+            .map(|name| Node {
+                name: NodeName(name.into()),
+                ..node(NodeState::Idle)
+            })
+            .collect();
+        store.record(UnixTime(T0), &[Event::Nodes(nodes)]).unwrap();
+        let names: Vec<String> = store
+            .history()
+            .node_health(UnixTime(T0))
+            .unwrap()
+            .into_iter()
+            .map(|health| health.node.0)
+            .collect();
+        assert_eq!(names, ["B2", "a1", "b1"]);
+    }
+
     /// Makes every write to `store` fail, or work again.
     fn refuse_writes(store: &Store, refuse: bool) {
         let switch = if refuse { "ON" } else { "OFF" };
@@ -2537,10 +2562,6 @@ mod tests {
             attempts.sort_by_key(|stored| (stored.attempt.key.job.0, stored.attempt.key.submit.0));
             attempts
         };
-        let by_time = |mut changes: Vec<NodeHealth>| {
-            changes.sort_by_key(|health| (health.at, health.node.0.clone()));
-            changes
-        };
 
         assert_eq!(timescale.starts().unwrap(), sqlite.starts().unwrap());
         for by in [By::Login, By::Partition] {
@@ -2564,9 +2585,9 @@ mod tests {
         let touched = by_key(sqlite.touched(first, last).unwrap());
         assert!(touched.len() > 100, "{} touched", touched.len());
         assert_eq!(by_key(timescale.touched(first, last).unwrap()), touched);
-        let health = by_time(sqlite.node_health(last).unwrap());
+        let health = sqlite.node_health(last).unwrap();
         assert_ne!(health, []);
-        assert_eq!(by_time(timescale.node_health(last).unwrap()), health);
+        assert_eq!(timescale.node_health(last).unwrap(), health);
     }
 
     #[test]
