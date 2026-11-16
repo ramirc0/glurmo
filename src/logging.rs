@@ -1,5 +1,6 @@
 //! Dated, leveled lines on stderr. The systemd units append them to files that logrotate rotates.
 
+use glurmo_model::UnixTime;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use tracing::Subscriber;
@@ -9,6 +10,8 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+
+use crate::clock::clock;
 
 /// Starts logging to stderr at the levels `GLURMO_LOG` names, such as `debug` or `glurmo=debug,warn`,
 /// and `info` without it. Panics are logged too. Records of the `log` crate, such as tokio-postgres's
@@ -26,6 +29,11 @@ pub fn start() {
         tracing::warn!("GLURMO_LOG is not a list of levels, so glurmo logs at info: {error}");
     }
     log_panics();
+}
+
+/// `at` in the system's zone with its offset, as `2026-11-16T11:48:18-05:00`.
+pub fn local(at: UnixTime) -> String {
+    clock(at, &TimeZone::system(), "%Y-%m-%dT%H:%M:%S%:z")
 }
 
 fn info() -> Targets {

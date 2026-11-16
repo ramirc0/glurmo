@@ -278,16 +278,29 @@ fn placed(jobs: &[jobs::Job]) -> Result<Vec<Placed>> {
     jobs.iter().map(jobs::Job::placed).collect()
 }
 
-/// The accounting records that convert. One that does not is logged and skipped, so it cannot block
-/// the rest.
+/// The accounting records that convert. Those that do not are skipped, so they cannot block the rest,
+/// and logged in one line.
 fn readable<T>(converted: impl Iterator<Item = Result<T>>) -> Vec<T> {
-    converted
+    let mut skipped = 0;
+    let mut first = String::new();
+    let records = converted
         .filter_map(|record| {
             record
-                .inspect_err(|error| eprintln!("skipped an accounting record: {error:#}"))
+                .inspect_err(|error| {
+                    if skipped == 0 {
+                        first = format!("{error:#}");
+                    }
+                    skipped += 1;
+                })
                 .ok()
         })
-        .collect()
+        .collect();
+    if skipped > 0 {
+        tracing::warn!(
+            "skipped {skipped} accounting records that do not convert, the first: {first}"
+        );
+    }
+    records
 }
 
 /// The paths libslurm tries for slurm.conf, after `$SLURM_CONF`. The last is slurmd's cache on a
@@ -395,7 +408,15 @@ impl Wire {
         for protocol in Protocol::NEWEST_FIRST {
             self.controller.session.protocol = protocol;
             match self.config().await {
-                Ok(site) => return Ok(site),
+                Ok(site) => {
+                    tracing::info!(
+                        "slurmctld at {} speaks protocol {protocol:?}, signed through {:?}; slurmdbd at {}",
+                        self.controller.addresses.join(", "),
+                        self.controller.session.issuer,
+                        self.accounting.join(", ")
+                    );
+                    return Ok(site);
+                }
                 Err(error) => failures.push(format!("{protocol:?}: {error:#}")),
             }
         }
@@ -567,7 +588,7 @@ impl Wire {
                     .extend(new.iter().filter(|uid| !found.contains_key(uid)));
                 self.logins.extend(found);
             }
-            Err(error) => eprintln!("cannot look up logins: {error:#}"),
+            Err(error) => tracing::warn!("cannot look up logins: {error:#}"),
         }
     }
 }

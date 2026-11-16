@@ -14,7 +14,6 @@ mod partitions;
 mod queue;
 mod sse;
 mod ticker;
-mod units;
 mod users;
 mod view;
 
@@ -47,6 +46,14 @@ const LIBRARY_EVERY: Duration = Duration::from_secs(2);
 ///
 /// Fails when the sampler cannot start, the terminal cannot be set up, or the log cannot be opened.
 pub async fn run(config: &Config, server: Option<&str>, me: Option<Login>) -> Result<()> {
+    let stderr = redirect_stderr()?;
+    let result = view(config, server, me).await;
+    rustix::stdio::dup2_stderr(&stderr)?;
+    result
+}
+
+/// Starts the feed and shows it, while stderr goes to the log.
+async fn view(config: &Config, server: Option<&str>, me: Option<Login>) -> Result<()> {
     let feed = match server {
         Some(server) => Feed::remote(server)?,
         None => Feed::embedded(config).await?,
@@ -70,13 +77,11 @@ pub async fn run(config: &Config, server: Option<&str>, me: Option<Login>) -> Re
         SignalKind::terminate(),
         SignalKind::hangup(),
     ])?;
-    let stderr = redirect_stderr()?;
     let result = match ratatui::try_init() {
         Ok(mut terminal) => show(&mut terminal, &mut app, &mut updates, &span, &dir, stop).await,
         Err(error) => Err(error.into()),
     };
     ratatui::restore();
-    rustix::stdio::dup2_stderr(&stderr)?;
     result
 }
 
@@ -103,7 +108,7 @@ async fn show(
     updates: &mut mpsc::Receiver<Update>,
     span: &watch::Sender<i64>,
     dir: &Path,
-    stop: impl Future<Output = ()>,
+    stop: impl Future<Output = SignalKind>,
 ) -> Result<()> {
     let mut keys = EventStream::new();
     tokio::pin!(stop);
@@ -121,7 +126,7 @@ async fn show(
                 None => return Ok(()),
             },
             Some(update) = updates.recv() => app.update(update),
-            () = &mut stop => return Ok(()),
+            _ = &mut stop => return Ok(()),
             _ = checks.tick() => {
                 let now = Library::stamp(dir);
                 if now != stamp {

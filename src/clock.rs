@@ -1,4 +1,4 @@
-//! Times written in the view's time zone.
+//! Times written in a time zone.
 
 use jiff::tz::TimeZone;
 

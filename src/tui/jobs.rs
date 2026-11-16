@@ -6,8 +6,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::units::clock;
 use super::view::{Focus, Scene, scrolled};
+use crate::clock::clock;
 use glurmo_model::jobs::{JobGroup, Order, Phase, Search, job_groups};
 use glurmo_model::units::{count, gigabytes, since, span, thousands};
 

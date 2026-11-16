@@ -6,8 +6,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::feed::Link;
-use super::units::clock;
 use super::view::Scene;
+use crate::clock::clock;
 use glurmo_model::UnixTime;
 use glurmo_model::units::{percent, since, thousands};
 

@@ -1,5 +1,6 @@
 //! `glurmo` shows who holds which cores and GPUs on a batch-scheduler cluster.
 
+mod clock;
 mod config;
 mod diff;
 #[cfg(test)]
@@ -202,7 +203,7 @@ async fn run(cli: Cli) -> Result<()> {
             let slurm = Slurm::connect(Source::live(&config.slurm)?, Some(recorder)).await?;
             let until = glurmo_model::UnixTime(slurm.now().0 + minutes * 60);
             stream(slurm, &config, None, Some(until)).await?;
-            eprintln!("recorded to {}", out.display());
+            tracing::info!("recorded to {}", out.display());
         }
         Command::Pseudonymize { raw, out } => {
             let mut recorder = Recorder::create(&out, true)?;
@@ -236,7 +237,10 @@ async fn serve(config: &Config, replay: Option<&Path>, speed: u32) -> Result<()>
     let stop = shutdown::signals(&[SignalKind::interrupt(), SignalKind::terminate()])?;
     tokio::select! {
         served = sample_and_serve(config, replay, speed) => served,
-        () = stop => Ok(()),
+        signal = stop => {
+            tracing::info!("stopping on signal {}", signal.as_raw_value());
+            Ok(())
+        }
     }
 }
 
@@ -264,16 +268,18 @@ async fn sample_and_serve(config: &Config, replay: Option<&Path>, speed: u32) ->
     let dir = xdg::config_home()?.join("glurmo");
     let (library, _) = watch::channel(Library::load(&dir));
     let router = server::router(hub.clone(), store.history(), library.subscribe());
-    eprintln!(
-        "serving on http://{} with history in {}",
-        config.server.listen,
+    tracing::info!(
+        "glurmo {} samples {} (Slurm {}) with history in {}",
+        env!("CARGO_PKG_VERSION"),
+        slurm.site().cluster,
+        slurm.site().version,
         store.location()
     );
     let mut sampler = Sampler::new(slurm, config, Some(store), hub);
     let sample = async {
         sampler.run(None).await;
         if replay.is_some() {
-            eprintln!("the replay ran out; serving its last state");
+            tracing::info!("the replay ran out; serving its last state");
             std::future::pending::<()>().await;
         }
     };
@@ -332,10 +338,10 @@ async fn stream(
                 Ok(delta) => {
                     cluster.apply(&delta);
                     println!("{}", serde_json::to_string(&*delta)?);
-                    eprintln!(
+                    tracing::info!(
                         "{} at {}: {} events, {} running, {} pending, {} nodes differ from their allocation",
                         delta.seq,
-                        delta.at.0,
+                        logging::local(delta.at),
                         delta.events.len(),
                         cluster.running.len(),
                         cluster.queue.len(),
@@ -343,7 +349,7 @@ async fn stream(
                     );
                 }
                 Err(RecvError::Lagged(skipped)) => {
-                    eprintln!("printing fell {skipped} deltas behind");
+                    tracing::warn!("printing fell {skipped} deltas behind");
                 }
                 Err(RecvError::Closed) => return Ok::<_, anyhow::Error>(()),
             }
@@ -381,7 +387,7 @@ fn summarize(sample: &Sample) {
         .filter(|job| job.state == JobState::Pending)
         .map(|job| job.array.as_ref().map_or(1, |array| array.count))
         .sum();
-    eprintln!(
+    tracing::info!(
         "{} running, {} pending ({pending_tasks} tasks), {} completing, {} nodes",
         count(JobState::Running),
         count(JobState::Pending),
@@ -394,18 +400,20 @@ fn summarize(sample: &Sample) {
         .filter(|job| !job.placement.is_exact())
         .count();
     if inexact > 0 {
-        eprintln!("{inexact} placements have cut-off CPU_IDs");
+        tracing::warn!("{inexact} placements have cut-off CPU_IDs");
     }
     let mismatches = sample.mismatches();
-    eprintln!(
+    tracing::info!(
         "placed cores match the allocation on {} of {} nodes",
         sample.nodes.len() - mismatches.len(),
         sample.nodes.len()
     );
     for mismatch in mismatches {
-        eprintln!(
-            "  {}: {} placed, {} allocated",
-            mismatch.node.0, mismatch.placed, mismatch.allocated
+        tracing::info!(
+            "{}: {} placed, {} allocated",
+            mismatch.node.0,
+            mismatch.placed,
+            mismatch.allocated
         );
     }
 }

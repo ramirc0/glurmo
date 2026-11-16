@@ -1,1 +1,2 @@
 doc-valid-idents = ["TimescaleDB", ".."]
+allow-print-in-tests = true

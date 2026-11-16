@@ -85,6 +85,7 @@ pub async fn serve(listen: SocketAddr, router: Router) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .with_context(|| format!("cannot listen on {listen}"))?;
+    tracing::info!("serving on http://{listen}");
     axum::serve(listener, router).await?;
     Ok(())
 }
@@ -100,7 +101,9 @@ impl IntoResponse for Failure {
 
 impl From<anyhow::Error> for Failure {
     fn from(error: anyhow::Error) -> Self {
-        Self(StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}"))
+        let error = format!("{error:#}");
+        tracing::warn!("a request failed: {error}");
+        Self(StatusCode::INTERNAL_SERVER_ERROR, error)
     }
 }
 
@@ -124,6 +127,7 @@ async fn events(
     let boot = app.hub.boot();
     let (sender, receiver) = mpsc::channel(4);
     tokio::spawn(async move {
+        tracing::debug!("a client follows the stream");
         let mut retry = Some(RETRY);
         loop {
             let event = tokio::select! {
@@ -139,7 +143,7 @@ async fn events(
             let event = match event {
                 Ok(event) => event,
                 Err(error) => {
-                    eprintln!("cannot write an event: {error}");
+                    tracing::warn!("cannot write an event: {error}");
                     break;
                 }
             };
@@ -151,6 +155,7 @@ async fn events(
                 break;
             }
         }
+        tracing::debug!("a client left the stream");
     });
     Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::new().interval(KEEPALIVE))
 }

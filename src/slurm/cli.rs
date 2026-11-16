@@ -103,7 +103,7 @@ impl Cli {
             bail!("{command} exited with {}: {stderr}", exchange.status);
         }
         if !stderr.is_empty() && self.reported.insert(stderr.to_owned()) {
-            eprintln!("{} succeeded and printed: {stderr}", exchange.argv[0]);
+            tracing::warn!("{} succeeded and printed: {stderr}", exchange.argv[0]);
         }
         let stdout = exchange.stdout.as_str();
         let answer = match call {
@@ -159,9 +159,11 @@ impl Cli {
                     |path| format!("saved to {}", path.display()),
                 );
             for unreadable in &new {
-                eprintln!(
+                tracing::warn!(
                     "skipped a record {} printed ({kept}): {}: {:?}",
-                    exchange.argv[0], unreadable.error, unreadable.text
+                    exchange.argv[0],
+                    unreadable.error,
+                    unreadable.text
                 );
             }
         }

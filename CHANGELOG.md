@@ -11,12 +11,14 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Changed
 
-- A fatal error or a panic is logged with the local time, its offset and a level. `GLURMO_LOG` sets the levels, such as `debug` or `glurmo=debug,warn`.
+- Every message is a log line with the local time, its offset and a level. `GLURMO_LOG` sets the levels, such as `debug` or `glurmo=debug,warn`. Panics and fatal errors are logged too.
+- `glurmo serve` logs its version, the cluster, the Slurm version and the store at start, the protocol and auth it settles on, `serving on` once the port is bound, and the signal that stops it. A request that fails with a 500 is logged. Accounting records that do not convert take one line per read, not one each.
 - The guide walks through running glurmo as a service and setting up TimescaleDB step by step, including how to restore a dump.
 - The guide's Apptainer TimescaleDB keeps its image and data in `$XDG_DATA_HOME/glurmo/timescaledb`.
 
 ### Fixed
 
+- A log write that fails, as on a full disk or quota, no longer kills the server. Before, the first message after it panicked.
 - The outage banner ends at the first listing that slurmctld answers. Before, it stayed up until the listing that failed last ran again, which backoff could put 80 minutes away for partitions.
 - The guide's log drop-in spells out `~/.local/state`, because systemd 252 expands `%S` in a user unit to `~/.config`.
 - A TimescaleDB server that stops answering, as a stopped process or a stuck disk does, no longer holds up the sampler. A call that waits 30 s checks the server on a new connection, and fails when that check gets no answer within 10 s. Before, the live view stopped until the server answered.

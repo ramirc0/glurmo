@@ -5,25 +5,21 @@ use std::task::Poll;
 use anyhow::Result;
 use tokio::signal::unix::{SignalKind, signal};
 
-/// Listens for `kinds` of signal from now on. The future resolves on the first that arrives.
+/// Listens for `kinds` of signal from now on. The future resolves to the first that arrives.
 ///
 /// # Errors
 ///
 /// Fails when a handler cannot be installed.
-pub fn signals(kinds: &[SignalKind]) -> Result<impl Future<Output = ()> + use<>> {
+pub fn signals(kinds: &[SignalKind]) -> Result<impl Future<Output = SignalKind> + use<>> {
     let mut streams = kinds
         .iter()
-        .map(|&kind| signal(kind))
+        .map(|&kind| Ok((kind, signal(kind)?)))
         .collect::<std::io::Result<Vec<_>>>()?;
     Ok(std::future::poll_fn(move |cx| {
-        if streams
+        streams
             .iter_mut()
-            .any(|stream| stream.poll_recv(cx).is_ready())
-        {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+            .find_map(|(kind, stream)| stream.poll_recv(cx).is_ready().then_some(*kind))
+            .map_or(Poll::Pending, Poll::Ready)
     }))
 }
 
@@ -39,8 +35,9 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        tokio::time::timeout(std::time::Duration::from_secs(5), stop)
+        let arrived = tokio::time::timeout(std::time::Duration::from_secs(5), stop)
             .await
             .unwrap();
+        assert_eq!(arrived, SignalKind::terminate());
     }
 }

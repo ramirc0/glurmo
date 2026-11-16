@@ -4,8 +4,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use super::units::clock;
 use super::view::{Focus, Scene, scrolled};
+use crate::clock::clock;
 
 /// One line per start or end: the time, which it was, the owner, and the cores and partition.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {

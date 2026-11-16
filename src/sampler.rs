@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use crate::config::{Config, Names, Reach};
 use crate::diff::{Known, placed};
 use crate::hub::Hub;
+use crate::logging;
 use crate::passwd;
 use crate::slurm::recording::Exhausted;
 use crate::slurm::{Lookup, Slurm, Source};
@@ -190,7 +191,7 @@ fn archive(
         if store.sampled(now, i64::try_from(min_job_age_s)?)? {
             let closed = store.recover(active)?;
             if closed > 0 {
-                eprintln!("{closed} attempts left the queue while no listing came in");
+                tracing::info!("{closed} attempts left the queue while no listing came in");
             }
         }
         store.roll(now)?;
@@ -355,7 +356,7 @@ impl Sampler {
                 Ok(()) => None,
                 Err(error) if error.is::<Exhausted>() => return,
                 Err(error) => {
-                    eprintln!("tick at {} cut short: {error:#}", at.0);
+                    tracing::warn!("tick cut short: {error:#}");
                     Some(format!("{error:#}"))
                 }
             };
@@ -369,7 +370,7 @@ impl Sampler {
             }
             self.hub.publish(at, events);
             if listed && let Err(error) = self.backfill(at).await {
-                eprintln!("store at {}: {error:#}", at.0);
+                tracing::warn!("history upkeep failed: {error:#}");
             }
             self.hub.report(self.health());
             // A replay never waits on its own, and subscribers in the same task need a turn.
@@ -468,7 +469,7 @@ impl Sampler {
         match users {
             Ok(users) if !users.is_empty() => events.push(Event::Users(self.name(users).await)),
             Ok(_) => {}
-            Err(error) => eprintln!("store at {}: {error:#}", now.0),
+            Err(error) => tracing::warn!("cannot write the tick to the store: {error:#}"),
         }
         events
     }
@@ -490,7 +491,11 @@ impl Sampler {
                 Ok(attempts) => read = Some((answer.window, attempts)),
                 Err(error) => {
                     let Window { from, to, .. } = answer.window;
-                    eprintln!("history from {} to {}: {error:#}", from.0, to.0);
+                    tracing::warn!(
+                        "cannot read history from {} to {}: {error:#}",
+                        logging::local(from),
+                        logging::local(to)
+                    );
                     self.backfill_after = UnixTime(now.0 + BACKFILL_RETRY_S);
                 }
             }
@@ -544,7 +549,7 @@ impl Sampler {
         let names = match passwd::full_names(&unnamed).await {
             Ok(names) => names,
             Err(error) => {
-                eprintln!("cannot look up full names: {error:#}");
+                tracing::warn!("cannot look up full names: {error:#}");
                 return users;
             }
         };
@@ -553,7 +558,7 @@ impl Sampler {
             let (store, outcome) = blocking(store, move |store| store.name_users(&stored)).await;
             self.store = Some(store);
             if let Err(error) = outcome {
-                eprintln!("cannot store full names: {error:#}");
+                tracing::warn!("cannot store full names: {error:#}");
             }
         }
         for user in &mut users {
@@ -577,7 +582,7 @@ impl Sampler {
                 Ok(Lookup::Found(found)) => events.extend(placed(&attempt, found)),
                 Ok(Lookup::Gone) => {}
                 Err(error) => {
-                    eprintln!("lookup of {} failed: {error:#}", attempt.key.job.0);
+                    tracing::warn!("lookup of job {} failed: {error:#}", attempt.key.job.0);
                     self.lookups.push_back(attempt);
                     break;
                 }
@@ -595,7 +600,7 @@ impl Sampler {
         match self.settling.time(self.slurm.outcomes(&jobs)).await.0 {
             Ok(outcomes) => self.known.settle(&outcomes),
             Err(error) => {
-                eprintln!("accounting for {} jobs failed: {error:#}", jobs.len());
+                tracing::warn!("cannot read how {} jobs ended: {error:#}", jobs.len());
                 Vec::new()
             }
         }

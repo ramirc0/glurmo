@@ -250,8 +250,8 @@ impl Store {
             fs::create_dir_all(parent)
                 .with_context(|| format!("cannot create {}", parent.display()))?;
             if let Some(kind) = network_filesystem(parent) {
-                eprintln!(
-                    "warning: {} is on {kind}, but SQLite needs a local disk",
+                tracing::warn!(
+                    "{} is on {kind}, but SQLite needs a local disk",
                     path.display()
                 );
             }
@@ -648,7 +648,7 @@ impl Store {
             let (source, dest) = (source.clone(), self.settings.backup.clone());
             std::thread::spawn(move || {
                 if let Err(error) = backup(&source, &dest) {
-                    eprintln!("backup to {} failed: {error:#}", dest.display());
+                    tracing::warn!("backup to {} failed: {error:#}", dest.display());
                 }
             });
         }
@@ -1178,8 +1178,8 @@ fn compress_old_chunks(db: &Connection) -> Result<()> {
     if license == "timescale" {
         db.execute_batch(TIMESCALE_COMPRESSION)
     } else {
-        eprintln!(
-            "warning: this TimescaleDB build has the {license} license, so history stays uncompressed"
+        tracing::info!(
+            "this TimescaleDB build has the {license} license, so history stays uncompressed"
         );
         Ok(())
     }

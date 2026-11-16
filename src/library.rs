@@ -150,7 +150,7 @@ fn shelve<T: DeserializeOwned>(builtins: &[(&str, &str)], dir: &Path) -> BTreeMa
             Ok(value) => {
                 shelf.insert(name, value);
             }
-            Err(error) => eprintln!("{source} skipped: {error:#}"),
+            Err(error) => tracing::warn!("{source} skipped: {error:#}"),
         }
     }
     shelf
