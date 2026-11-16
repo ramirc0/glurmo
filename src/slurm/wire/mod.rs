@@ -124,7 +124,8 @@ const MAX_MESSAGE: usize = 1 << 30;
 
 /// Where slurmctld listens and how to prove who we are to it.
 pub struct Controller {
-    /// `host:port` addresses to try in order: the primary, then backups.
+    /// `host:port` addresses to try in order: the primary, then backups. One in standby passes the call
+    /// on, as it does for libslurm.
     pub addresses: Vec<String>,
     /// How requests are signed, and in which protocol.
     pub session: Session,
@@ -147,10 +148,22 @@ impl Controller {
         for i in (0..self.addresses.len()).map(|n| (first + n) % self.addresses.len()) {
             let address = &self.addresses[i];
             match tokio::time::timeout(TIMEOUT, exchange(address, &request)).await {
-                Ok(Ok(reply)) => {
-                    self.answered.store(i, Ordering::Relaxed);
-                    return checked(&reply, response, self.session.protocol);
-                }
+                Ok(Ok(reply)) => match checked(&reply, response, self.session.protocol) {
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<ReturnCode>(),
+                            Some(&(IN_STANDBY_MODE | IN_STANDBY_USE_BACKUP))
+                        ) =>
+                    {
+                        failures.push(format!("{address}: in standby"));
+                    }
+                    checked => {
+                        if self.answered.swap(i, Ordering::Relaxed) != i {
+                            tracing::info!("slurmctld at {address} answers now");
+                        }
+                        return checked;
+                    }
+                },
                 Ok(Err(error)) => failures.push(format!("{address}: {error:#}")),
                 Err(_) => failures.push(format!("{address}: no reply within {TIMEOUT:?}")),
             }
@@ -266,6 +279,12 @@ pub struct ReturnCode(pub u32);
 
 /// The code for a job the controller does not know.
 pub const INVALID_JOB_ID: ReturnCode = ReturnCode(2017);
+
+/// The code a backup controller in standby answers with, `ESLURM_IN_STANDBY_MODE`.
+const IN_STANDBY_MODE: ReturnCode = ReturnCode(2027);
+
+/// The code a backup in standby answers with when the primary should be asked, `ESLURM_IN_STANDBY_USE_BACKUP`.
+const IN_STANDBY_USE_BACKUP: ReturnCode = ReturnCode(2131);
 
 impl std::fmt::Display for ReturnCode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -802,6 +821,28 @@ mod tests {
         wire.answer(&Call::Jobs).await.unwrap();
         wire.answer(&Call::Jobs).await.unwrap();
         assert_eq!((count(&refused), count(&answered)), (1, 3));
+    }
+
+    #[tokio::test]
+    async fn a_controller_in_standby_passes_calls_on_to_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let sack = dir.path().join("sack.socket");
+        sack_forever(&sack);
+        let mut in_standby = Pack::default();
+        in_standby.u32(IN_STANDBY_MODE.0);
+        let (backup, standing_by) = controller_answering(RESPONSE_SLURM_RC, in_standby.0).await;
+        let mut no_jobs = Pack::default();
+        no_jobs.u32(0).time(0).time(0);
+        let (primary, answered) = controller_answering(jobs::RESPONSE, no_jobs.0).await;
+        // The backup answered last, as after a failover, and the primary is back.
+        let mut wire = wire_to(vec![backup, primary], sack);
+        let count = |requests: &std::sync::atomic::AtomicUsize| {
+            requests.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        wire.answer(&Call::Jobs).await.unwrap();
+        assert_eq!((count(&standing_by), count(&answered)), (1, 1));
+        wire.answer(&Call::Jobs).await.unwrap();
+        assert_eq!((count(&standing_by), count(&answered)), (1, 2));
     }
 
     #[tokio::test]

@@ -22,6 +22,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Fixed
 
+- A backup controller in standby, which answers with `ESLURM_IN_STANDBY_MODE`, now passes a call on to the next controller, as it does for libslurm. Before, after a failover and back, every call failed until a restart. A change of answering controller is logged.
 - A log write that fails, as on a full disk or quota, no longer kills the server. Before, the first message after it panicked.
 - The outage banner ends at the first listing that slurmctld answers. Before, it stayed up until the listing that failed last ran again, which backoff could put 80 minutes away for partitions.
 - The guide's log drop-in spells out `~/.local/state`, because systemd 252 expands `%S` in a user unit to `~/.config`.
