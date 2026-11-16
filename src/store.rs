@@ -147,15 +147,18 @@ const TIMESCALE_MIGRATIONS: [&str; 1] = [r#"
 
 /// Compresses chunks once they are 7 days old. It runs with the first TimescaleDB migration, on a
 /// server whose license allows compression. The columns to segment by are named, because
-/// TimescaleDB's own choice for `attempts` would be `job`, one segment per attempt.
-const TIMESCALE_COMPRESSION: &str = "
+/// TimescaleDB's own choice for `attempts` would be `job`, one segment per attempt. Each compressed
+/// batch of attempts keeps the range of its starts and ends, so a read of a stretch of time skips
+/// the batches outside it. TimescaleDB's own choice, a bloom filter, only answers equality.
+const TIMESCALE_COMPRESSION: &str = r#"
     ALTER TABLE attempts SET (timescaledb.compress, timescaledb.compress_segmentby = '',
-                              timescaledb.compress_orderby = 'submit, job');
+                              timescaledb.compress_orderby = 'submit, job',
+                              timescaledb.sparse_index = 'minmax(start), minmax("end")');
     SELECT add_compression_policy('attempts', compress_after => 604800);
     ALTER TABLE usage SET (timescaledb.compress, timescaledb.compress_segmentby = 'login, partition',
                            timescaledb.compress_orderby = 'bin');
     SELECT add_compression_policy('usage', compress_after => 604800);
-";
+"#;
 
 /// The store's tables and their columns, in the order a copy fills them. `attempts` and `usage` also
 /// name the column whose days split their copy.
@@ -2516,6 +2519,25 @@ mod tests {
                 ("attempts".into(), 30 * DAY_S, "unix_now".into()),
                 ("usage".into(), 30 * DAY_S, "unix_now".into())
             ]
+        );
+
+        let ranged: Vec<String> = store
+            .db
+            .query_map(
+                "SELECT entry->>'column'
+                 FROM timescaledb_information.hypertable_compression_settings,
+                      jsonb_array_elements(index) AS entry
+                 WHERE hypertable = 'attempts'::regclass
+                       AND entry->>'type' = 'minmax' AND entry->>'source' = 'config'
+                 ORDER BY 1",
+                params![],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            ranged,
+            ["end", "start"],
+            "a read of a stretch of time skips the compressed batches outside it"
         );
 
         let long_ago = T0 - 60 * DAY_S;
