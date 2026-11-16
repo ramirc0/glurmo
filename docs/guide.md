@@ -61,13 +61,41 @@ apptainer pull "$dir/timescaledb-2.31.0-pg18.sif" docker://timescale/timescaledb
 apptainer exec --bind "$dir" "$dir/timescaledb-2.31.0-pg18.sif" initdb -D "$dir/data"
 ```
 
-`systemd/glurmo-timescaledb.service` runs the server, with its socket in `$XDG_RUNTIME_DIR/glurmo-timescaledb`, so the connection string's host is that directory. Install it as `systemd/glurmo.service` is installed. Then order glurmo after it with a drop-in, `~/.config/systemd/user/glurmo.service.d/timescaledb.conf`:
+#### systemd
+
+`systemd/` holds user units for this server beside `glurmo.service`:
+
+| Unit | Does |
+| --- | --- |
+| `glurmo-timescaledb.service` | Runs the server on the data in `~/.local/share/glurmo/timescaledb`. It stops it with SIGINT, PostgreSQL's fast shutdown, so open glurmo connections do not hold it up. |
+| `glurmo-backup.service` | Dumps the database with `pg_dump` to `~/.local/share/glurmo/glurmo.dump`. It writes a `.part` file first, so a failed dump leaves the last good one. |
+| `glurmo-backup.timer` | Runs the backup at 03:30, give or take 15 minutes, and catches up after downtime. |
+
+The server's socket is in `$XDG_RUNTIME_DIR/glurmo-timescaledb`, so the store names that directory as its host:
+
+```ron
+store: (timescale: "host=/run/user/1000/glurmo-timescaledb port=5433 user=glurmo dbname=glurmo"),
+```
+
+Copy the units to `~/.config/systemd/user`. Each has `ConditionHost=login`, because compute nodes that share the home directory start user managers too. Set the host, and order glurmo after the server, in drop-ins rather than in the units:
 
 ```ini
+# ~/.config/systemd/user/glurmo.service.d/host.conf
 [Unit]
+ConditionHost=
+ConditionHost=login*
 After=glurmo-timescaledb.service
 Wants=glurmo-timescaledb.service
 ```
+
+Give `glurmo-timescaledb.service`, `glurmo-backup.service` and `glurmo-backup.timer` a drop-in with the same two `ConditionHost` lines. Then start them:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now glurmo-timescaledb glurmo glurmo-backup.timer
+```
+
+Where the user journal is unreadable, add `StandardError=append:%S/glurmo/serve.log` under `[Service]` in a drop-in, which sends a unit's errors to `~/.local/state/glurmo`. Remove any unit of the same name started with `systemd-run` first. Its transient file shadows the installed one, and `enable` fails.
 
 #### The role and the database
 
@@ -100,7 +128,7 @@ A statement fails after 5 minutes, and a wait on a lock after 30 s. A failed wri
 
 * Attempts and usage bins are hypertables in 30-day chunks. Chunks older than 7 days are compressed where the server's license covers compression. The Apache-licensed build keeps them uncompressed, and glurmo says so once.
 * `keep` prunes old history, as it does in SQLite.
-* glurmo makes no nightly copy of this store. `systemd/glurmo-backup.timer` runs `glurmo-backup.service`, which dumps it nightly to `~/.local/share/glurmo/glurmo.dump` with `pg_dump`.
+* glurmo makes no nightly copy of this store. `glurmo-backup.timer` dumps it, as [systemd](#systemd) describes.
 
 #### Moving from SQLite
 
