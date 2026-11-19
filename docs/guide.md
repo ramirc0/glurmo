@@ -151,7 +151,7 @@ These steps assume glurmo already runs as a service. Run them in bash, in one se
 
    ```sh
    dir=~/.local/share/glurmo/timescaledb
-   sif="$dir/timescaledb-2.31.0-pg18.sif"
+   sif="$dir/timescaledb-2.32.0-pg18.sif"
    sock="$XDG_RUNTIME_DIR/glurmo-timescaledb"
    units=~/.config/systemd/user
    base=https://raw.githubusercontent.com/ramirc0/glurmo/main/systemd
@@ -161,7 +161,7 @@ These steps assume glurmo already runs as a service. Run them in bash, in one se
 
    ```sh
    mkdir -p "$dir"
-   apptainer pull "$sif" docker://timescale/timescaledb:2.31.0-pg18
+   apptainer pull "$sif" docker://timescale/timescaledb:2.32.0-pg18
    ```
 
 3. Create the database files. `initdb` makes an empty PostgreSQL data directory. Your login becomes its superuser, and peer authentication lets only the matching operating-system user in:
@@ -246,7 +246,7 @@ The data stays in `$dir/data`. Each night `glurmo-backup.service` dumps it to `~
 
 #### Use an existing PostgreSQL server
 
-The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later. Earlier releases can miss open attempts in compressed chunks. glurmo is tested with TimescaleDB 2.31. The server must load the extension at start, in `postgresql.conf`:
+The server needs PostgreSQL 16 to 18 and TimescaleDB 2.29.2 or later. Earlier releases can miss open attempts in compressed chunks. glurmo is tested with TimescaleDB 2.32. The server must load the extension at start, in `postgresql.conf`:
 
 ```
 shared_preload_libraries = 'timescaledb'

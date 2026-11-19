@@ -49,12 +49,12 @@ hover-check port="8793": web
         --query '?layout=jobs' --eval "$(cat web/hover-check.js)"
 
 # Run the tests with the store on TimescaleDB, and the ignored store tests that need a server: start
-# TimescaleDB 2.31.0 on PostgreSQL 18 from its image under Apptainer, on a Unix socket in a scratch
+# TimescaleDB 2.32.0 on PostgreSQL 18 from its image under Apptainer, on a Unix socket in a scratch
 # directory, and stop it afterwards. Its database sorts text by English rules, as many servers do.
 timescale-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    image=docker://timescale/timescaledb@sha256:0fcff5761363809d1242f2261a3482197b5a5337407f8b97a976fb174206d579
+    image=docker://timescale/timescaledb@sha256:83952d54cfc74d9aebe4aba6ecf2af829c2bcf1f30058dded4c18ab3720a247a
     scratch="${SCRATCH:-${TMPDIR:-/tmp}}"
     export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$scratch/apptainer}"
     mkdir -p "$APPTAINER_CACHEDIR"

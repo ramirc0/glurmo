@@ -10,7 +10,7 @@ RuntimeDirectory=glurmo-timescaledb
 RuntimeDirectoryMode=0700
 ExecStart=/usr/bin/apptainer exec \
     --bind %h/.local/share/glurmo/timescaledb --bind %t/glurmo-timescaledb \
-    %h/.local/share/glurmo/timescaledb/timescaledb-2.31.0-pg18.sif \
+    %h/.local/share/glurmo/timescaledb/timescaledb-2.32.0-pg18.sif \
     postgres -D %h/.local/share/glurmo/timescaledb/data -k %t/glurmo-timescaledb -p 5433 \
     -c listen_addresses= -c unix_socket_permissions=0700 \
     -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off \
@@ -18,7 +18,7 @@ ExecStart=/usr/bin/apptainer exec \
 # Holds back glurmo, which starts after this unit, until the server takes connections. The socket
 # alone does not tell, because the server listens on it before recovery ends.
 ExecStartPost=/bin/sh -c 'until /usr/bin/apptainer exec --bind %t/glurmo-timescaledb \
-    %h/.local/share/glurmo/timescaledb/timescaledb-2.31.0-pg18.sif \
+    %h/.local/share/glurmo/timescaledb/timescaledb-2.32.0-pg18.sif \
     pg_isready -q -h %t/glurmo-timescaledb -p 5433 -d postgres; do sleep 1; done'
 TimeoutStartSec=10min
 StandardError=append:%h/.local/state/glurmo/postgres.log
