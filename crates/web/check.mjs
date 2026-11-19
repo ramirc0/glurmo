@@ -2,7 +2,7 @@
 // fails on any error. With --pull, it cuts the proxy for a while and checks that the stream resumed with
 // deltas and no fresh snapshot.
 //
-// Usage: node web/check.mjs SERVER OUT.png [--size 1920x1080] [--query '?layout=tv'] [--settle 8] [--pull 3]
+// Usage: node crates/web/check.mjs SERVER OUT.png [--size 1920x1080] [--query '?layout=tv'] [--settle 8] [--pull 3]
 //        [--pinch SCALE], which zooms in as a pinch does, [--zoom LEVEL], which zooms as the browser's
 //        zoom does, [--eval EXPRESSION], which prints the expression's value, awaited if it is a promise,
 //        after the page settles.
@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 const [server, out, ...rest] = process.argv.slice(2);
 if (!server || !out) {
-  console.error("usage: node web/check.mjs SERVER OUT.png [--size WxH] [--query Q] [--settle S] [--pull S]");
+  console.error("usage: node crates/web/check.mjs SERVER OUT.png [--size WxH] [--query Q] [--settle S] [--pull S]");
   process.exit(2);
 }
 const option = (name, fallback) => {

@@ -412,7 +412,7 @@ async fn health(State(app): State<App>) -> Json<Status> {
 
 /// The web view as trunk builds it. A build without it serves the API alone.
 #[derive(RustEmbed)]
-#[folder = "web/dist"]
+#[folder = "crates/web/dist"]
 #[allow_missing = true]
 struct Assets;
 

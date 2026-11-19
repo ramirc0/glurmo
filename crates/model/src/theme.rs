@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn css_names_every_color_and_font() {
-        let theme: Theme = from_ron(include_str!("../../themes/rose-pine.ron")).unwrap();
+        let theme: Theme = from_ron(include_str!("../../../themes/rose-pine.ron")).unwrap();
         let css = theme.css();
         assert!(css.starts_with(":root {\n  --base: #191724;\n"));
         assert!(css.contains("  --drain: #f6c177;\n"));

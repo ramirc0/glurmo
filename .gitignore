@@ -27,4 +27,4 @@ rustc-ice-*.txt
 /recordings
 
 # trunk output, embedded by rtviz serve
-/web/dist
+/crates/web/dist

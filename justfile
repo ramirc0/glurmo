@@ -16,13 +16,13 @@ check:
 run *args:
     cargo run -- {{args}}
 
-# Build the web view into web/dist, which release builds of glurmo embed.
+# Build the web view into crates/web/dist, which release builds of glurmo embed.
 web:
-    cd web && trunk build --release
+    cd crates/web && trunk build --release
 
 # Load the web view from a running server in headless Chromium, print its console and save a screenshot.
 web-check server out *args:
-    node web/check.mjs {{server}} {{out}} {{args}}
+    node crates/web/check.mjs {{server}} {{out}} {{args}}
 
 # Replay the busy fixture with every job in its own row and its first queue held twice over, about
 # 1,400 rows, and fail if hovering a row slows down after 200 rebuilds of the jobs table.
@@ -45,8 +45,8 @@ hover-check port="8793": web
         serve --replay "$dir/replay.jsonl" --speed 1000 2> "$dir/serve.log" &
     server=$!
     until grep -q "replay ran out" "$dir/serve.log"; do kill -0 "$server"; sleep 0.2; done
-    SCRATCH="$dir" node web/check.mjs http://127.0.0.1:{{port}} "$dir/jobs.png" \
-        --query '?layout=jobs' --eval "$(cat web/hover-check.js)"
+    SCRATCH="$dir" node crates/web/check.mjs http://127.0.0.1:{{port}} "$dir/jobs.png" \
+        --query '?layout=jobs' --eval "$(cat crates/web/hover-check.js)"
 
 # Run the tests with the store on TimescaleDB, and the ignored store tests that need a server: start
 # TimescaleDB 2.32.0 on PostgreSQL 18 from its image under Apptainer, on a Unix socket in a scratch
