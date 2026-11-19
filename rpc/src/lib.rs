@@ -3,12 +3,12 @@
 pub mod accounting;
 pub mod config;
 pub mod jobs;
-pub mod munge;
+mod munge;
 pub mod nodes;
-pub mod pack;
-pub mod reasons;
-pub mod rpcs;
-pub mod sack;
+mod pack;
+mod reasons;
+mod rpcs;
+mod sack;
 pub mod stats;
 
 use std::path::PathBuf;
@@ -25,7 +25,7 @@ use pack::{Pack, Unpack};
 /// A version of Slurm's protocol that glurmo decodes. A controller answers in the client's version
 /// and, per Slurm's source, accepts clients up to three releases older than itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Protocol {
+enum Protocol {
     /// Slurm 23.11's, which controllers from 23.11 through 25.05 accept.
     V23_11,
     /// Slurm 25.11's, which controllers from 25.11 through 27.05 accept.
@@ -34,10 +34,10 @@ pub enum Protocol {
 
 impl Protocol {
     /// Every version glurmo speaks, newest first, as it tries them.
-    pub const NEWEST_FIRST: [Self; 2] = [Self::V25_11, Self::V23_11];
+    const NEWEST_FIRST: [Self; 2] = [Self::V25_11, Self::V23_11];
 
     /// The version as Slurm numbers it.
-    pub fn number(self) -> u16 {
+    fn number(self) -> u16 {
         match self {
             Self::V23_11 => 40 << 8,
             Self::V25_11 => 44 << 8,
@@ -96,13 +96,13 @@ impl Issuer {
 
 /// How glurmo signs its requests and which protocol it speaks to one cluster.
 #[derive(Clone, Debug)]
-pub struct Session {
+struct Session {
     /// Where credentials come from.
-    pub issuer: Issuer,
+    issuer: Issuer,
     /// The UID that may decode our credentials to slurmctld: `SlurmUser`, once known.
-    pub decoder: Option<u32>,
+    decoder: Option<u32>,
     /// The protocol version.
-    pub protocol: Protocol,
+    protocol: Protocol,
 }
 
 const AUTH_MUNGE: u32 = 101;
@@ -118,12 +118,12 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_MESSAGE: usize = 1 << 30;
 
 /// Where slurmctld listens and how to prove who we are to it.
-pub struct Controller {
+struct Controller {
     /// `host:port` addresses to try in order: the primary, then backups. One in standby passes the call
     /// on, as it does for libslurm.
-    pub addresses: Vec<String>,
+    addresses: Vec<String>,
     /// How requests are signed, and in which protocol.
-    pub session: Session,
+    session: Session,
     /// The index of the address that answered last, which each call tries first, so a dead primary
     /// costs one timeout and not one per call.
     answered: AtomicUsize,
@@ -136,7 +136,7 @@ impl Controller {
     ///
     /// Fails when no address answers, no credential can be had, the reply is malformed or of another
     /// type, or the controller returns an error code.
-    pub async fn call(&self, request: u16, body: &[u8], response: u16) -> Result<Vec<u8>> {
+    async fn call(&self, request: u16, body: &[u8], response: u16) -> Result<Vec<u8>> {
         let request = frame(&self.session, request, 0, body).await?;
         let first = self.answered.load(Ordering::Relaxed);
         let mut failures = Vec::new();
@@ -270,10 +270,10 @@ fn checked(frame: &[u8], response: u16, protocol: Protocol) -> Result<Vec<u8>> {
 
 /// A nonzero code from a `RESPONSE_SLURM_RC`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReturnCode(pub u32);
+struct ReturnCode(u32);
 
 /// The code for a job the controller does not know.
-pub const INVALID_JOB_ID: ReturnCode = ReturnCode(2017);
+const INVALID_JOB_ID: ReturnCode = ReturnCode(2017);
 
 /// The code a backup controller in standby answers with, `ESLURM_IN_STANDBY_MODE`.
 const IN_STANDBY_MODE: ReturnCode = ReturnCode(2027);

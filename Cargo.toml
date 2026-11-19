@@ -12,6 +12,7 @@ authors = ["Christian Ramirez <christian.ramirez1@umassmed.edu>"]
 
 [dependencies]
 glurmo-model = { path = "model" }
+glurmo-rpc = { path = "rpc" }
 anyhow = "1.0.104"
 axum = "0.8.9"
 bytes = "1.12.1"
@@ -44,7 +45,7 @@ tokio = { version = "1.54.1", features = ["io-util", "test-util"] }
 tower = { version = "0.5.3", features = ["util"] }
 
 [workspace]
-members = ["model", "web"]
+members = ["model", "rpc", "web"]
 
 [workspace.lints.rust]
 missing_docs = "warn"

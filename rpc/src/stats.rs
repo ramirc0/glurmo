@@ -7,9 +7,9 @@ use super::pack::{Pack, Unpack};
 use super::rpcs::RPCS;
 
 /// The request.
-pub const REQUEST: u16 = 2035;
+pub(crate) const REQUEST: u16 = 2035;
 /// The reply.
-pub const RESPONSE: u16 = 2036;
+pub(crate) const RESPONSE: u16 = 2036;
 
 const GET: u16 = 1;
 
@@ -53,7 +53,7 @@ pub struct RpcCount {
 }
 
 /// The body of the request.
-pub fn request() -> Vec<u8> {
+pub(crate) fn request() -> Vec<u8> {
     let mut body = Pack::default();
     body.u16(GET);
     body.0
@@ -64,7 +64,7 @@ pub fn request() -> Vec<u8> {
 /// # Errors
 ///
 /// Fails when the body does not follow `protocol`'s layout.
-pub fn decode(body: &[u8], protocol: Protocol) -> Result<Stats> {
+pub(crate) fn decode(body: &[u8], protocol: Protocol) -> Result<Stats> {
     let u = &mut Unpack::new(body);
     let mut stats = Stats::default();
     let v25_11 = protocol == Protocol::V25_11;

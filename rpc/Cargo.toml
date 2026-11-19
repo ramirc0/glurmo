@@ -1,0 +1,21 @@
+[package]
+name = "glurmo-rpc"
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.100"
+description = "A client for Slurm's RPC protocol, as glurmo speaks it to slurmctld and slurmdbd"
+publish = false
+license = "GPL-2.0-or-later"
+repository = "https://github.com/ramirc0/glurmo"
+
+[dependencies]
+anyhow = "1.0.104"
+tokio = { version = "1.54.1", features = ["io-util", "net", "time"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt", "test-util"] }
+
+[lints]
+workspace = true

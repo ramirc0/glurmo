@@ -9,7 +9,6 @@ use super::Lookup;
 use super::fields::{gpu_count, gpu_indices, gpu_model, gres, job_state, node_state, tres};
 use super::hostlist::expand_hosts;
 use super::recording::{Answer, Call};
-use super::rpc::{Client, INFINITE, Issuer, NO_VAL, accounting, config, jobs, nodes, stats};
 use super::sacct::Outcome;
 use super::scontrol::Placed;
 use crate::logging::Streak;
@@ -17,6 +16,7 @@ use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, JobId, Login, Node, NodeCells, NodeName, Partition,
     PartitionName, Placement, UnixTime,
 };
+use glurmo_rpc::{Client, INFINITE, Issuer, NO_VAL, accounting, config, jobs, nodes, stats};
 
 /// The site facts in the configuration.
 fn site(config: config::Config) -> Result<super::Site> {
@@ -401,7 +401,7 @@ impl Wire {
 mod tests {
     use super::*;
     use crate::slurm::cli::Cli;
-    use crate::slurm::rpc::controllers;
+    use glurmo_rpc::controllers;
 
     #[test]
     fn an_unconvertible_record_is_skipped() {

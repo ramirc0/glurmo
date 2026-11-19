@@ -79,7 +79,7 @@ pub struct Record {
 /// # Errors
 ///
 /// Fails when no address answers, slurmdbd refuses, or a reply is malformed.
-pub async fn records(
+pub(crate) async fn records(
     addresses: &[String],
     session: &Session,
     cluster: &str,
@@ -237,7 +237,7 @@ fn job_condition(cluster: &str, query: &Query, now: i64, protocol: Protocol) -> 
 /// # Errors
 ///
 /// Fails when the body does not follow `protocol`'s layout, or holds steps.
-pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Record>> {
+pub(crate) fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Record>> {
     let u = &mut Unpack::new(body);
     let records = u.list(|u| record(u, protocol))?;
     let code = u.u32()?;
@@ -358,7 +358,7 @@ impl Tres {
     /// # Errors
     ///
     /// Fails when the body does not follow Slurm 23.11's layout or carries an error code.
-    pub fn decode(body: &[u8]) -> Result<Self> {
+    pub(crate) fn decode(body: &[u8]) -> Result<Self> {
         let u = &mut Unpack::new(body);
         let records = u.list(|u| {
             let _alloc_secs = u.u64()?;

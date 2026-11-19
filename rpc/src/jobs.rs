@@ -7,24 +7,24 @@ use super::pack::{Bitmap, NO_VAL, Pack, Unpack};
 use super::reasons::REASONS;
 
 /// The request for every job.
-pub const REQUEST: u16 = 2003;
+pub(crate) const REQUEST: u16 = 2003;
 /// The reply to either job request.
-pub const RESPONSE: u16 = 2004;
+pub(crate) const RESPONSE: u16 = 2004;
 /// The request for one job, or every task of an array by its base ID.
-pub const SINGLE_REQUEST: u16 = 2021;
+pub(crate) const SINGLE_REQUEST: u16 = 2021;
 
 const SHOW_ALL: u16 = 1;
 const SHOW_DETAIL: u16 = 1 << 1;
 
 /// The body of a request for every job, with each one's cores.
-pub fn request() -> Vec<u8> {
+pub(crate) fn request() -> Vec<u8> {
     let mut body = Pack::default();
     body.time(0).u16(SHOW_ALL | SHOW_DETAIL).u32(NO_VAL);
     body.0
 }
 
 /// The body of a request for job `id`, with its cores. 25.11 names the job by a whole step ID.
-pub fn single_request(id: u32, protocol: Protocol) -> Vec<u8> {
+pub(crate) fn single_request(id: u32, protocol: Protocol) -> Vec<u8> {
     let mut body = Pack::default();
     if protocol == Protocol::V25_11 {
         body.u64(0).u32(id).u32(NO_VAL).u32(NO_VAL);
@@ -154,7 +154,7 @@ struct Resources {
 /// # Errors
 ///
 /// Fails when the body does not follow `protocol`'s layout.
-pub fn decode(body: &[u8], protocol: Protocol) -> Result<(Vec<Job>, Vec<Placed>)> {
+pub(crate) fn decode(body: &[u8], protocol: Protocol) -> Result<(Vec<Job>, Vec<Placed>)> {
     let mut records = records(body, protocol)?;
     let placed = records.iter().map(Raw::placed).collect();
     combine_pending_arrays(&mut records);

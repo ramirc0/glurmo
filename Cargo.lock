@@ -1131,6 +1131,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "glurmo-model",
+ "glurmo-rpc",
  "insta",
  "jiff",
  "postgres",
@@ -1158,6 +1159,16 @@ dependencies = [
  "ron",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "glurmo-rpc"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

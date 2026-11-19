@@ -8,9 +8,9 @@ use super::Protocol;
 use super::pack::Unpack;
 
 /// The request.
-pub const REQUEST: u16 = 2001;
+pub(crate) const REQUEST: u16 = 2001;
 /// The reply.
-pub const RESPONSE: u16 = 2002;
+pub(crate) const RESPONSE: u16 = 2002;
 
 /// What glurmo needs from the configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub struct Config {
 /// # Errors
 ///
 /// Fails when the body is shorter than the layout or a needed value is missing.
-pub fn decode(body: &[u8], protocol: Protocol) -> Result<Config> {
+pub(crate) fn decode(body: &[u8], protocol: Protocol) -> Result<Config> {
     let u = &mut Unpack::new(body);
     let raw = match protocol {
         Protocol::V23_11 => v23_11(u)?,

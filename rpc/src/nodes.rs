@@ -6,26 +6,26 @@ use super::Protocol;
 use super::pack::{INFINITE, NO_VAL, NO_VAL64, Pack, Unpack};
 
 /// The node request.
-pub const NODE_REQUEST: u16 = 2007;
+pub(crate) const NODE_REQUEST: u16 = 2007;
 /// The node reply.
-pub const NODE_RESPONSE: u16 = 2008;
+pub(crate) const NODE_RESPONSE: u16 = 2008;
 /// The partition request.
-pub const PARTITION_REQUEST: u16 = 2009;
+pub(crate) const PARTITION_REQUEST: u16 = 2009;
 /// The partition reply.
-pub const PARTITION_RESPONSE: u16 = 2010;
+pub(crate) const PARTITION_RESPONSE: u16 = 2010;
 
 const SHOW_ALL: u16 = 1;
 const SHOW_DETAIL: u16 = 1 << 1;
 
 /// The body of the partition request: every partition, hidden ones included.
-pub fn partition_request() -> Vec<u8> {
+pub(crate) fn partition_request() -> Vec<u8> {
     let mut body = Pack::default();
     body.time(0).u16(SHOW_ALL);
     body.0
 }
 
 /// The body of the node request. The controller fills in GRES used only with `SHOW_DETAIL`.
-pub fn node_request() -> Vec<u8> {
+pub(crate) fn node_request() -> Vec<u8> {
     let mut body = Pack::default();
     body.time(0).u16(SHOW_ALL | SHOW_DETAIL);
     body.0
@@ -49,11 +49,11 @@ pub struct Partition {
 }
 
 /// A partition and the indices of its nodes in the node reply.
-pub struct PartitionRecord {
+pub(crate) struct PartitionRecord {
     /// The partition.
-    pub partition: Partition,
+    pub(crate) partition: Partition,
     /// Its nodes, as positions in the node reply.
-    pub node_indices: Vec<u32>,
+    pub(crate) node_indices: Vec<u32>,
 }
 
 /// A node as sinfo lists it.
@@ -97,7 +97,7 @@ pub struct Node {
 /// # Errors
 ///
 /// Fails when the body does not follow `protocol`'s layout.
-pub fn partitions(body: &[u8], protocol: Protocol) -> Result<Vec<PartitionRecord>> {
+pub(crate) fn partitions(body: &[u8], protocol: Protocol) -> Result<Vec<PartitionRecord>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
     let _last_update = u.time()?;
@@ -184,7 +184,11 @@ fn partition_state(state: u16) -> &'static str {
 /// # Errors
 ///
 /// Fails when the body does not follow `protocol`'s layout.
-pub fn nodes(body: &[u8], partitions: &[PartitionRecord], protocol: Protocol) -> Result<Vec<Node>> {
+pub(crate) fn nodes(
+    body: &[u8],
+    partitions: &[PartitionRecord],
+    protocol: Protocol,
+) -> Result<Vec<Node>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
     let _last_update = u.time()?;

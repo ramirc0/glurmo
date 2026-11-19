@@ -1,11 +1,11 @@
-//! The only code that knows Slurm: its protocol, its commands, and their quirks.
+//! The only code in the binary that knows Slurm: the backend over its protocol, its commands, and
+//! their quirks. The protocol itself is the `glurmo-rpc` crate.
 
 pub mod cli;
 pub mod fields;
 pub mod hostlist;
 pub mod probe;
 pub mod recording;
-pub mod rpc;
 pub mod sacct;
 pub mod scontrol;
 pub mod sdiag;
@@ -198,7 +198,7 @@ impl Source {
     pub fn live(reach: &Reach) -> Result<Self> {
         Ok(match reach.backend {
             Backend::Wire if reach.controller.is_empty() => {
-                Self::Wire(Wire::new(rpc::controllers()?)?)
+                Self::Wire(Wire::new(glurmo_rpc::controllers()?)?)
             }
             Backend::Wire => Self::Wire(Wire::new(reach.controller.clone())?),
             Backend::Cli => Self::Cli(Cli::default()),
