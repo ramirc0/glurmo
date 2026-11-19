@@ -24,6 +24,7 @@ use super::Lookup;
 use super::fields::{gpu_count, gpu_indices, gpu_model, gres, job_state, node_state, tres};
 use super::hostlist::expand_hosts;
 use super::recording::{Answer, Call};
+use super::sacct::Outcome;
 use super::scontrol::Placed;
 use crate::logging::Streak;
 use glurmo_model::{
@@ -452,6 +453,77 @@ fn epoch(time: i64) -> Option<UnixTime> {
     (time != 0).then_some(UnixTime(time))
 }
 
+/// What `sacct -X -D -o JobIDRaw,Submit,End,State` reports for a record.
+fn outcome(record: &accounting::Record) -> Result<Outcome> {
+    Ok(Outcome {
+        key: accounted_key(record)?,
+        end: accounted_time(record.end),
+        state: job_state(record.state)?,
+    })
+}
+
+/// The allocation as sacct's history columns describe it. A pending job has no allocation yet, so
+/// its CPUs, memory and GPUs come from the request. Accounting keeps no reasons, and glurmo keeps
+/// no names from it. `logins` names an owner that accounting does not.
+fn accounted(
+    record: &accounting::Record,
+    tres: accounting::Tres,
+    logins: &HashMap<u32, Login>,
+) -> Result<Attempt> {
+    let allocated = tres.counts(record.tres_alloc.as_deref())?;
+    let (cpus, counts) = match allocated.cpus {
+        Some(cpus) if cpus > 0 => (cpus, allocated),
+        _ => (
+            u64::from(record.req_cpus),
+            tres.counts(record.tres_req.as_deref())?,
+        ),
+    };
+    let array = record.array_tasks()?;
+    Ok(Attempt {
+        key: accounted_key(record)?,
+        array: array.map(tasks),
+        login: match &record.user {
+            Some(user) if !user.is_empty() => Login(user.clone()),
+            _ => logins
+                .get(&record.user_id)
+                .cloned()
+                .unwrap_or_else(|| Login(record.user_id.to_string())),
+        },
+        partitions: record
+            .partition
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .map(|name| PartitionName(name.to_owned()))
+            .collect(),
+        state: job_state(record.state)?,
+        state_raw: record.state.to_owned(),
+        cpus: u32::try_from(cpus)?,
+        mem_mb: counts.mem_mb,
+        gpus: u32::try_from(counts.gpus)?,
+        time_limit_s: (record.time_limit != INFINITE && record.time_limit != NO_VAL)
+            .then(|| u64::from(record.time_limit) * 60),
+        start: accounted_time(record.start),
+        end: accounted_time(record.end),
+        nodes: expand_hosts(record.nodes.as_deref().unwrap_or_default())?,
+        reason: None,
+        name: String::new(),
+    })
+}
+
+fn accounted_key(record: &accounting::Record) -> Result<AttemptKey> {
+    Ok(AttemptKey {
+        job: JobId(record.id),
+        submit: accounted_time(record.submit).context("no submit time")?,
+    })
+}
+
+/// A time accounting holds. Zero means none, and so does `NO_VAL`, which slurmdbd stores as the start
+/// of a job cancelled while pending.
+fn accounted_time(time: i64) -> Option<UnixTime> {
+    (time != 0 && time != i64::from(NO_VAL)).then_some(UnixTime(time))
+}
+
 /// The accounting records that convert. Those that do not are skipped, so they cannot block the rest,
 /// and logged in one line.
 fn readable<T>(converted: impl Iterator<Item = Result<T>>) -> Vec<T> {
@@ -676,18 +748,19 @@ impl Wire {
                 })
             }
             Call::Outcomes(ids) => {
-                let (records, _) = self.accounting(&accounting::Query::Jobs(ids)).await?;
-                Answer::Outcomes(readable(records.iter().map(accounting::Record::outcome)))
+                let ids: Vec<u32> = ids.iter().map(|id| id.0).collect();
+                let (records, _) = self.accounting(&accounting::Query::Jobs(&ids)).await?;
+                Answer::Outcomes(readable(records.iter().map(outcome)))
             }
             Call::History { from, to } => {
-                let window = accounting::Query::Window(*from, *to);
+                let window = accounting::Query::Window(from.0, to.0);
                 let (records, tres) = self.accounting(&window).await?;
-                self.learn_logins(records.iter().map(accounting::Record::user_id))
+                self.learn_logins(records.iter().map(|record| record.user_id))
                     .await;
                 Answer::History(readable(
                     records
                         .iter()
-                        .map(|record| record.attempt(tres, &self.logins)),
+                        .map(|record| accounted(record, tres, &self.logins)),
                 ))
             }
             Call::Stats => {
@@ -745,7 +818,7 @@ impl Wire {
             &self.controller.session,
             &self.cluster,
             query,
-            UnixTime::now(),
+            UnixTime::now().0,
         )
         .await
     }
@@ -1538,5 +1611,111 @@ mod tests {
             ..waiting
         };
         assert!(attempt(&unsubmitted, UnixTime(300), &otter()).is_err());
+    }
+
+    /// An ended array task as accounting holds it, with a distinct value in each field glurmo reads.
+    fn ended() -> accounting::Record {
+        accounting::Record {
+            id: 9,
+            array_base: 5,
+            array_task: 3,
+            array_range: None,
+            array_max_tasks: 0,
+            user_id: 20_001,
+            user: Some("heron".into()),
+            partition: Some("long".into()),
+            state: "COMPLETED",
+            req_cpus: 2,
+            tres_alloc: Some("1=8,2=16000,1001=2".into()),
+            tres_req: Some("1=2,2=4000".into()),
+            time_limit: INFINITE,
+            submit: 1_000,
+            start: 1_100,
+            end: 1_900,
+            nodes: Some("z[1-2]".into()),
+        }
+    }
+
+    const GPU: accounting::Tres = accounting::Tres { gpu: Some(1001) };
+
+    #[test]
+    fn every_accounting_value_reaches_the_model() {
+        let key = AttemptKey {
+            job: JobId(9),
+            submit: UnixTime(1_000),
+        };
+        let completed = glurmo_model::JobState::Ended(glurmo_model::EndState::Completed);
+        let expected = Outcome {
+            key,
+            end: Some(UnixTime(1_900)),
+            state: completed,
+        };
+        assert_eq!(outcome(&ended()).unwrap(), expected);
+        let logins = HashMap::from([(20_001, Login("otter".into()))]);
+        let expected = Attempt {
+            key,
+            array: Some(ArrayTasks {
+                job: JobId(5),
+                spec: "3".into(),
+                count: 1,
+            }),
+            login: Login("heron".into()),
+            partitions: vec![PartitionName("long".into())],
+            state: completed,
+            state_raw: "COMPLETED".into(),
+            cpus: 8,
+            mem_mb: Some(16_000),
+            gpus: 2,
+            time_limit_s: None,
+            start: Some(UnixTime(1_100)),
+            end: Some(UnixTime(1_900)),
+            nodes: vec![NodeName("z1".into()), NodeName("z2".into())],
+            reason: None,
+            name: String::new(),
+        };
+        assert_eq!(accounted(&ended(), GPU, &logins).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_pending_record_counts_what_it_requested() {
+        let record = accounting::Record {
+            id: 7,
+            array_base: 0,
+            array_task: NO_VAL,
+            user: None,
+            partition: Some("4hours,long".into()),
+            state: "PENDING",
+            req_cpus: 4,
+            tres_alloc: Some(String::new()),
+            tres_req: Some("1=4,2=8000,1001=1".into()),
+            time_limit: 60,
+            submit: 1_794_000_000,
+            start: 0,
+            end: 0,
+            nodes: None,
+            ..ended()
+        };
+        let logins = HashMap::from([(20_001, Login("otter".into()))]);
+        let attempt = accounted(&record, GPU, &logins).unwrap();
+        assert_eq!(
+            (attempt.cpus, attempt.mem_mb, attempt.gpus),
+            (4, Some(8_000), 1)
+        );
+        assert_eq!(attempt.login, Login("otter".into()));
+        assert_eq!(attempt.partitions.len(), 2);
+        assert_eq!(attempt.time_limit_s, Some(3_600));
+        assert_eq!((attempt.start, attempt.end), (None, None));
+        assert_eq!(attempt.array, None);
+    }
+
+    #[test]
+    fn a_never_started_job_has_no_start() {
+        assert_eq!(accounted_time(0), None);
+        assert_eq!(
+            accounted_time(i64::from(NO_VAL)),
+            None,
+            "a job cancelled while pending"
+        );
+        assert_eq!(accounted_time(1_794_731_534), Some(UnixTime(1_794_731_534)));
     }
 }

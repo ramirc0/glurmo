@@ -1,18 +1,12 @@
 //! What slurmdbd holds about jobs, read over its persistent connection as sacct reads it.
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result, bail};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
-use super::jobs::{array_tasks, hex_tasks, state_name};
-use super::pack::{INFINITE, NO_VAL, Pack, Unpack};
+use super::jobs::{ArrayTasks, array_tasks, hex_tasks, state_name};
+use super::pack::{NO_VAL, Pack, Unpack};
 use super::{GLOBAL_AUTH_KEY, Protocol, SLURMDBD_CONNECTION, Session, TIMEOUT, frame, read_frame};
-use crate::slurm::fields::job_state;
-use crate::slurm::hostlist::expand_hosts;
-use crate::slurm::sacct::Outcome;
-use glurmo_model::{Attempt, AttemptKey, JobId, Login, PartitionName, UnixTime};
 
 const PERSIST_INIT: u16 = 6500;
 const PERSIST_RC: u16 = 1433;
@@ -32,32 +26,51 @@ const TRES_MEM: u32 = 2;
 
 /// Which allocations to read.
 pub enum Query<'a> {
-    /// Every attempt of these jobs, whenever they ran.
-    Jobs(&'a [JobId]),
-    /// Every allocation pending or running in `[from, to)`, whoever owns it.
-    Window(UnixTime, UnixTime),
+    /// Every attempt of the jobs with these IDs, whenever they ran.
+    Jobs(&'a [u32]),
+    /// Every allocation pending or running between two times, the second exclusive, whoever owns it.
+    Window(i64, i64),
 }
 
 /// One allocation as accounting holds it, reduced to what glurmo reads.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
-    id: JobId,
-    array_base: u32,
-    array_task: u32,
-    array_range: Option<String>,
-    array_max_tasks: u32,
-    user_id: u32,
-    user: Option<String>,
-    partition: Option<String>,
-    state: u32,
-    req_cpus: u32,
-    tres_alloc: Option<String>,
-    tres_req: Option<String>,
-    time_limit: u32,
-    submit: i64,
-    start: i64,
-    end: i64,
-    nodes: Option<String>,
+    /// The job ID, unique to each array task.
+    pub id: u32,
+    /// The array's base job ID, or 0 outside an array.
+    pub array_base: u32,
+    /// The array task ID, or [`NO_VAL`] for none.
+    pub array_task: u32,
+    /// The tasks a pending array record stands for, as a hex mask.
+    pub array_range: Option<String>,
+    /// How many of the array's tasks may run at once, or 0 for no throttle.
+    pub array_max_tasks: u32,
+    /// The UID of its owner.
+    pub user_id: u32,
+    /// The owner's login, when accounting holds it.
+    pub user: Option<String>,
+    /// The partitions it may run in, separated by commas.
+    pub partition: Option<String>,
+    /// The state as sacct prints it, such as `COMPLETED`.
+    pub state: &'static str,
+    /// CPUs requested.
+    pub req_cpus: u32,
+    /// The TRES it held, as `id=count` pairs such as `1=8,2=16000`. See [`Tres::counts`].
+    pub tres_alloc: Option<String>,
+    /// The TRES it asked for, in the same form.
+    pub tres_req: Option<String>,
+    /// The time limit in minutes. [`INFINITE`](super::pack::INFINITE) is no limit, and
+    /// [`NO_VAL`] is a limit not set.
+    pub time_limit: u32,
+    /// When it was submitted. 0 is none.
+    pub submit: i64,
+    /// When it started. 0 is none, and so is [`NO_VAL`], which slurmdbd stores for a job cancelled
+    /// while pending.
+    pub start: i64,
+    /// When it ended. 0 is none.
+    pub end: i64,
+    /// Its nodes, as a hostlist such as `z[1001-1004]`.
+    pub nodes: Option<String>,
 }
 
 /// Reads the allocations `query` selects from the slurmdbd at the first address that answers.
@@ -71,7 +84,7 @@ pub async fn records(
     session: &Session,
     cluster: &str,
     query: &Query<'_>,
-    now: UnixTime,
+    now: i64,
 ) -> Result<(Vec<Record>, Tres)> {
     let mut failures = Vec::new();
     for address in addresses {
@@ -166,16 +179,12 @@ fn tres_condition() -> Vec<u8> {
 
 /// A `slurmdb_job_cond_t` as `sacct -X -D` builds it: allocations only, every requeued attempt,
 /// on this cluster, for every user.
-fn job_condition(cluster: &str, query: &Query, now: UnixTime, protocol: Protocol) -> Vec<u8> {
-    let (jobs, from, to): (&[JobId], i64, i64) = match *query {
-        Query::Jobs(jobs) => (jobs, 0, now.0 + 1),
+fn job_condition(cluster: &str, query: &Query, now: i64, protocol: Protocol) -> Vec<u8> {
+    let (jobs, from, to): (&[u32], i64, i64) = match *query {
+        Query::Jobs(jobs) => (jobs, 0, now + 1),
         Query::Window(from, to) => {
-            let to = if to == from || to == now {
-                to.0 + 1
-            } else {
-                to.0
-            };
-            (&[], from.0, to)
+            let to = if to == from || to == now { to + 1 } else { to };
+            (&[], from, to)
         }
     };
     let mut body = Pack::default();
@@ -202,11 +211,11 @@ fn job_condition(cluster: &str, query: &Query, now: UnixTime, protocol: Protocol
         none(&mut body);
     } else {
         body.u32(u32::try_from(jobs.len()).expect("a short list"));
-        for job in jobs {
+        for &job in jobs {
             if protocol == Protocol::V25_11 {
                 body.u64(0);
             }
-            body.u32(job.0)
+            body.u32(job)
                 .u32(NO_VAL)
                 .u32(NO_VAL)
                 .u32(NO_VAL)
@@ -316,7 +325,7 @@ fn record(u: &mut Unpack, protocol: Protocol) -> Result<Record> {
     let _wckeyid = u.u32()?;
     let _work_dir = u.str()?;
     Ok(Record {
-        id: JobId(id),
+        id,
         array_base,
         array_task,
         array_range,
@@ -324,7 +333,7 @@ fn record(u: &mut Unpack, protocol: Protocol) -> Result<Record> {
         user_id,
         user,
         partition,
-        state,
+        state: state_name(state),
         req_cpus,
         tres_alloc,
         tres_req,
@@ -339,7 +348,8 @@ fn record(u: &mut Unpack, protocol: Protocol) -> Result<Record> {
 /// The TRES IDs glurmo reads in accounting's `id=count` strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tres {
-    gpu: Option<u32>,
+    /// The ID of `gres/gpu`, if the site defines it.
+    pub gpu: Option<u32>,
 }
 
 impl Tres {
@@ -370,7 +380,11 @@ impl Tres {
     }
 
     /// Reads a TRES string such as `1=8,2=16000,4=1,1001=2`.
-    fn counts(self, text: Option<&str>) -> Result<Counts> {
+    ///
+    /// # Errors
+    ///
+    /// Fails on an entry that is not `id=count`.
+    pub fn counts(self, text: Option<&str>) -> Result<Counts> {
         let mut counts = Counts::default();
         for entry in text
             .unwrap_or_default()
@@ -392,104 +406,32 @@ impl Tres {
     }
 }
 
-#[derive(Default)]
-struct Counts {
-    cpus: Option<u64>,
-    mem_mb: Option<u64>,
-    gpus: u64,
+/// The CPUs, memory and GPUs in a TRES string.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    /// CPUs, if the string counts them.
+    pub cpus: Option<u64>,
+    /// Memory in MB, if the string counts it.
+    pub mem_mb: Option<u64>,
+    /// GPUs of any type.
+    pub gpus: u64,
 }
 
 impl Record {
-    /// The UID of the job's owner.
-    pub fn user_id(&self) -> u32 {
-        self.user_id
-    }
-
-    /// What `sacct -X -D -o JobIDRaw,Submit,End,State` reports.
+    /// The array tasks the record stands for: a pending range, one task, or none.
     ///
     /// # Errors
     ///
-    /// Fails when the state is unknown or the record has no submit time.
-    pub fn outcome(&self) -> Result<Outcome> {
-        Ok(Outcome {
-            key: self.key()?,
-            end: epoch(self.end),
-            state: job_state(state_name(self.state))?,
-        })
-    }
-
-    /// The allocation as sacct's history columns describe it. A pending job has no allocation yet,
-    /// so its CPUs, memory and GPUs come from the request. Accounting keeps no reasons, and glurmo
-    /// keeps no names from it. `logins` names an owner that accounting does not.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the state, node list or TRES does not parse, or the record has no submit time.
-    pub fn attempt(&self, tres: Tres, logins: &HashMap<u32, Login>) -> Result<Attempt> {
-        let allocated = tres.counts(self.tres_alloc.as_deref())?;
-        let (cpus, counts) = match allocated.cpus {
-            Some(cpus) if cpus > 0 => (cpus, allocated),
-            _ => (
-                u64::from(self.req_cpus),
-                tres.counts(self.tres_req.as_deref())?,
-            ),
-        };
-        let state_raw = state_name(self.state).to_owned();
+    /// Fails when the range is not a hex mask.
+    pub fn array_tasks(&self) -> Result<Option<ArrayTasks>> {
         let range = self.array_range.as_deref().map(hex_tasks).transpose()?;
-        Ok(Attempt {
-            key: self.key()?,
-            array: array_tasks(
-                self.array_base,
-                self.array_task,
-                range.as_ref(),
-                self.array_max_tasks,
-            )
-            .map(|tasks| glurmo_model::ArrayTasks {
-                job: JobId(tasks.job),
-                spec: tasks.spec,
-                count: tasks.count,
-            }),
-            login: match &self.user {
-                Some(user) if !user.is_empty() => Login(user.clone()),
-                _ => logins
-                    .get(&self.user_id)
-                    .cloned()
-                    .unwrap_or_else(|| Login(self.user_id.to_string())),
-            },
-            partitions: self
-                .partition
-                .as_deref()
-                .unwrap_or_default()
-                .split(',')
-                .map(|name| PartitionName(name.to_owned()))
-                .collect(),
-            state: job_state(&state_raw)?,
-            state_raw,
-            cpus: u32::try_from(cpus)?,
-            mem_mb: counts.mem_mb,
-            gpus: u32::try_from(counts.gpus)?,
-            time_limit_s: (self.time_limit != INFINITE && self.time_limit != NO_VAL)
-                .then(|| u64::from(self.time_limit) * 60),
-            start: epoch(self.start),
-            end: epoch(self.end),
-            nodes: expand_hosts(self.nodes.as_deref().unwrap_or_default())?,
-            reason: None,
-            name: String::new(),
-        })
+        Ok(array_tasks(
+            self.array_base,
+            self.array_task,
+            range.as_ref(),
+            self.array_max_tasks,
+        ))
     }
-
-    fn key(&self) -> Result<AttemptKey> {
-        Ok(AttemptKey {
-            job: self.id,
-            submit: epoch(self.submit).context("no submit time")?,
-        })
-    }
-}
-
-/// A time accounting holds. Zero means none, and so does `NO_VAL`, which slurmdbd stores as the start
-/// of a job cancelled while pending.
-fn epoch(time: i64) -> Option<UnixTime> {
-    (time != 0 && time != i64::from(NO_VAL)).then_some(UnixTime(time))
 }
 
 #[cfg(test)]
@@ -506,39 +448,6 @@ mod tests {
             (Some(8), Some(16_000), 2)
         );
         assert!(Tres { gpu: None }.counts(Some("1:8")).is_err());
-    }
-
-    #[test]
-    fn a_pending_record_counts_what_it_requested() {
-        let record = Record {
-            id: JobId(7),
-            array_base: 0,
-            array_task: NO_VAL,
-            array_range: None,
-            array_max_tasks: 0,
-            user_id: 20_001,
-            user: None,
-            partition: Some("4hours,long".into()),
-            state: 0,
-            req_cpus: 4,
-            tres_alloc: Some(String::new()),
-            tres_req: Some("1=4,2=8000,1001=1".into()),
-            time_limit: 60,
-            submit: 1_794_000_000,
-            start: 0,
-            end: 0,
-            nodes: None,
-        };
-        let logins = HashMap::from([(20_001, Login("otter".into()))]);
-        let attempt = record.attempt(Tres { gpu: Some(1001) }, &logins).unwrap();
-        assert_eq!(
-            (attempt.cpus, attempt.mem_mb, attempt.gpus),
-            (4, Some(8_000), 1)
-        );
-        assert_eq!(attempt.login, Login("otter".into()));
-        assert_eq!(attempt.partitions.len(), 2);
-        assert_eq!(attempt.time_limit_s, Some(3_600));
-        assert_eq!((attempt.start, attempt.end), (None, None));
     }
 
     #[test]
@@ -568,20 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn a_never_started_job_has_no_start() {
-        assert_eq!(epoch(0), None);
-        assert_eq!(
-            epoch(i64::from(NO_VAL)),
-            None,
-            "a job cancelled while pending"
-        );
-        assert_eq!(epoch(1_794_731_534), Some(UnixTime(1_794_731_534)));
-    }
-
-    /// An ended array task with a distinct value in each field glurmo reads.
-    fn ended() -> Record {
-        Record {
-            id: JobId(9),
+    fn a_record_stands_for_one_task_a_pending_range_or_none() {
+        let task = Record {
+            id: 9,
             array_base: 5,
             array_task: 3,
             array_range: None,
@@ -589,63 +487,44 @@ mod tests {
             user_id: 20_001,
             user: Some("heron".into()),
             partition: Some("long".into()),
-            state: 3,
+            state: "COMPLETED",
             req_cpus: 2,
-            tres_alloc: Some("1=8,2=16000,1001=2".into()),
-            tres_req: Some("1=2,2=4000".into()),
-            time_limit: INFINITE,
+            tres_alloc: None,
+            tres_req: None,
+            time_limit: 60,
             submit: 1_000,
             start: 1_100,
             end: 1_900,
-            nodes: Some("z[1-2]".into()),
-        }
-    }
-
-    #[test]
-    fn every_accounting_value_lands_in_its_own_field() {
-        let key = AttemptKey {
-            job: JobId(9),
-            submit: UnixTime(1_000),
+            nodes: None,
         };
-        let completed = glurmo_model::JobState::Ended(glurmo_model::EndState::Completed);
-        let expected = Outcome {
-            key,
-            end: Some(UnixTime(1_900)),
-            state: completed,
+        let tasks = |spec: &str, count| ArrayTasks {
+            job: 5,
+            spec: spec.into(),
+            count,
         };
-        assert_eq!(ended().outcome().unwrap(), expected);
-        let logins = HashMap::from([(20_001, Login("otter".into()))]);
-        let attempt = ended().attempt(Tres { gpu: Some(1001) }, &logins).unwrap();
-        let expected = Attempt {
-            key,
-            array: Some(glurmo_model::ArrayTasks {
-                job: JobId(5),
-                spec: "3".into(),
-                count: 1,
-            }),
-            login: Login("heron".into()),
-            partitions: vec![PartitionName("long".into())],
-            state: completed,
-            state_raw: "COMPLETED".into(),
-            cpus: 8,
-            mem_mb: Some(16_000),
-            gpus: 2,
-            time_limit_s: None,
-            start: Some(UnixTime(1_100)),
-            end: Some(UnixTime(1_900)),
-            nodes: vec![
-                glurmo_model::NodeName("z1".into()),
-                glurmo_model::NodeName("z2".into()),
-            ],
-            reason: None,
-            name: String::new(),
+        assert_eq!(task.array_tasks().unwrap(), Some(tasks("3", 1)));
+        let range = Record {
+            array_task: NO_VAL,
+            array_range: Some("0x0D".into()),
+            array_max_tasks: 2,
+            ..task.clone()
         };
-        assert_eq!(attempt, expected);
+        assert_eq!(range.array_tasks().unwrap(), Some(tasks("0,2-3%2", 3)));
+        let alone = Record {
+            array_task: NO_VAL,
+            ..task.clone()
+        };
+        assert_eq!(alone.array_tasks().unwrap(), None);
+        let unreadable = Record {
+            array_range: Some("0xZZ".into()),
+            ..task
+        };
+        assert!(unreadable.array_tasks().is_err());
     }
 
     /// The window a job condition asks for, as (from, to).
     fn asked(query: &Query, now: i64, protocol: Protocol) -> (i64, i64) {
-        let body = job_condition("zlurm", query, UnixTime(now), protocol);
+        let body = job_condition("zlurm", query, now, protocol);
         let time = |back: usize| {
             let at = body.len() - back;
             i64::from_be_bytes(body[at..at + 8].try_into().unwrap())
@@ -655,12 +534,12 @@ mod tests {
 
     #[test]
     fn a_window_that_is_empty_or_ends_now_takes_one_more_second_as_sacct_gives_it() {
-        let (from, to) = (UnixTime(100), UnixTime(200));
+        let (from, to) = (100, 200);
         for protocol in Protocol::NEWEST_FIRST {
             assert_eq!(asked(&Query::Window(from, to), 500, protocol), (100, 200));
             assert_eq!(asked(&Query::Window(from, from), 500, protocol), (100, 101));
             assert_eq!(asked(&Query::Window(from, to), 200, protocol), (100, 201));
-            assert_eq!(asked(&Query::Jobs(&[JobId(7)]), 500, protocol), (0, 501));
+            assert_eq!(asked(&Query::Jobs(&[7]), 500, protocol), (0, 501));
         }
     }
 }
