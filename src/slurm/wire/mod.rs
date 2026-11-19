@@ -21,10 +21,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use super::Lookup;
+use super::fields::{gpu_count, gpu_model, gres, node_state};
+use super::hostlist::expand_hosts;
 use super::recording::{Answer, Call};
 use super::scontrol::Placed;
 use crate::logging::Streak;
-use glurmo_model::{Attempt, Login, UnixTime};
+use glurmo_model::{Attempt, Login, Node, NodeName, Partition, PartitionName, UnixTime};
 use pack::{Pack, Unpack};
 
 /// A version of Slurm's protocol that glurmo decodes. A controller answers in the client's version
@@ -294,6 +296,46 @@ impl std::fmt::Display for ReturnCode {
 
 impl std::error::Error for ReturnCode {}
 
+/// The node as the model holds it.
+fn node(node: nodes::Node) -> Result<Node> {
+    let (state, flags) = node_state(&node.state);
+    let gres_total = gres(&node.gres).with_context(|| format!("node {}", node.name))?;
+    let gres_used = gres(&node.gres_used).with_context(|| format!("node {}", node.name))?;
+    Ok(Node {
+        partitions: node.partitions.into_iter().map(PartitionName).collect(),
+        state,
+        flags,
+        state_raw: node.state,
+        reason: node.reason,
+        cpus: node.cpus,
+        cpus_alloc: node.cpus_alloc,
+        sockets: node.sockets,
+        cores: node.cores,
+        load: node.load,
+        mem_mb: node.mem_mb,
+        mem_alloc_mb: node.mem_alloc_mb,
+        mem_free_mb: node.mem_free_mb,
+        gpus: gpu_count(&gres_total),
+        gpus_used: gpu_count(&gres_used),
+        gpu_model: gpu_model(&gres_total),
+        features: node.features,
+        name: NodeName(node.name),
+    })
+}
+
+/// The partition as the model holds it.
+fn partition(partition: nodes::Partition) -> Result<Partition> {
+    Ok(Partition {
+        nodes: expand_hosts(&partition.nodes)
+            .with_context(|| format!("partition {}", partition.name))?,
+        name: PartitionName(partition.name),
+        max_time_s: partition.max_time_s,
+        default: partition.default,
+        hidden: partition.hidden,
+        state_raw: partition.state.to_owned(),
+    })
+}
+
 /// The counters as the model holds them.
 fn stats(stats: stats::Stats) -> glurmo_model::Stats {
     glurmo_model::Stats {
@@ -511,18 +553,15 @@ impl Wire {
                         nodes::NODE_RESPONSE,
                     )
                     .await?;
-                Answer::Nodes(nodes::nodes(
-                    &reply,
-                    &partitions,
-                    self.controller.session.protocol,
-                )?)
+                let nodes = nodes::nodes(&reply, &partitions, self.controller.session.protocol)?;
+                Answer::Nodes(nodes.into_iter().map(node).collect::<Result<_>>()?)
             }
             Call::Partitions => Answer::Partitions(
                 self.partitions()
                     .await?
                     .into_iter()
-                    .map(|record| record.partition)
-                    .collect(),
+                    .map(|record| partition(record.partition))
+                    .collect::<Result<_>>()?,
             ),
             Call::Placements => Answer::Placements(match listed {
                 Some(placements) => placements?,
@@ -1137,5 +1176,81 @@ mod tests {
             }],
         };
         assert_eq!(stats(counted), expected);
+    }
+
+    #[test]
+    fn every_node_value_reaches_the_model() {
+        let listed = nodes::Node {
+            name: "z1".into(),
+            partitions: vec!["long".into(), "short".into()],
+            state: "allocated+drain+reserved".into(),
+            reason: Some("bad fan".into()),
+            cpus: 16,
+            cpus_alloc: 12,
+            sockets: 2,
+            cores: 8,
+            load: Some(2.5),
+            mem_mb: 64_000,
+            mem_alloc_mb: 48_000,
+            mem_free_mb: Some(30_000),
+            gres: "gpu:v100:4".into(),
+            gres_used: "gpu:v100:1(IDX:0)".into(),
+            features: vec!["skylake".into(), "avx512".into()],
+        };
+        let expected = Node {
+            name: NodeName("z1".into()),
+            partitions: vec![PartitionName("long".into()), PartitionName("short".into())],
+            state: glurmo_model::NodeState::Draining,
+            flags: vec![glurmo_model::NodeFlag::Reserved],
+            state_raw: "allocated+drain+reserved".into(),
+            reason: Some("bad fan".into()),
+            cpus: 16,
+            cpus_alloc: 12,
+            sockets: 2,
+            cores: 8,
+            load: Some(2.5),
+            mem_mb: 64_000,
+            mem_alloc_mb: 48_000,
+            mem_free_mb: Some(30_000),
+            gpus: 4,
+            gpus_used: 1,
+            gpu_model: Some("v100".into()),
+            features: vec!["skylake".into(), "avx512".into()],
+        };
+        assert_eq!(node(listed.clone()).unwrap(), expected);
+        let unparsed = nodes::Node {
+            gres_used: "gpu:1(IDX:0".into(),
+            ..listed
+        };
+        let error = format!("{:#}", node(unparsed).unwrap_err());
+        assert!(error.starts_with("node z1: "), "{error}");
+    }
+
+    #[test]
+    fn every_partition_value_reaches_the_model() {
+        let hidden = nodes::Partition {
+            name: "gpu".into(),
+            nodes: "z[1-2]".into(),
+            max_time_s: Some(7_200),
+            default: false,
+            hidden: true,
+            state: "DRAIN",
+        };
+        let expected = Partition {
+            name: PartitionName("gpu".into()),
+            nodes: vec![NodeName("z1".into()), NodeName("z2".into())],
+            max_time_s: Some(7_200),
+            default: false,
+            hidden: true,
+            state_raw: "DRAIN".into(),
+        };
+        assert_eq!(partition(hidden.clone()).unwrap(), expected);
+        let default = nodes::Partition {
+            default: true,
+            hidden: false,
+            ..hidden
+        };
+        let default = partition(default).unwrap();
+        assert!(default.default && !default.hidden);
     }
 }

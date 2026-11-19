@@ -4,9 +4,6 @@ use anyhow::{Context, Result, bail};
 
 use super::Protocol;
 use super::pack::{INFINITE, NO_VAL, NO_VAL64, Pack, Unpack};
-use crate::slurm::fields::{gpu_count, gpu_model, gres, node_state};
-use crate::slurm::hostlist::expand_hosts;
-use glurmo_model::{Node, NodeName, Partition, PartitionName};
 
 /// The node request.
 pub const NODE_REQUEST: u16 = 2007;
@@ -34,6 +31,23 @@ pub fn node_request() -> Vec<u8> {
     body.0
 }
 
+/// A partition as scontrol shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Partition {
+    /// The name.
+    pub name: String,
+    /// Its nodes, as a hostlist such as `z[1001-1004]`.
+    pub nodes: String,
+    /// The longest time limit a job may ask for, or `None` for no limit.
+    pub max_time_s: Option<u64>,
+    /// Whether jobs that name no partition land here.
+    pub default: bool,
+    /// Whether the controller hides it from plain listings.
+    pub hidden: bool,
+    /// The state as scontrol prints it, such as `UP`.
+    pub state: &'static str,
+}
+
 /// A partition and the indices of its nodes in the node reply.
 pub struct PartitionRecord {
     /// The partition.
@@ -42,11 +56,47 @@ pub struct PartitionRecord {
     pub node_indices: Vec<u32>,
 }
 
+/// A node as sinfo lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Node {
+    /// The hostname.
+    pub name: String,
+    /// The partitions that contain it, in configuration order.
+    pub partitions: Vec<String>,
+    /// The state as sinfo's `StateComplete` spells it, such as `mixed+drain`. A partly allocated node
+    /// reads as mixed.
+    pub state: String,
+    /// Why an operator drained it or took it down.
+    pub reason: Option<String>,
+    /// CPUs, which count hardware threads when the node schedules them.
+    pub cpus: u32,
+    /// CPUs allocated to jobs.
+    pub cpus_alloc: u32,
+    /// Sockets.
+    pub sockets: u32,
+    /// Cores across all sockets.
+    pub cores: u32,
+    /// The load average, if the node has reported one.
+    pub load: Option<f64>,
+    /// Memory, in MB.
+    pub mem_mb: u64,
+    /// Memory allocated to jobs, in MB.
+    pub mem_alloc_mb: u64,
+    /// Memory free in the OS, in MB, if the node has reported it.
+    pub mem_free_mb: Option<u64>,
+    /// Its GRES, as a list such as `gpu:a100:4`.
+    pub gres: String,
+    /// The GRES jobs hold, as a list such as `gpu:a100:2(IDX:0,2)`.
+    pub gres_used: String,
+    /// Feature tags.
+    pub features: Vec<String>,
+}
+
 /// Decodes a `RESPONSE_PARTITION_INFO` body.
 ///
 /// # Errors
 ///
-/// Fails when the body does not follow Slurm 23.11's layout.
+/// Fails when the body does not follow `protocol`'s layout.
 pub fn partitions(body: &[u8], protocol: Protocol) -> Result<Vec<PartitionRecord>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
@@ -105,13 +155,13 @@ fn partition(u: &mut Unpack, protocol: Protocol) -> Result<PartitionRecord> {
     })?;
     Ok(PartitionRecord {
         partition: Partition {
-            name: PartitionName(name),
-            nodes: expand_hosts(&nodes)?,
+            name,
+            nodes,
             max_time_s: (max_time != INFINITE && max_time != NO_VAL)
                 .then(|| u64::from(max_time) * 60),
             default: flags & DEFAULT != 0,
             hidden: flags & HIDDEN != 0,
-            state_raw: partition_state(state).to_owned(),
+            state: partition_state(state),
         },
         node_indices,
     })
@@ -133,7 +183,7 @@ fn partition_state(state: u16) -> &'static str {
 ///
 /// # Errors
 ///
-/// Fails when the body does not follow Slurm 23.11's layout or a GRES string does not parse.
+/// Fails when the body does not follow `protocol`'s layout.
 pub fn nodes(body: &[u8], partitions: &[PartitionRecord], protocol: Protocol) -> Result<Vec<Node>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
@@ -151,7 +201,7 @@ pub fn nodes(body: &[u8], partitions: &[PartitionRecord], protocol: Protocol) ->
                 Protocol::V23_11 => v23_11(u),
                 Protocol::V25_11 => v25_11(u),
             };
-            raw.and_then(|raw| raw.node(protocol))
+            raw.map(|raw| raw.node(protocol))
                 .with_context(|| format!("node {i}"))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -339,25 +389,17 @@ fn v25_11(u: &mut Unpack) -> Result<Raw> {
 
 impl Raw {
     /// The node, or `None` for a blank record, which sinfo skips too.
-    fn node(self, protocol: Protocol) -> Result<Option<Node>> {
-        let Some(name) = self.name else {
-            return Ok(None);
-        };
+    fn node(self, protocol: Protocol) -> Option<Node> {
         let state = mixed(
             self.state,
             self.cpus_effective,
             self.alloc_cpus,
             self.alloc_tres.as_deref(),
         );
-        let state_raw = state_complete(state, protocol);
-        let (state, flags) = node_state(&state_raw);
-        let gres_total = gres(&self.gres_total)?;
-        Ok(Some(Node {
-            name: NodeName(name),
+        Some(Node {
+            name: self.name?,
             partitions: Vec::new(),
-            state,
-            flags,
-            state_raw,
+            state: state_complete(state, protocol),
             reason: self.reason.filter(|reason| !reason.is_empty()),
             cpus: u32::from(self.cpus),
             cpus_alloc: u32::from(self.alloc_cpus),
@@ -367,14 +409,13 @@ impl Raw {
             mem_mb: self.real_memory,
             mem_alloc_mb: self.alloc_memory,
             mem_free_mb: (self.free_mem != NO_VAL64).then_some(self.free_mem),
-            gpus: gpu_count(&gres_total),
-            gpus_used: gpu_count(&gres(&self.gres_used)?),
-            gpu_model: gpu_model(&gres_total),
+            gres: self.gres_total,
+            gres_used: self.gres_used,
             features: self
                 .features
                 .filter(|features| !features.is_empty())
                 .map_or_default(|features| features.split(',').map(str::to_owned).collect()),
-        }))
+        })
     }
 }
 
@@ -531,19 +572,19 @@ mod tests {
         v23_11_record(&mut body, None);
         let partition = PartitionRecord {
             partition: Partition {
-                name: PartitionName("short".into()),
-                nodes: vec![NodeName("z1".into())],
+                name: "short".into(),
+                nodes: "z1".into(),
                 max_time_s: None,
                 default: true,
                 hidden: false,
-                state_raw: "UP".into(),
+                state: "UP",
             },
             node_indices: vec![1],
         };
         let found = nodes(&body.0, &[partition], Protocol::V23_11).unwrap();
-        let names: Vec<&str> = found.iter().map(|node| node.name.0.as_str()).collect();
+        let names: Vec<&str> = found.iter().map(|node| node.name.as_str()).collect();
         assert_eq!(names, ["z1"]);
-        assert_eq!(found[0].state_raw, "idle");
+        assert_eq!(found[0].state, "idle");
     }
 
     #[test]
@@ -578,13 +619,11 @@ mod tests {
 
     #[test]
     fn every_node_value_lands_in_its_own_field() {
-        let node = raw().node(Protocol::V23_11).unwrap().unwrap();
+        let node = raw().node(Protocol::V23_11).unwrap();
         let expected = Node {
-            name: NodeName("z1".into()),
+            name: "z1".into(),
             partitions: Vec::new(),
-            state: glurmo_model::NodeState::Draining,
-            flags: vec![glurmo_model::NodeFlag::Reserved],
-            state_raw: "allocated+drain+reserved".into(),
+            state: "allocated+drain+reserved".into(),
             reason: Some("bad fan".into()),
             cpus: 16,
             cpus_alloc: 16,
@@ -594,9 +633,8 @@ mod tests {
             mem_mb: 64_000,
             mem_alloc_mb: 48_000,
             mem_free_mb: Some(30_000),
-            gpus: 4,
-            gpus_used: 1,
-            gpu_model: Some("v100".into()),
+            gres: "gpu:v100:4".into(),
+            gres_used: "gpu:v100:1(IDX:0)".into(),
             features: vec!["skylake".into(), "avx512".into()],
         };
         assert_eq!(node, expected);
@@ -611,7 +649,7 @@ mod tests {
             features: None,
             ..raw()
         };
-        let node = unknown.node(Protocol::V23_11).unwrap().unwrap();
+        let node = unknown.node(Protocol::V23_11).unwrap();
         assert_eq!((node.load, node.mem_free_mb), (None, None));
         assert_eq!(node.reason, None);
         assert_eq!(node.features, Vec::<String>::new());
@@ -655,23 +693,22 @@ mod tests {
             partition_record(&mut body, protocol, "gpu", 120, 2);
             partition_record(&mut body, protocol, "all", INFINITE, 1);
             let records = partitions(&body.0, protocol).unwrap();
-            let nodes = vec![NodeName("z1".into()), NodeName("z2".into())];
             let expected = [
                 Partition {
-                    name: PartitionName("gpu".into()),
-                    nodes: nodes.clone(),
+                    name: "gpu".into(),
+                    nodes: "z[1-2]".into(),
                     max_time_s: Some(7_200),
                     default: false,
                     hidden: true,
-                    state_raw: "DRAIN".into(),
+                    state: "DRAIN",
                 },
                 Partition {
-                    name: PartitionName("all".into()),
-                    nodes,
+                    name: "all".into(),
+                    nodes: "z[1-2]".into(),
                     max_time_s: None,
                     default: true,
                     hidden: false,
-                    state_raw: "UP".into(),
+                    state: "UP",
                 },
             ];
             for (record, expected) in records.iter().zip(&expected) {
@@ -691,12 +728,12 @@ mod tests {
         }
         let record = |name: &str, node_indices: Vec<u32>| PartitionRecord {
             partition: Partition {
-                name: PartitionName(name.into()),
-                nodes: Vec::new(),
+                name: name.into(),
+                nodes: String::new(),
                 max_time_s: None,
                 default: false,
                 hidden: false,
-                state_raw: "UP".into(),
+                state: "UP",
             },
             node_indices,
         };
@@ -705,8 +742,8 @@ mod tests {
         let listed: Vec<(&str, Vec<&str>)> = found
             .iter()
             .map(|node| {
-                let partitions = node.partitions.iter().map(|name| name.0.as_str());
-                (node.name.0.as_str(), partitions.collect())
+                let partitions = node.partitions.iter().map(String::as_str);
+                (node.name.as_str(), partitions.collect())
             })
             .collect();
         assert_eq!(
