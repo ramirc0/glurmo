@@ -611,11 +611,204 @@ fn controllers_in(conf: &str) -> Vec<String> {
         .collect()
 }
 
+/// A client for one cluster's slurmctld and slurmdbd. Every call opens its own connection.
+///
+/// [`connect`](Self::connect) comes first, because the configuration says who may decode the
+/// client's credentials and where slurmdbd listens. Until then, calls go out in the newest protocol
+/// and anyone may decode their credentials.
+pub struct Client {
+    controller: Controller,
+    /// `ClusterName`, which a slurmdbd connection names.
+    cluster: String,
+    /// slurmdbd's addresses, primary first.
+    accounting: Vec<String>,
+}
+
+impl Client {
+    /// A client for the slurmctld at `addresses`, primary first, whose requests `issuer` signs.
+    pub fn new(addresses: Vec<String>, issuer: Issuer) -> Self {
+        Self {
+            controller: Controller {
+                addresses,
+                session: Session {
+                    issuer,
+                    decoder: None,
+                    protocol: Protocol::NEWEST_FIRST[0],
+                },
+                answered: AtomicUsize::new(0),
+            },
+            cluster: String::new(),
+            accounting: Vec::new(),
+        }
+    }
+
+    /// Reads the configuration in the newest protocol the controller accepts, and keeps that
+    /// protocol. From here on, only `SlurmUser` may decode the client's credentials.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the controller answers in none of the protocols, or the configuration lacks the
+    /// cluster's name or the Slurm version.
+    pub async fn connect(&mut self) -> Result<config::Config> {
+        let mut failures = Vec::new();
+        for protocol in Protocol::NEWEST_FIRST {
+            self.controller.session.protocol = protocol;
+            match self.config().await {
+                Ok(config) => {
+                    tracing::info!(
+                        "slurmctld at {} speaks protocol {protocol:?}, signed through {:?}; slurmdbd at {}",
+                        self.controller.addresses.join(", "),
+                        self.controller.session.issuer,
+                        self.accounting.join(", ")
+                    );
+                    return Ok(config);
+                }
+                Err(error) => failures.push(format!("{protocol:?}: {error:#}")),
+            }
+        }
+        bail!("no protocol glurmo speaks worked: {}", failures.join("; "))
+    }
+
+    async fn config(&mut self) -> Result<config::Config> {
+        let mut body = Pack::default();
+        body.time(0);
+        let protocol = self.controller.session.protocol;
+        let reply = self
+            .controller
+            .call(config::REQUEST, &body.0, config::RESPONSE)
+            .await?;
+        let config = config::decode(&reply, protocol)?;
+        let session = &mut self.controller.session;
+        session.decoder = Some(config.slurm_uid);
+        if let (Issuer::Munge(socket), Some(named)) = (&mut session.issuer, &config.munge) {
+            socket.clone_from(named);
+        }
+        self.cluster.clone_from(&config.cluster);
+        self.accounting.clone_from(&config.accounting);
+        Ok(config)
+    }
+
+    /// Two views of one reply that holds every job. The first lists the jobs as squeue does, with
+    /// pending array tasks folded into their array's record. The second holds the cores of every
+    /// record, as `scontrol -d show job` reports them.
+    ///
+    /// # Errors
+    ///
+    /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    pub async fn jobs(&self) -> Result<(Vec<jobs::Job>, Vec<jobs::Placed>)> {
+        let reply = self
+            .controller
+            .call(jobs::REQUEST, &jobs::request(), jobs::RESPONSE)
+            .await?;
+        jobs::decode(&reply, self.controller.session.protocol)
+    }
+
+    /// The cores of the job with this ID, or `None` when the controller no longer knows the job.
+    ///
+    /// # Errors
+    ///
+    /// Fails when slurmctld does not answer, refuses for another reason, or sends a reply that does
+    /// not decode.
+    pub async fn job(&self, id: u32) -> Result<Option<jobs::Placed>> {
+        let protocol = self.controller.session.protocol;
+        let request = jobs::single_request(id, protocol);
+        let reply = self
+            .controller
+            .call(jobs::SINGLE_REQUEST, &request, jobs::RESPONSE)
+            .await;
+        match reply {
+            Ok(reply) => {
+                let (_, placed) = jobs::decode(&reply, protocol)?;
+                Ok(placed.into_iter().find(|job| job.id == id))
+            }
+            Err(error) if error.downcast_ref::<ReturnCode>() == Some(&INVALID_JOB_ID) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Every node with its partitions, as sinfo lists them. Like sinfo, it leaves out nodes in no
+    /// partition.
+    ///
+    /// # Errors
+    ///
+    /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    pub async fn nodes(&self) -> Result<Vec<nodes::Node>> {
+        let partitions = self.partition_records().await?;
+        let reply = self
+            .controller
+            .call(
+                nodes::NODE_REQUEST,
+                &nodes::node_request(),
+                nodes::NODE_RESPONSE,
+            )
+            .await?;
+        nodes::nodes(&reply, &partitions, self.controller.session.protocol)
+    }
+
+    /// Every partition, hidden ones included.
+    ///
+    /// # Errors
+    ///
+    /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    pub async fn partitions(&self) -> Result<Vec<nodes::Partition>> {
+        let records = self.partition_records().await?;
+        Ok(records.into_iter().map(|record| record.partition).collect())
+    }
+
+    async fn partition_records(&self) -> Result<Vec<nodes::PartitionRecord>> {
+        let reply = self
+            .controller
+            .call(
+                nodes::PARTITION_REQUEST,
+                &nodes::partition_request(),
+                nodes::PARTITION_RESPONSE,
+            )
+            .await?;
+        nodes::partitions(&reply, self.controller.session.protocol)
+    }
+
+    /// Scheduler and RPC counters, as sdiag prints them.
+    ///
+    /// # Errors
+    ///
+    /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    pub async fn stats(&self) -> Result<stats::Stats> {
+        let reply = self
+            .controller
+            .call(stats::REQUEST, &stats::request(), stats::RESPONSE)
+            .await?;
+        stats::decode(&reply, self.controller.session.protocol)
+    }
+
+    /// The allocations `query` selects in slurmdbd, with the TRES IDs that read their TRES strings.
+    /// `now` is the current time in epoch seconds, which closes an open window as sacct does.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the site keeps no accounting in slurmdbd, or slurmdbd does not answer, refuses, or
+    /// sends a reply that does not decode.
+    pub async fn accounting(
+        &self,
+        query: &accounting::Query<'_>,
+        now: i64,
+    ) -> Result<(Vec<accounting::Record>, accounting::Tres)> {
+        if self.accounting.is_empty() {
+            bail!("the site keeps no accounting in slurmdbd");
+        }
+        accounting::records(
+            &self.accounting,
+            &self.controller.session,
+            &self.cluster,
+            query,
+            now,
+        )
+        .await
+    }
+}
+
 /// Answers calls by speaking Slurm's protocol to slurmctld and slurmdbd.
 pub struct Wire {
-    controller: Controller,
-    cluster: String,
-    accounting: Vec<String>,
+    slurm: Client,
     logins: HashMap<u32, Login>,
     unknown: HashSet<u32>,
     /// The run of failed login lookups, if any.
@@ -632,63 +825,17 @@ impl Wire {
     ///
     /// Fails when this host runs neither munged nor a sack socket.
     pub fn new(addresses: Vec<String>) -> Result<Self> {
-        Ok(Self {
-            controller: Controller {
-                addresses,
-                session: Session {
-                    issuer: Issuer::find()?,
-                    decoder: None,
-                    protocol: Protocol::NEWEST_FIRST[0],
-                },
-                answered: AtomicUsize::new(0),
-            },
-            cluster: String::new(),
-            accounting: Vec::new(),
+        Ok(Self::over(Client::new(addresses, Issuer::find()?)))
+    }
+
+    fn over(slurm: Client) -> Self {
+        Self {
+            slurm,
             logins: HashMap::new(),
             unknown: HashSet::new(),
             looking_up_logins: Streak::default(),
             next_placements: None,
-        })
-    }
-
-    /// Reads the configuration in the newest protocol the controller accepts, and keeps that protocol.
-    async fn connect(&mut self) -> Result<super::Site> {
-        let mut failures = Vec::new();
-        for protocol in Protocol::NEWEST_FIRST {
-            self.controller.session.protocol = protocol;
-            match self.config().await {
-                Ok(site) => {
-                    tracing::info!(
-                        "slurmctld at {} speaks protocol {protocol:?}, signed through {:?}; slurmdbd at {}",
-                        self.controller.addresses.join(", "),
-                        self.controller.session.issuer,
-                        self.accounting.join(", ")
-                    );
-                    return Ok(site);
-                }
-                Err(error) => failures.push(format!("{protocol:?}: {error:#}")),
-            }
         }
-        bail!("no protocol glurmo speaks worked: {}", failures.join("; "))
-    }
-
-    async fn config(&mut self) -> Result<super::Site> {
-        let mut body = Pack::default();
-        body.time(0);
-        let protocol = self.controller.session.protocol;
-        let reply = self
-            .controller
-            .call(config::REQUEST, &body.0, config::RESPONSE)
-            .await?;
-        let config = config::decode(&reply, protocol)?;
-        let session = &mut self.controller.session;
-        session.decoder = Some(config.slurm_uid);
-        if let (Issuer::Munge(socket), Some(named)) = (&mut session.issuer, &config.munge) {
-            socket.clone_from(named);
-        }
-        self.cluster.clone_from(&config.cluster);
-        self.accounting.clone_from(&config.accounting);
-        site(config)
     }
 
     /// Answers one call. The config call must come first, because it says who may decode our
@@ -700,61 +847,43 @@ impl Wire {
     pub async fn answer(&mut self, call: &Call) -> Result<Answer> {
         let listed = self.next_placements.take();
         Ok(match call {
-            Call::Config => Answer::Config(self.connect().await?),
-            Call::Jobs => Answer::Jobs(self.attempts().await?),
+            Call::Config => Answer::Config(site(self.slurm.connect().await?)?),
+            Call::Jobs => {
+                let (jobs, records) = self.slurm.jobs().await?;
+                Answer::Jobs(self.listed(&jobs, &records).await?)
+            }
             Call::Nodes => {
-                let partitions = self.partitions().await?;
-                let reply = self
-                    .controller
-                    .call(
-                        nodes::NODE_REQUEST,
-                        &nodes::node_request(),
-                        nodes::NODE_RESPONSE,
-                    )
-                    .await?;
-                let nodes = nodes::nodes(&reply, &partitions, self.controller.session.protocol)?;
+                let nodes = self.slurm.nodes().await?;
                 Answer::Nodes(nodes.into_iter().map(node).collect::<Result<_>>()?)
             }
-            Call::Partitions => Answer::Partitions(
-                self.partitions()
-                    .await?
-                    .into_iter()
-                    .map(|record| partition(record.partition))
-                    .collect::<Result<_>>()?,
-            ),
+            Call::Partitions => {
+                let partitions = self.slurm.partitions().await?;
+                Answer::Partitions(
+                    partitions
+                        .into_iter()
+                        .map(partition)
+                        .collect::<Result<_>>()?,
+                )
+            }
             Call::Placements => Answer::Placements(if let Some(placements) = listed {
                 placements?
             } else {
-                let (_, records) = self.jobs(jobs::REQUEST, &jobs::request()).await?;
+                let (_, records) = self.slurm.jobs().await?;
                 records.iter().map(placed).collect::<Result<_>>()?
             }),
-            Call::Lookup { key, .. } => {
-                let found = match self
-                    .jobs(
-                        jobs::SINGLE_REQUEST,
-                        &jobs::single_request(key.job.0, self.controller.session.protocol),
-                    )
-                    .await
-                {
-                    Ok((_, records)) => records.into_iter().find(|job| job.id == key.job.0),
-                    Err(error) if error.downcast_ref::<ReturnCode>() == Some(&INVALID_JOB_ID) => {
-                        None
-                    }
-                    Err(error) => return Err(error),
-                };
-                Answer::Lookup(match found {
-                    Some(job) => Lookup::Found(placed(&job)?),
-                    None => Lookup::Gone,
-                })
-            }
+            Call::Lookup { key, .. } => Answer::Lookup(match self.slurm.job(key.job.0).await? {
+                Some(found) => Lookup::Found(placed(&found)?),
+                None => Lookup::Gone,
+            }),
             Call::Outcomes(ids) => {
                 let ids: Vec<u32> = ids.iter().map(|id| id.0).collect();
-                let (records, _) = self.accounting(&accounting::Query::Jobs(&ids)).await?;
+                let query = accounting::Query::Jobs(&ids);
+                let (records, _) = self.slurm.accounting(&query, UnixTime::now().0).await?;
                 Answer::Outcomes(readable(records.iter().map(outcome)))
             }
             Call::History { from, to } => {
                 let window = accounting::Query::Window(from.0, to.0);
-                let (records, tres) = self.accounting(&window).await?;
+                let (records, tres) = self.slurm.accounting(&window, UnixTime::now().0).await?;
                 self.learn_logins(records.iter().map(|record| record.user_id))
                     .await;
                 Answer::History(readable(
@@ -763,22 +892,17 @@ impl Wire {
                         .map(|record| accounted(record, tres, &self.logins)),
                 ))
             }
-            Call::Stats => {
-                let reply = self
-                    .controller
-                    .call(stats::REQUEST, &stats::request(), stats::RESPONSE)
-                    .await?;
-                Answer::Stats(stats(stats::decode(
-                    &reply,
-                    self.controller.session.protocol,
-                )?))
-            }
+            Call::Stats => Answer::Stats(stats(self.slurm.stats().await?)),
         })
     }
 
-    /// Every job as squeue lists it. Keeps their placements for the placement call that follows.
-    async fn attempts(&mut self) -> Result<Vec<Attempt>> {
-        let (jobs, records) = self.jobs(jobs::REQUEST, &jobs::request()).await?;
+    /// The jobs of a listing as the model lists them. Keeps the listing's placements for the
+    /// placement call that follows.
+    async fn listed(
+        &mut self,
+        jobs: &[jobs::Job],
+        records: &[jobs::Placed],
+    ) -> Result<Vec<Attempt>> {
         self.next_placements = Some(records.iter().map(placed).collect());
         self.learn_logins(jobs.iter().map(|job| job.user_id)).await;
         let now = UnixTime::now();
@@ -787,40 +911,6 @@ impl Wire {
             .filter(|job| job.submit != 0)
             .map(|job| attempt(job, now, &self.logins))
             .collect()
-    }
-
-    async fn jobs(&self, kind: u16, request: &[u8]) -> Result<(Vec<jobs::Job>, Vec<jobs::Placed>)> {
-        let reply = self.controller.call(kind, request, jobs::RESPONSE).await?;
-        jobs::decode(&reply, self.controller.session.protocol)
-    }
-
-    async fn partitions(&self) -> Result<Vec<nodes::PartitionRecord>> {
-        let reply = self
-            .controller
-            .call(
-                nodes::PARTITION_REQUEST,
-                &nodes::partition_request(),
-                nodes::PARTITION_RESPONSE,
-            )
-            .await?;
-        nodes::partitions(&reply, self.controller.session.protocol)
-    }
-
-    async fn accounting(
-        &self,
-        query: &accounting::Query<'_>,
-    ) -> Result<(Vec<accounting::Record>, accounting::Tres)> {
-        if self.accounting.is_empty() {
-            bail!("the site keeps no accounting in slurmdbd");
-        }
-        accounting::records(
-            &self.accounting,
-            &self.controller.session,
-            &self.cluster,
-            query,
-            UnixTime::now().0,
-        )
-        .await
     }
 
     /// Looks up the logins of UIDs not seen before, as squeue would. A UID the account database lacks
@@ -996,24 +1086,11 @@ mod tests {
         (address, requests)
     }
 
-    fn wire_to(addresses: Vec<String>, sack: PathBuf) -> Wire {
-        Wire {
-            controller: Controller {
-                addresses,
-                session: Session {
-                    issuer: Issuer::Sack(sack),
-                    decoder: None,
-                    protocol: Protocol::V23_11,
-                },
-                answered: AtomicUsize::new(0),
-            },
-            cluster: String::new(),
-            accounting: Vec::new(),
-            logins: HashMap::new(),
-            unknown: HashSet::new(),
-            looking_up_logins: Streak::default(),
-            next_placements: None,
-        }
+    /// A client for 23.11 controllers at `addresses`, signing through the sack socket at `sack`.
+    fn client_to(addresses: Vec<String>, sack: PathBuf) -> Client {
+        let mut client = Client::new(addresses, Issuer::Sack(sack));
+        client.controller.session.protocol = Protocol::V23_11;
+        client
     }
 
     /// A slurmctld that hangs up on every request, and counts them.
@@ -1041,14 +1118,14 @@ mod tests {
         let mut no_jobs = Pack::default();
         no_jobs.u32(0).time(0).time(0);
         let (backup, answered) = controller_answering(jobs::RESPONSE, no_jobs.0).await;
-        let mut wire = wire_to(vec![primary, backup], sack);
+        let client = client_to(vec![primary, backup], sack);
         let count = |requests: &std::sync::atomic::AtomicUsize| {
             requests.load(std::sync::atomic::Ordering::SeqCst)
         };
-        wire.answer(&Call::Jobs).await.unwrap();
+        client.jobs().await.unwrap();
         assert_eq!((count(&refused), count(&answered)), (1, 1));
-        wire.answer(&Call::Jobs).await.unwrap();
-        wire.answer(&Call::Jobs).await.unwrap();
+        client.jobs().await.unwrap();
+        client.jobs().await.unwrap();
         assert_eq!((count(&refused), count(&answered)), (1, 3));
     }
 
@@ -1064,35 +1141,35 @@ mod tests {
         no_jobs.u32(0).time(0).time(0);
         let (primary, answered) = controller_answering(jobs::RESPONSE, no_jobs.0).await;
         // The backup answered last, as after a failover, and the primary is back.
-        let mut wire = wire_to(vec![backup, primary], sack);
+        let client = client_to(vec![backup, primary], sack);
         let count = |requests: &std::sync::atomic::AtomicUsize| {
             requests.load(std::sync::atomic::Ordering::SeqCst)
         };
-        wire.answer(&Call::Jobs).await.unwrap();
+        client.jobs().await.unwrap();
         assert_eq!((count(&standing_by), count(&answered)), (1, 1));
-        wire.answer(&Call::Jobs).await.unwrap();
+        client.jobs().await.unwrap();
         assert_eq!((count(&standing_by), count(&answered)), (1, 2));
     }
 
     #[tokio::test]
     async fn placements_right_after_jobs_reuse_their_reply() {
         let dir = tempfile::tempdir().unwrap();
-        let sack = dir.path().join("sack.socket");
-        sack_forever(&sack);
-        let mut no_jobs = Pack::default();
-        no_jobs.u32(0).time(0).time(0);
-        let (address, requests) = controller_answering(jobs::RESPONSE, no_jobs.0).await;
-        let mut wire = wire_to(vec![address], sack);
-        let count = || requests.load(std::sync::atomic::Ordering::SeqCst);
-        wire.answer(&Call::Jobs).await.unwrap();
-        wire.answer(&Call::Placements).await.unwrap();
-        assert_eq!(count(), 1);
-        wire.answer(&Call::Placements).await.unwrap();
-        assert_eq!(count(), 2, "a reply serves one placement call only");
-        wire.answer(&Call::Jobs).await.unwrap();
+        let nowhere = Client::new(Vec::new(), Issuer::Sack(dir.path().join("no.socket")));
+        let mut wire = Wire::over(nowhere);
+        let none = Answer::Placements(Vec::new());
+        wire.listed(&[], &[]).await.unwrap();
+        // No controller can be reached, so only the listing can answer.
+        assert_eq!(wire.answer(&Call::Placements).await.unwrap(), none);
+        assert!(
+            wire.answer(&Call::Placements).await.is_err(),
+            "a reply serves one placement call only"
+        );
+        wire.listed(&[], &[]).await.unwrap();
         wire.answer(&Call::Partitions).await.ok();
-        wire.answer(&Call::Placements).await.unwrap();
-        assert_eq!(count(), 5, "another call in between drops the reply");
+        assert!(
+            wire.answer(&Call::Placements).await.is_err(),
+            "another call in between drops the reply"
+        );
     }
 
     #[test]
@@ -1280,25 +1357,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_job_the_controller_forgot_is_gone() {
+    async fn a_job_the_controller_forgot_is_none() {
         let dir = tempfile::tempdir().unwrap();
         let sack = dir.path().join("sack.socket");
         sack_forever(&sack);
         let mut invalid_job = Pack::default();
         invalid_job.u32(INVALID_JOB_ID.0);
         let (address, _) = controller_answering(RESPONSE_SLURM_RC, invalid_job.0).await;
-        let mut wire = wire_to(vec![address], sack);
-        let forgotten = Call::Lookup {
-            key: glurmo_model::AttemptKey {
-                job: JobId(7),
-                submit: UnixTime(1),
-            },
-            printed: "7".into(),
-        };
-        assert_eq!(
-            wire.answer(&forgotten).await.unwrap(),
-            Answer::Lookup(Lookup::Gone)
-        );
+        let client = client_to(vec![address], sack);
+        assert_eq!(client.job(7).await.unwrap(), None);
     }
 
     #[test]
