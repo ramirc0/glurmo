@@ -101,7 +101,7 @@ pub struct Job {
     pub cpus: u32,
     /// The TRES it holds, or asked for while it holds none, such as `cpu=4,mem=16G,gres/gpu=2`.
     pub tres: String,
-    /// The time limit in minutes. [`INFINITE`](super::pack::INFINITE) is no limit, and
+    /// The time limit in minutes. [`INFINITE`](crate::INFINITE) is no limit, and
     /// [`NO_VAL`] is a limit not set.
     pub time_limit: u32,
     /// When it was submitted, or 0 when the controller leaves it out, as 25.11 does for a job

@@ -5,11 +5,11 @@ use anyhow::{Context, Result, bail};
 /// Slurm packs a double as the bits of the value times this.
 const FLOAT_MULT: f64 = 1_000_000.0;
 
-/// Slurm's "no value" sentinels.
+/// Slurm's 32-bit "no value" sentinel, which stands in a field the sender left unset.
 pub const NO_VAL: u32 = 0xffff_fffe;
 /// The 64-bit "no value" sentinel.
 pub const NO_VAL64: u64 = 0xffff_ffff_ffff_fffe;
-/// The 32-bit "infinite" sentinel.
+/// Slurm's 32-bit "infinite" sentinel, as in a time limit without end.
 pub const INFINITE: u32 = 0xffff_ffff;
 
 /// Reads values in the order the sender packed them.

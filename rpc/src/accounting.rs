@@ -98,7 +98,7 @@ pub struct Record {
     pub tres_alloc: Option<String>,
     /// The TRES it asked for, in the same form.
     pub tres_req: Option<String>,
-    /// The time limit in minutes. [`INFINITE`](super::pack::INFINITE) is no limit, and
+    /// The time limit in minutes. [`INFINITE`](crate::INFINITE) is no limit, and
     /// [`NO_VAL`] is a limit not set.
     pub time_limit: u32,
     /// When it was submitted. 0 is none.
