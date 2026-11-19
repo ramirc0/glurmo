@@ -9,13 +9,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-anyhow = "1.0.104"
-tokio = { version = "1.54.1", features = ["io-util", "net", "time"] }
-tracing = "0.1.44"
+anyhow.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
+tracing.workspace = true
 
 [dev-dependencies]
-tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["macros", "rt", "test-util"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]
 workspace = true
