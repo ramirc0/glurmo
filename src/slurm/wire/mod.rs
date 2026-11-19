@@ -294,6 +294,31 @@ impl std::fmt::Display for ReturnCode {
 
 impl std::error::Error for ReturnCode {}
 
+/// The counters as the model holds them.
+fn stats(stats: stats::Stats) -> glurmo_model::Stats {
+    glurmo_model::Stats {
+        server_threads: stats.server_threads,
+        agent_queue: stats.agent_queue,
+        dbd_queue: stats.dbd_queue,
+        jobs_submitted: stats.jobs_submitted,
+        jobs_started: stats.jobs_started,
+        jobs_completed: stats.jobs_completed,
+        main_cycle_mean_us: stats.main_cycle_mean_us,
+        main_queue_last: stats.main_queue_last,
+        backfill_cycle_mean_us: stats.backfill_cycle_mean_us,
+        backfilled_jobs: stats.backfilled_jobs,
+        rpcs: stats
+            .rpcs
+            .into_iter()
+            .map(|rpc| glurmo_model::RpcCount {
+                kind: rpc.kind,
+                count: rpc.count,
+                total_us: rpc.total_us,
+            })
+            .collect(),
+    }
+}
+
 fn placed(jobs: &[jobs::Job]) -> Result<Vec<Placed>> {
     jobs.iter().map(jobs::Job::placed).collect()
 }
@@ -542,7 +567,10 @@ impl Wire {
                     .controller
                     .call(stats::REQUEST, &stats::request(), stats::RESPONSE)
                     .await?;
-                Answer::Stats(stats::decode(&reply, self.controller.session.protocol)?)
+                Answer::Stats(stats(stats::decode(
+                    &reply,
+                    self.controller.session.protocol,
+                )?))
             }
         })
     }
@@ -1070,5 +1098,44 @@ mod tests {
             wire.answer(&forgotten).await.unwrap(),
             Answer::Lookup(Lookup::Gone)
         );
+    }
+
+    #[test]
+    fn every_counter_reaches_the_model() {
+        let counted = stats::Stats {
+            server_threads: Some(11),
+            agent_queue: Some(12),
+            dbd_queue: Some(13),
+            jobs_submitted: Some(14),
+            jobs_started: Some(15),
+            jobs_completed: Some(16),
+            main_cycle_mean_us: Some(300),
+            main_queue_last: Some(17),
+            backfill_cycle_mean_us: Some(500),
+            backfilled_jobs: Some(18),
+            rpcs: vec![stats::RpcCount {
+                kind: "REQUEST_PING".into(),
+                count: 9,
+                total_us: 300,
+            }],
+        };
+        let expected = glurmo_model::Stats {
+            server_threads: Some(11),
+            agent_queue: Some(12),
+            dbd_queue: Some(13),
+            jobs_submitted: Some(14),
+            jobs_started: Some(15),
+            jobs_completed: Some(16),
+            main_cycle_mean_us: Some(300),
+            main_queue_last: Some(17),
+            backfill_cycle_mean_us: Some(500),
+            backfilled_jobs: Some(18),
+            rpcs: vec![glurmo_model::RpcCount {
+                kind: "REQUEST_PING".into(),
+                count: 9,
+                total_us: 300,
+            }],
+        };
+        assert_eq!(stats(counted), expected);
     }
 }

@@ -5,7 +5,6 @@ use anyhow::{Result, bail};
 use super::Protocol;
 use super::pack::{Pack, Unpack};
 use super::rpcs::RPCS;
-use glurmo_model::{RpcCount, Stats};
 
 /// The request.
 pub const REQUEST: u16 = 2035;
@@ -13,6 +12,45 @@ pub const REQUEST: u16 = 2035;
 pub const RESPONSE: u16 = 2036;
 
 const GET: u16 = 1;
+
+/// Counters since the controller's last daily reset, as sdiag prints them. The scheduler's counters are
+/// `None` when the controller leaves them out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Controller threads busy with RPCs.
+    pub server_threads: Option<u64>,
+    /// Outgoing messages waiting in the agent queue.
+    pub agent_queue: Option<u64>,
+    /// Accounting messages waiting for slurmdbd.
+    pub dbd_queue: Option<u64>,
+    /// Jobs submitted.
+    pub jobs_submitted: Option<u64>,
+    /// Jobs started.
+    pub jobs_started: Option<u64>,
+    /// Jobs completed.
+    pub jobs_completed: Option<u64>,
+    /// The main scheduler's mean cycle, in microseconds.
+    pub main_cycle_mean_us: Option<u64>,
+    /// Jobs the main scheduler looked at in its last cycle.
+    pub main_queue_last: Option<u64>,
+    /// The backfill scheduler's mean cycle, in microseconds.
+    pub backfill_cycle_mean_us: Option<u64>,
+    /// Jobs started by backfill since the controller started.
+    pub backfilled_jobs: Option<u64>,
+    /// RPCs by message type, busiest first.
+    pub rpcs: Vec<RpcCount>,
+}
+
+/// How often the controller served one message type, and for how long in total.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcCount {
+    /// The message type as sdiag names it, such as `REQUEST_JOB_INFO`, or its number.
+    pub kind: String,
+    /// Calls served.
+    pub count: u64,
+    /// Time spent serving them, in microseconds.
+    pub total_us: u64,
+}
 
 /// The body of the request.
 pub fn request() -> Vec<u8> {
