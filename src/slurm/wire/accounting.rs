@@ -443,7 +443,12 @@ impl Record {
                 self.array_task,
                 range.as_ref(),
                 self.array_max_tasks,
-            ),
+            )
+            .map(|tasks| glurmo_model::ArrayTasks {
+                job: JobId(tasks.job),
+                spec: tasks.spec,
+                count: tasks.count,
+            }),
             login: match &self.user {
                 Some(user) if !user.is_empty() => Login(user.clone()),
                 _ => logins

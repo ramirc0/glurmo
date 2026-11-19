@@ -21,13 +21,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use super::Lookup;
-use super::fields::{gpu_count, gpu_model, gres, node_state};
+use super::fields::{gpu_count, gpu_indices, gpu_model, gres, job_state, node_state, tres};
 use super::hostlist::expand_hosts;
 use super::recording::{Answer, Call};
 use super::scontrol::Placed;
 use crate::logging::Streak;
-use glurmo_model::{Attempt, Login, Node, NodeName, Partition, PartitionName, UnixTime};
-use pack::{Pack, Unpack};
+use glurmo_model::{
+    ArrayTasks, Attempt, AttemptKey, JobId, Login, Node, NodeCells, NodeName, Partition,
+    PartitionName, Placement, UnixTime,
+};
+use pack::{INFINITE, NO_VAL, Pack, Unpack};
 
 /// A version of Slurm's protocol that glurmo decodes. A controller answers in the client's version
 /// and, per Slurm's source, accepts clients up to three releases older than itself.
@@ -372,8 +375,81 @@ fn stats(stats: stats::Stats) -> glurmo_model::Stats {
     }
 }
 
-fn placed(jobs: &[jobs::Job]) -> Result<Vec<Placed>> {
-    jobs.iter().map(jobs::Job::placed).collect()
+/// The job as the model lists it. `logins` names its owner, as squeue does from the local account
+/// database, because the controller's own name for a UID can differ. `now` decides whether an
+/// unlimited job's end is only a guess.
+fn attempt(job: &jobs::Job, now: UnixTime, logins: &HashMap<u32, Login>) -> Result<Attempt> {
+    let tres = tres(&job.tres)?;
+    let unlimited_end = job.time_limit == INFINITE && job.end > now.0;
+    Ok(Attempt {
+        key: AttemptKey {
+            job: JobId(job.id),
+            submit: epoch(job.submit).context("no submit time")?,
+        },
+        array: job.array.clone().map(tasks),
+        login: logins.get(&job.user_id).cloned().unwrap_or_else(|| {
+            Login(
+                job.user_name
+                    .clone()
+                    .unwrap_or_else(|| job.user_id.to_string()),
+            )
+        }),
+        partitions: job
+            .partition
+            .split(',')
+            .map(|name| PartitionName(name.to_owned()))
+            .collect(),
+        state: job_state(job.state)?,
+        state_raw: job.state.to_owned(),
+        cpus: job.cpus,
+        mem_mb: tres.mem_mb,
+        gpus: tres.gpus,
+        time_limit_s: (job.time_limit != INFINITE && job.time_limit != NO_VAL)
+            .then(|| u64::from(job.time_limit) * 60),
+        start: epoch(job.start),
+        end: if unlimited_end { None } else { epoch(job.end) },
+        nodes: expand_hosts(&job.nodes)?,
+        reason: (job.reason != "None" && !job.reason.is_empty()).then(|| job.reason.clone()),
+        name: job.name.clone(),
+    })
+}
+
+/// The array tasks as the model holds them.
+fn tasks(tasks: jobs::ArrayTasks) -> ArrayTasks {
+    ArrayTasks {
+        job: JobId(tasks.job),
+        spec: tasks.spec,
+        count: tasks.count,
+    }
+}
+
+/// The job's cores, GPUs and memory on each node, as the model holds them.
+fn placed(job: &jobs::Placed) -> Result<Placed> {
+    Ok(Placed {
+        job: JobId(job.id),
+        start: epoch(job.start),
+        state: job_state(job.state)?,
+        placement: Placement(
+            expand_hosts(&job.hosts)?
+                .into_iter()
+                .zip(&job.cells)
+                .map(|(node, cells)| {
+                    Ok(NodeCells {
+                        node,
+                        cores: cells.cores.clone(),
+                        unplaced: 0,
+                        gpus: gpu_indices(&gres(&cells.gres)?)?,
+                        mem_mb: Some(cells.memory_mb),
+                    })
+                })
+                .collect::<Result<_>>()?,
+        ),
+    })
+}
+
+/// A time the controller holds, where zero means none.
+fn epoch(time: i64) -> Option<UnixTime> {
+    (time != 0).then_some(UnixTime(time))
 }
 
 /// The accounting records that convert. Those that do not are skipped, so they cannot block the rest,
@@ -574,26 +650,28 @@ impl Wire {
                     .map(|record| partition(record.partition))
                     .collect::<Result<_>>()?,
             ),
-            Call::Placements => Answer::Placements(match listed {
-                Some(placements) => placements?,
-                None => placed(&self.jobs(jobs::REQUEST, &jobs::request()).await?)?,
+            Call::Placements => Answer::Placements(if let Some(placements) = listed {
+                placements?
+            } else {
+                let (_, records) = self.jobs(jobs::REQUEST, &jobs::request()).await?;
+                records.iter().map(placed).collect::<Result<_>>()?
             }),
             Call::Lookup { key, .. } => {
                 let found = match self
                     .jobs(
                         jobs::SINGLE_REQUEST,
-                        &jobs::single_request(key.job, self.controller.session.protocol),
+                        &jobs::single_request(key.job.0, self.controller.session.protocol),
                     )
                     .await
                 {
-                    Ok(jobs) => jobs.into_iter().find(|job| job.id() == key.job),
+                    Ok((_, records)) => records.into_iter().find(|job| job.id == key.job.0),
                     Err(error) if error.downcast_ref::<ReturnCode>() == Some(&INVALID_JOB_ID) => {
                         None
                     }
                     Err(error) => return Err(error),
                 };
                 Answer::Lookup(match found {
-                    Some(job) => Lookup::Found(job.placed()?),
+                    Some(job) => Lookup::Found(placed(&job)?),
                     None => Lookup::Gone,
                 })
             }
@@ -627,18 +705,18 @@ impl Wire {
 
     /// Every job as squeue lists it. Keeps their placements for the placement call that follows.
     async fn attempts(&mut self) -> Result<Vec<Attempt>> {
-        let mut jobs = self.jobs(jobs::REQUEST, &jobs::request()).await?;
-        self.next_placements = Some(placed(&jobs));
-        jobs::combine_pending_arrays(&mut jobs);
-        self.learn_logins(jobs.iter().map(jobs::Job::user_id)).await;
+        let (jobs, records) = self.jobs(jobs::REQUEST, &jobs::request()).await?;
+        self.next_placements = Some(records.iter().map(placed).collect());
+        self.learn_logins(jobs.iter().map(|job| job.user_id)).await;
         let now = UnixTime::now();
+        // 25.11 leaves the submit time out of a job without details, and an attempt is keyed on it.
         jobs.iter()
-            .filter(|job| job.submitted())
-            .map(|job| job.attempt(now, &self.logins))
+            .filter(|job| job.submit != 0)
+            .map(|job| attempt(job, now, &self.logins))
             .collect()
     }
 
-    async fn jobs(&self, kind: u16, request: &[u8]) -> Result<Vec<jobs::Job>> {
+    async fn jobs(&self, kind: u16, request: &[u8]) -> Result<(Vec<jobs::Job>, Vec<jobs::Placed>)> {
         let reply = self.controller.call(kind, request, jobs::RESPONSE).await?;
         jobs::decode(&reply, self.controller.session.protocol)
     }
@@ -1299,5 +1377,166 @@ mod tests {
             ..read
         };
         assert!(site(unversioned).is_err());
+    }
+
+    /// A running job on two hosts, as the protocol lists it, with a distinct value in each field.
+    fn running() -> jobs::Job {
+        jobs::Job {
+            id: 20,
+            array: None,
+            user_id: 1001,
+            user_name: Some("root".into()),
+            partition: "gpu,cpu".into(),
+            state: "RUNNING",
+            reason: "None".into(),
+            cpus: 6,
+            tres: "cpu=6,mem=3000M,node=2,billing=6,gres/gpu=1".into(),
+            time_limit: 90,
+            submit: 100,
+            start: 200,
+            end: 5_600,
+            nodes: "n[1-2]".into(),
+            name: "align".into(),
+        }
+    }
+
+    fn otter() -> HashMap<u32, Login> {
+        HashMap::from([(1001, Login("otter".into()))])
+    }
+
+    #[test]
+    fn every_job_value_reaches_the_model() {
+        let nodes = vec![NodeName("n1".into()), NodeName("n2".into())];
+        let expected = Attempt {
+            key: AttemptKey {
+                job: JobId(20),
+                submit: UnixTime(100),
+            },
+            array: None,
+            login: Login("otter".into()),
+            partitions: vec![PartitionName("gpu".into()), PartitionName("cpu".into())],
+            state: glurmo_model::JobState::Running,
+            state_raw: "RUNNING".into(),
+            cpus: 6,
+            mem_mb: Some(3_000),
+            gpus: 1,
+            time_limit_s: Some(5_400),
+            start: Some(UnixTime(200)),
+            end: Some(UnixTime(5_600)),
+            nodes: nodes.clone(),
+            reason: None,
+            name: "align".into(),
+        };
+        assert_eq!(
+            attempt(&running(), UnixTime(300), &otter()).unwrap(),
+            expected
+        );
+        let held = |cores: &[u32], gres: &str, memory_mb| jobs::HostCells {
+            cores: cores.to_vec(),
+            gres: gres.into(),
+            memory_mb,
+        };
+        let on_hosts = jobs::Placed {
+            id: 20,
+            start: 200,
+            state: "RUNNING",
+            hosts: "n[1-2]".into(),
+            cells: vec![
+                held(&[0, 1], "gpu:1(IDX:2)", 1_000),
+                held(&[0, 1, 2, 7], "", 2_000),
+            ],
+        };
+        let cells = |node: &NodeName, cores: &[u32], gpus: &[u32], mem_mb| NodeCells {
+            node: node.clone(),
+            cores: cores.to_vec(),
+            unplaced: 0,
+            gpus: gpus.to_vec(),
+            mem_mb: Some(mem_mb),
+        };
+        let expected = Placed {
+            job: JobId(20),
+            start: Some(UnixTime(200)),
+            state: glurmo_model::JobState::Running,
+            placement: Placement(vec![
+                cells(&nodes[0], &[0, 1], &[2], 1_000),
+                cells(&nodes[1], &[0, 1, 2, 7], &[], 2_000),
+            ]),
+        };
+        assert_eq!(placed(&on_hosts).unwrap(), expected);
+        let nowhere = jobs::Placed {
+            hosts: String::new(),
+            cells: Vec::new(),
+            ..on_hosts
+        };
+        assert_eq!(placed(&nowhere).unwrap().placement, Placement(Vec::new()));
+    }
+
+    #[test]
+    fn an_unlimited_job_ends_only_once_its_end_has_passed() {
+        let unlimited = jobs::Job {
+            time_limit: INFINITE,
+            ..running()
+        };
+        let listed = attempt(&unlimited, UnixTime(300), &otter()).unwrap();
+        assert_eq!((listed.time_limit_s, listed.end), (None, None));
+        let listed = attempt(&unlimited, UnixTime(5_600), &otter()).unwrap();
+        assert_eq!(listed.end, Some(UnixTime(5_600)));
+        let unset = jobs::Job {
+            time_limit: NO_VAL,
+            ..running()
+        };
+        let listed = attempt(&unset, UnixTime(300), &otter()).unwrap();
+        assert_eq!(
+            (listed.time_limit_s, listed.end),
+            (None, Some(UnixTime(5_600)))
+        );
+    }
+
+    #[test]
+    fn an_owner_the_account_database_lacks_takes_the_controllers_name_then_the_uid() {
+        let logins = HashMap::new();
+        let named = attempt(&running(), UnixTime(300), &logins).unwrap();
+        assert_eq!(named.login, Login("root".into()));
+        let nameless = jobs::Job {
+            user_name: None,
+            ..running()
+        };
+        let listed = attempt(&nameless, UnixTime(300), &logins).unwrap();
+        assert_eq!(listed.login, Login("1001".into()));
+    }
+
+    #[test]
+    fn a_pending_job_counts_what_it_requested_and_says_why_it_waits() {
+        let waiting = jobs::Job {
+            state: "PENDING",
+            tres: "cpu=2,mem=1G,node=1,gres/gpu=4".into(),
+            reason: "Priority".into(),
+            start: 0,
+            end: 0,
+            nodes: String::new(),
+            array: Some(jobs::ArrayTasks {
+                job: 10,
+                spec: "3".into(),
+                count: 1,
+            }),
+            ..running()
+        };
+        let listed = attempt(&waiting, UnixTime(300), &otter()).unwrap();
+        assert_eq!(listed.state, glurmo_model::JobState::Pending);
+        assert_eq!((listed.mem_mb, listed.gpus), (Some(1_024), 4));
+        assert_eq!(listed.reason.as_deref(), Some("Priority"));
+        assert_eq!((listed.start, listed.end), (None, None));
+        assert_eq!(listed.nodes, Vec::new());
+        let expected = ArrayTasks {
+            job: JobId(10),
+            spec: "3".into(),
+            count: 1,
+        };
+        assert_eq!(listed.array, Some(expected));
+        let unsubmitted = jobs::Job {
+            submit: 0,
+            ..waiting
+        };
+        assert!(attempt(&unsubmitted, UnixTime(300), &otter()).is_err());
     }
 }

@@ -1,18 +1,10 @@
 //! Jobs and their placement, from `RESPONSE_JOB_INFO`.
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 
 use super::Protocol;
-use super::pack::{Bitmap, INFINITE, NO_VAL, Pack, Unpack};
+use super::pack::{Bitmap, NO_VAL, Pack, Unpack};
 use super::reasons::REASONS;
-use crate::slurm::fields::{gpu_indices, gres, job_state, tres};
-use crate::slurm::hostlist::expand_hosts;
-use crate::slurm::scontrol::Placed;
-use glurmo_model::{
-    ArrayTasks, Attempt, AttemptKey, JobId, Login, NodeCells, PartitionName, Placement, UnixTime,
-};
 
 /// The request for every job.
 pub const REQUEST: u16 = 2003;
@@ -32,21 +24,95 @@ pub fn request() -> Vec<u8> {
 }
 
 /// The body of a request for job `id`, with its cores. 25.11 names the job by a whole step ID.
-pub fn single_request(id: JobId, protocol: Protocol) -> Vec<u8> {
+pub fn single_request(id: u32, protocol: Protocol) -> Vec<u8> {
     let mut body = Pack::default();
     if protocol == Protocol::V25_11 {
-        body.u64(0).u32(id.0).u32(NO_VAL).u32(NO_VAL);
+        body.u64(0).u32(id).u32(NO_VAL).u32(NO_VAL);
     } else {
-        body.u32(id.0);
+        body.u32(id);
     }
     body.u16(SHOW_ALL | SHOW_DETAIL);
     body.0
 }
 
+/// The tasks of a job array that one record stands for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArrayTasks {
+    /// The array's base job ID.
+    pub job: u32,
+    /// Task IDs as squeue prints them, such as `174` or `0-3,8%2`.
+    pub spec: String,
+    /// How many tasks the spec covers.
+    pub count: u32,
+}
+
+/// A job as squeue lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    /// The job ID, unique to each array task.
+    pub id: u32,
+    /// The array tasks this record stands for, if the job is part of an array.
+    pub array: Option<ArrayTasks>,
+    /// The UID of its owner.
+    pub user_id: u32,
+    /// The controller's name for that UID, which can differ from the local account database's.
+    pub user_name: Option<String>,
+    /// The partitions it may run in, separated by commas.
+    pub partition: String,
+    /// The state as squeue prints it, such as `RUNNING`.
+    pub state: &'static str,
+    /// Why it waits or how it ended, as squeue prints it. `None` when there is no reason.
+    pub reason: String,
+    /// CPUs allocated, or requested while pending.
+    pub cpus: u32,
+    /// The TRES it holds, or asked for while it holds none, such as `cpu=4,mem=16G,gres/gpu=2`.
+    pub tres: String,
+    /// The time limit in minutes. [`INFINITE`](super::pack::INFINITE) is no limit, and
+    /// [`NO_VAL`] is a limit not set.
+    pub time_limit: u32,
+    /// When it was submitted, or 0 when the controller leaves it out, as 25.11 does for a job
+    /// without details.
+    pub submit: i64,
+    /// When it started, or the controller's estimate while pending. 0 is none.
+    pub start: i64,
+    /// When it ended or must end. 0 is none.
+    pub end: i64,
+    /// Its nodes, as a hostlist such as `z[1001-1004]`.
+    pub nodes: String,
+    /// The job name.
+    pub name: String,
+}
+
+/// The cores a job holds, as `scontrol -d show job` reports them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    /// The job ID.
+    pub id: u32,
+    /// When it started. 0 is none.
+    pub start: i64,
+    /// The state as scontrol prints it, such as `RUNNING`.
+    pub state: &'static str,
+    /// The hosts it holds cores on, as a hostlist. Empty for a job that holds none.
+    pub hosts: String,
+    /// What it holds on each of `hosts`, in their order.
+    pub cells: Vec<HostCells>,
+}
+
+/// What a job holds on one host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostCells {
+    /// Its cores, counted from the host's first core.
+    pub cores: Vec<u32>,
+    /// Its GRES, as a list such as `gpu:a100:2(IDX:0,2)`. Empty when it holds none.
+    pub gres: String,
+    /// Its memory, in MB.
+    pub memory_mb: u64,
+}
+
 /// One job as the controller holds it, reduced to what glurmo reads.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Job {
-    id: JobId,
+struct Raw {
+    id: u32,
     array_base: u32,
     array_task: u32,
     array_tasks: Option<Bitmap>,
@@ -81,12 +147,21 @@ struct Resources {
     cores: Option<Bitmap>,
 }
 
-/// Decodes a `RESPONSE_JOB_INFO` body.
+/// Decodes a `RESPONSE_JOB_INFO` body into two views of its records. The first lists the jobs as
+/// squeue does, with pending tasks that the controller split out of an array folded back into the
+/// array's record. The second holds the cores of every record.
 ///
 /// # Errors
 ///
 /// Fails when the body does not follow `protocol`'s layout.
-pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Job>> {
+pub fn decode(body: &[u8], protocol: Protocol) -> Result<(Vec<Job>, Vec<Placed>)> {
+    let mut records = records(body, protocol)?;
+    let placed = records.iter().map(Raw::placed).collect();
+    combine_pending_arrays(&mut records);
+    Ok((records.iter().map(Raw::listed).collect(), placed))
+}
+
+fn records(body: &[u8], protocol: Protocol) -> Result<Vec<Raw>> {
     let u = &mut Unpack::new(body);
     let count = u.u32()?;
     let _last_update = u.time()?;
@@ -108,7 +183,7 @@ pub fn decode(body: &[u8], protocol: Protocol) -> Result<Vec<Job>> {
     clippy::too_many_lines,
     reason = "it walks Slurm's layout field by field"
 )]
-fn v23_11(u: &mut Unpack) -> Result<Job> {
+fn v23_11(u: &mut Unpack) -> Result<Raw> {
     let array_base = u.u32()?;
     let array_task = u.u32()?;
     let array_tasks = u.str()?;
@@ -213,8 +288,8 @@ fn v23_11(u: &mut Unpack) -> Result<Job> {
     let _mail_type = u.u16()?;
     let _mail_user = u.str()?;
     let _selinux_context = u.str()?;
-    Ok(Job {
-        id: JobId(id),
+    Ok(Raw {
+        id,
         array_base,
         array_task,
         array_tasks: array_tasks.as_deref().map(hex_tasks).transpose()?,
@@ -244,7 +319,7 @@ fn v23_11(u: &mut Unpack) -> Result<Job> {
     clippy::too_many_lines,
     reason = "it walks Slurm's layout field by field"
 )]
-fn v25_11(u: &mut Unpack) -> Result<Job> {
+fn v25_11(u: &mut Unpack) -> Result<Raw> {
     let _sluid = u.u64()?;
     let id = u.u32()?;
     let _step = (u.u32()?, u.u32()?);
@@ -352,8 +427,8 @@ fn v25_11(u: &mut Unpack) -> Result<Job> {
             u.u16()?;
         }
     }
-    Ok(Job {
-        id: JobId(id),
+    Ok(Raw {
+        id,
         array_base,
         array_task,
         array_tasks: array_tasks.as_deref().map(hex_tasks).transpose()?,
@@ -440,76 +515,33 @@ pub(super) fn hex_tasks(text: &str) -> Result<Bitmap> {
     Ok(Bitmap { size, set })
 }
 
-impl Job {
-    /// The job's ID.
-    pub fn id(&self) -> JobId {
-        self.id
-    }
-
-    /// Whether the controller sent the job's submit time. 25.11 leaves it out of a job without details,
-    /// and an attempt is keyed on it.
-    pub fn submitted(&self) -> bool {
-        self.submit != 0
-    }
-
-    /// The UID of the job's owner.
-    pub fn user_id(&self) -> u32 {
-        self.user_id
-    }
-
-    /// The job as squeue lists it. `logins` names its owner, as squeue does from the local account
-    /// database, because the controller's own name for a UID can differ. `now` decides whether an
-    /// unlimited job's end is only a guess.
-    ///
-    /// # Errors
-    ///
-    /// Fails when its node list, TRES or state does not parse, or it has no submit time.
-    pub fn attempt(&self, now: UnixTime, logins: &HashMap<u32, Login>) -> Result<Attempt> {
-        let state_raw = state_name(self.state).to_owned();
-        let tres = tres(
-            self.tres_alloc
-                .as_deref()
-                .or(self.tres_req.as_deref())
-                .unwrap_or_default(),
-        )?;
-        let reason = match &self.state_desc {
-            Some(desc) => desc.clone(),
-            None => reason_name(self.state_reason),
-        };
-        let unlimited_end = self.time_limit == INFINITE && self.end > now.0;
-        Ok(Attempt {
-            key: AttemptKey {
-                job: self.id,
-                submit: epoch(self.submit).context("no submit time")?,
-            },
+impl Raw {
+    /// The job as squeue lists it.
+    fn listed(&self) -> Job {
+        Job {
+            id: self.id,
             array: self.array(),
-            login: logins.get(&self.user_id).cloned().unwrap_or_else(|| {
-                Login(
-                    self.user_name
-                        .clone()
-                        .unwrap_or_else(|| self.user_id.to_string()),
-                )
-            }),
-            partitions: self
-                .partition
-                .as_deref()
-                .unwrap_or_default()
-                .split(',')
-                .map(|name| PartitionName(name.to_owned()))
-                .collect(),
-            state: job_state(&state_raw)?,
-            state_raw,
+            user_id: self.user_id,
+            user_name: self.user_name.clone(),
+            partition: self.partition.clone().unwrap_or_default(),
+            state: state_name(self.state),
+            reason: match &self.state_desc {
+                Some(desc) => desc.clone(),
+                None => reason_name(self.state_reason),
+            },
             cpus: self.cpus,
-            mem_mb: tres.mem_mb,
-            gpus: tres.gpus,
-            time_limit_s: (self.time_limit != INFINITE && self.time_limit != NO_VAL)
-                .then(|| u64::from(self.time_limit) * 60),
-            start: epoch(self.start),
-            end: if unlimited_end { None } else { epoch(self.end) },
-            nodes: expand_hosts(self.nodes.as_deref().unwrap_or_default())?,
-            reason: (reason != "None" && !reason.is_empty()).then_some(reason),
+            tres: self
+                .tres_alloc
+                .clone()
+                .or_else(|| self.tres_req.clone())
+                .unwrap_or_default(),
+            time_limit: self.time_limit,
+            submit: self.submit,
+            start: self.start,
+            end: self.end,
+            nodes: self.nodes.clone().unwrap_or_default(),
             name: self.name.clone().unwrap_or_default(),
-        })
+        }
     }
 
     fn array(&self) -> Option<ArrayTasks> {
@@ -525,73 +557,63 @@ impl Job {
         tasks
     }
 
-    /// The job's cores, GPUs and memory on each node, as `scontrol -d` reports them.
-    ///
-    /// # Errors
-    ///
-    /// Fails when its node list, GRES or state does not parse.
-    pub fn placed(&self) -> Result<Placed> {
-        Ok(Placed {
-            job: self.id,
-            start: epoch(self.start),
-            state: job_state(state_name(self.state))?,
-            placement: self.placement()?,
-        })
+    /// The job's cores, GRES and memory on each host, as `scontrol -d` reports them.
+    fn placed(&self) -> Placed {
+        let (hosts, cells) = self.cells();
+        Placed {
+            id: self.id,
+            start: self.start,
+            state: state_name(self.state),
+            hosts,
+            cells,
+        }
     }
 
-    fn placement(&self) -> Result<Placement> {
-        let Some(resources) = &self.resources else {
-            return Ok(Placement(Vec::new()));
+    /// Splits the core bitmap, which runs over the job's hosts in order, at each host's width.
+    fn cells(&self) -> (String, Vec<HostCells>) {
+        let held = self.resources.as_ref().and_then(|resources| {
+            let cores = resources.cores.as_ref()?;
+            Some((resources, cores, *cores.set.last()?))
+        });
+        let Some((resources, cores, last)) = held else {
+            return (String::new(), Vec::new());
         };
-        let Some(cores) = resources
-            .cores
-            .as_ref()
-            .filter(|cores| !cores.set.is_empty())
-        else {
-            return Ok(Placement(Vec::new()));
-        };
-        let last = *cores.set.last().expect("not empty");
-        let hosts = expand_hosts(&resources.hosts)?;
         let widths = resources
             .cores_per_host
             .iter()
             .flat_map(|&(width, repeat)| std::iter::repeat_n(width, repeat as usize));
         let mut cells = Vec::new();
         let mut offset = 0;
-        for (i, (host, width)) in hosts.into_iter().zip(widths).enumerate() {
-            let held = cores
-                .set
-                .iter()
-                .filter(|&&core| core >= offset && core < offset + width)
-                .map(|core| core - offset)
-                .collect();
-            let detail = self
-                .gres_detail
-                .get(i)
-                .cloned()
-                .flatten()
-                .unwrap_or_default();
-            cells.push(NodeCells {
-                node: host,
-                cores: held,
-                unplaced: 0,
-                gpus: gpu_indices(&gres(&detail)?)?,
-                mem_mb: Some(resources.memory_mb.get(i).copied().unwrap_or(0)),
+        for (i, width) in widths.enumerate() {
+            cells.push(HostCells {
+                cores: cores
+                    .set
+                    .iter()
+                    .filter(|&&core| core >= offset && core < offset + width)
+                    .map(|core| core - offset)
+                    .collect(),
+                gres: self
+                    .gres_detail
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_default(),
+                memory_mb: resources.memory_mb.get(i).copied().unwrap_or(0),
             });
             offset += width;
             if offset > last {
                 break;
             }
         }
-        Ok(Placement(cells))
+        (resources.hosts.clone(), cells)
     }
 }
 
 /// Folds pending tasks that the controller split out of an array back into the array's pending
 /// record, as squeue's `_combine_pending_array_tasks` does unless asked for `-r`. A task folds in when
 /// its name and partition match, and its reason joins the record's.
-pub fn combine_pending_arrays(jobs: &mut Vec<Job>) {
-    let pending = |job: &Job| base_state(job.state) == JOB_PENDING;
+fn combine_pending_arrays(jobs: &mut Vec<Raw>) {
+    let pending = |job: &Raw| base_state(job.state) == JOB_PENDING;
     let mut folded = vec![false; jobs.len()];
     for i in 0..jobs.len() {
         if folded[i] || !pending(&jobs[i]) || jobs[i].array_tasks.is_none() {
@@ -637,12 +659,11 @@ pub fn combine_pending_arrays(jobs: &mut Vec<Job>) {
 
 /// The array tasks a record stands for: a pending range, one task, or none.
 pub(super) fn array_tasks(
-    base: u32,
+    job: u32,
     task: u32,
     range: Option<&Bitmap>,
     max_tasks: u32,
 ) -> Option<ArrayTasks> {
-    let job = JobId(base);
     match range {
         Some(range) if !range.set.is_empty() => Some(ArrayTasks {
             job,
@@ -667,10 +688,6 @@ fn task_spec(set: &[u32], max_tasks: u32) -> String {
     } else {
         format!("{spec}%{max_tasks}")
     }
-}
-
-pub(super) fn epoch(time: i64) -> Option<UnixTime> {
-    (time != 0).then_some(UnixTime(time))
 }
 
 /// `bit_fmt_full`: runs of set bits as `a-b`, single bits alone, joined by commas.
@@ -767,11 +784,10 @@ fn reason_name(reason: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glurmo_model::NodeName;
 
-    fn pending(id: u32, task: u32, tasks: Option<&str>, name: &str, reason: u32) -> Job {
-        Job {
-            id: JobId(id),
+    fn pending(id: u32, task: u32, tasks: Option<&str>, name: &str, reason: u32) -> Raw {
+        Raw {
+            id,
             array_base: 10,
             array_task: task,
             array_tasks: tasks.map(|hex| hex_tasks(hex).unwrap()),
@@ -800,7 +816,8 @@ mod tests {
     #[test]
     fn placement_splits_the_core_bitmap_by_host() {
         let mut job = pending(20, NO_VAL, None, "n", 0);
-        assert_eq!(job.placement().unwrap(), Placement(Vec::new()));
+        assert_eq!(job.placed().hosts, "");
+        assert_eq!(job.placed().cells, Vec::new());
         job.resources = Some(Resources {
             hosts: "n[1-2]".into(),
             memory_mb: vec![1_000, 2_000],
@@ -811,19 +828,18 @@ mod tests {
             }),
         });
         job.gres_detail = vec![Some("gpu:1(IDX:0)".into()), None];
-        let cells = |node: &str, cores: &[u32], gpus: &[u32], mem_mb| NodeCells {
-            node: NodeName(node.into()),
+        let cells = |cores: &[u32], gres: &str, memory_mb| HostCells {
             cores: cores.to_vec(),
-            unplaced: 0,
-            gpus: gpus.to_vec(),
-            mem_mb: Some(mem_mb),
+            gres: gres.into(),
+            memory_mb,
         };
+        assert_eq!(job.placed().hosts, "n[1-2]");
         assert_eq!(
-            job.placement().unwrap(),
-            Placement(vec![
-                cells("n1", &[0, 1], &[0], 1_000),
-                cells("n2", &[2], &[], 2_000),
-            ])
+            job.placed().cells,
+            [
+                cells(&[0, 1], "gpu:1(IDX:0)", 1_000),
+                cells(&[2], "", 2_000)
+            ]
         );
     }
 
@@ -838,13 +854,12 @@ mod tests {
             pending(13, 1, None, "other", 1),
         ];
         combine_pending_arrays(&mut jobs);
-        let ids: Vec<u32> = jobs.iter().map(|job| job.id.0).collect();
+        let ids: Vec<u32> = jobs.iter().map(|job| job.id).collect();
         assert_eq!(ids, [10, 12, 13]);
-        let logins = HashMap::new();
-        let range = jobs[0].attempt(UnixTime(0), &logins).unwrap();
+        let range = jobs[0].listed();
         let array = range.array.unwrap();
         assert_eq!((array.spec.as_str(), array.count), ("0,2-3", 3));
-        assert_eq!(range.reason.as_deref(), Some("Priority,Dependency"));
+        assert_eq!(range.reason, "Priority,Dependency");
     }
 
     #[test]
@@ -879,8 +894,8 @@ mod tests {
     }
 
     /// A running job on two hosts of different widths, with a distinct value in each field glurmo reads.
-    fn running() -> Job {
-        Job {
+    fn running() -> Raw {
+        Raw {
             state: 1,
             user_id: 1001,
             user_name: Some("root".into()),
@@ -907,118 +922,71 @@ mod tests {
         }
     }
 
-    fn otter() -> HashMap<u32, Login> {
-        HashMap::from([(1001, Login("otter".into()))])
-    }
-
     #[test]
     fn every_job_value_lands_in_its_own_field() {
-        let nodes = vec![NodeName("n1".into()), NodeName("n2".into())];
-        let attempt = running().attempt(UnixTime(300), &otter()).unwrap();
-        let expected = Attempt {
-            key: AttemptKey {
-                job: JobId(20),
-                submit: UnixTime(100),
-            },
+        let expected = Job {
+            id: 20,
             array: None,
-            login: Login("otter".into()),
-            partitions: vec![PartitionName("gpu".into()), PartitionName("cpu".into())],
-            state: glurmo_model::JobState::Running,
-            state_raw: "RUNNING".into(),
+            user_id: 1001,
+            user_name: Some("root".into()),
+            partition: "gpu,cpu".into(),
+            state: "RUNNING",
+            reason: "None".into(),
             cpus: 6,
-            mem_mb: Some(3_000),
-            gpus: 1,
-            time_limit_s: Some(5_400),
-            start: Some(UnixTime(200)),
-            end: Some(UnixTime(5_600)),
-            nodes: nodes.clone(),
-            reason: None,
+            tres: "cpu=6,mem=3000M,node=2,billing=6,gres/gpu=1".into(),
+            time_limit: 90,
+            submit: 100,
+            start: 200,
+            end: 5_600,
+            nodes: "n[1-2]".into(),
             name: "align".into(),
         };
-        assert_eq!(attempt, expected);
-        let cells = |node: &NodeName, cores: &[u32], gpus: &[u32], mem_mb| NodeCells {
-            node: node.clone(),
+        assert_eq!(running().listed(), expected);
+        let cells = |cores: &[u32], gres: &str, memory_mb| HostCells {
             cores: cores.to_vec(),
-            unplaced: 0,
-            gpus: gpus.to_vec(),
-            mem_mb: Some(mem_mb),
+            gres: gres.into(),
+            memory_mb,
         };
         let expected = Placed {
-            job: JobId(20),
-            start: Some(UnixTime(200)),
-            state: glurmo_model::JobState::Running,
-            placement: Placement(vec![
-                cells(&nodes[0], &[0, 1], &[2], 1_000),
-                cells(&nodes[1], &[0, 1, 2, 7], &[], 2_000),
-            ]),
+            id: 20,
+            start: 200,
+            state: "RUNNING",
+            hosts: "n[1-2]".into(),
+            cells: vec![
+                cells(&[0, 1], "gpu:1(IDX:2)", 1_000),
+                cells(&[0, 1, 2, 7], "", 2_000),
+            ],
         };
-        assert_eq!(running().placed().unwrap(), expected);
+        assert_eq!(running().placed(), expected);
     }
 
     #[test]
-    fn an_unlimited_job_ends_only_once_its_end_has_passed() {
-        let unlimited = Job {
-            time_limit: INFINITE,
-            ..running()
-        };
-        let attempt = unlimited.attempt(UnixTime(300), &otter()).unwrap();
-        assert_eq!((attempt.time_limit_s, attempt.end), (None, None));
-        let attempt = unlimited.attempt(UnixTime(5_600), &otter()).unwrap();
-        assert_eq!(attempt.end, Some(UnixTime(5_600)));
-        let unset = Job {
-            time_limit: NO_VAL,
-            ..running()
-        };
-        let attempt = unset.attempt(UnixTime(300), &otter()).unwrap();
-        assert_eq!(
-            (attempt.time_limit_s, attempt.end),
-            (None, Some(UnixTime(5_600)))
-        );
-    }
-
-    #[test]
-    fn an_owner_the_account_database_lacks_takes_the_controllers_name_then_the_uid() {
-        let logins = HashMap::new();
-        let named = running().attempt(UnixTime(300), &logins).unwrap();
-        assert_eq!(named.login, Login("root".into()));
-        let nameless = Job {
-            user_name: None,
-            ..running()
-        };
-        let attempt = nameless.attempt(UnixTime(300), &logins).unwrap();
-        assert_eq!(attempt.login, Login("1001".into()));
-    }
-
-    #[test]
-    fn a_pending_job_counts_what_it_requested_and_says_why_it_waits() {
-        let waiting = Job {
+    fn a_pending_job_lists_what_it_requested_and_why_it_waits() {
+        let waiting = Raw {
             state: 0,
             tres_alloc: None,
             state_reason: 1,
-            start: 0,
-            end: 0,
             nodes: None,
             array_task: 3,
             ..running()
         };
-        let attempt = waiting.attempt(UnixTime(300), &otter()).unwrap();
-        assert_eq!((attempt.mem_mb, attempt.gpus), (Some(1_024), 4));
-        assert_eq!(attempt.reason.as_deref(), Some("Priority"));
-        assert_eq!((attempt.start, attempt.end), (None, None));
-        assert_eq!(attempt.nodes, Vec::new());
-        let array = attempt.array.unwrap();
+        let listed = waiting.listed();
+        assert_eq!(listed.tres, "cpu=2,mem=1G,node=1,gres/gpu=4");
         assert_eq!(
-            (array.job, array.spec.as_str(), array.count),
-            (JobId(10), "3", 1)
+            (listed.state, listed.reason.as_str()),
+            ("PENDING", "Priority")
         );
-        let described = Job {
+        assert_eq!(listed.nodes, "");
+        let expected = ArrayTasks {
+            job: 10,
+            spec: "3".into(),
+            count: 1,
+        };
+        assert_eq!(listed.array, Some(expected));
+        let described = Raw {
             state_desc: Some("launch failed requeued held".into()),
             ..waiting
         };
-        let attempt = described.attempt(UnixTime(300), &otter()).unwrap();
-        assert_eq!(
-            attempt.reason.as_deref(),
-            Some("launch failed requeued held")
-        );
+        assert_eq!(described.listed().reason, "launch failed requeued held");
     }
 }
