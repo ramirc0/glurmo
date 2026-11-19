@@ -1,12 +1,12 @@
 [package]
 name = "glurmo"
-version = "0.6.0"
-edition = "2024"
-rust-version = "1.100"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Live view of who holds which cores and GPUs on a batch-scheduler cluster"
-publish = false
-license = "GPL-2.0-or-later"
-repository = "https://github.com/ramirc0/glurmo"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
 readme = "README.md"
 authors = ["Christian Ramirez <christian.ramirez1@umassmed.edu>"]
 
@@ -46,6 +46,14 @@ tower = { version = "0.5.3", features = ["util"] }
 
 [workspace]
 members = ["model", "rpc", "web"]
+
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license = "GPL-2.0-or-later"
+repository = "https://github.com/ramirc0/glurmo"
 
 [workspace.lints.rust]
 missing_docs = "warn"

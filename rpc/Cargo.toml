@@ -1,12 +1,12 @@
 [package]
 name = "glurmo-rpc"
-version = "0.6.0"
-edition = "2024"
-rust-version = "1.100"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "A client for Slurm's RPC protocol, as glurmo speaks it to slurmctld and slurmdbd"
-publish = false
-license = "GPL-2.0-or-later"
-repository = "https://github.com/ramirc0/glurmo"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"

@@ -1,12 +1,12 @@
 [package]
 name = "glurmo-web"
-version = "0.6.0"
-edition = "2024"
-rust-version = "1.100"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "glurmo's web view, compiled to wasm and served by `glurmo serve`"
-publish = false
-license = "GPL-2.0-or-later"
-repository = "https://github.com/ramirc0/glurmo"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
