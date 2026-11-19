@@ -5,6 +5,7 @@ pub mod fields;
 pub mod hostlist;
 pub mod probe;
 pub mod recording;
+pub mod rpc;
 pub mod sacct;
 pub mod scontrol;
 pub mod sdiag;
@@ -197,7 +198,7 @@ impl Source {
     pub fn live(reach: &Reach) -> Result<Self> {
         Ok(match reach.backend {
             Backend::Wire if reach.controller.is_empty() => {
-                Self::Wire(Wire::new(wire::controllers()?)?)
+                Self::Wire(Wire::new(rpc::controllers()?)?)
             }
             Backend::Wire => Self::Wire(Wire::new(reach.controller.clone())?),
             Backend::Cli => Self::Cli(Cli::default()),
