@@ -553,4 +553,165 @@ mod tests {
         assert_eq!(mixed(2, 88, 0, None), 2);
         assert_eq!(mixed(2 | 1 << 9, 8, 0, Some("gres/gpu=1")), 5 | 1 << 9);
     }
+
+    /// A draining, reserved node with a distinct value in each field glurmo reads.
+    fn raw() -> Raw {
+        Raw {
+            name: Some("z1".into()),
+            state: 3 | 1 << 9 | 1 << 5,
+            cpus: 16,
+            sockets: 2,
+            cores_per_socket: 4,
+            real_memory: 64_000,
+            cpus_effective: 16,
+            cpu_load: 250,
+            free_mem: 30_000,
+            alloc_cpus: 16,
+            alloc_memory: 48_000,
+            alloc_tres: Some("cpu=16".into()),
+            features: Some("skylake,avx512".into()),
+            gres_total: "gpu:v100:4".into(),
+            gres_used: "gpu:v100:1(IDX:0)".into(),
+            reason: Some("bad fan".into()),
+        }
+    }
+
+    #[test]
+    fn every_node_value_lands_in_its_own_field() {
+        let node = raw().node(Protocol::V23_11).unwrap().unwrap();
+        let expected = Node {
+            name: NodeName("z1".into()),
+            partitions: Vec::new(),
+            state: glurmo_model::NodeState::Draining,
+            flags: vec![glurmo_model::NodeFlag::Reserved],
+            state_raw: "allocated+drain+reserved".into(),
+            reason: Some("bad fan".into()),
+            cpus: 16,
+            cpus_alloc: 16,
+            sockets: 2,
+            cores: 8,
+            load: Some(2.5),
+            mem_mb: 64_000,
+            mem_alloc_mb: 48_000,
+            mem_free_mb: Some(30_000),
+            gpus: 4,
+            gpus_used: 1,
+            gpu_model: Some("v100".into()),
+            features: vec!["skylake".into(), "avx512".into()],
+        };
+        assert_eq!(node, expected);
+    }
+
+    #[test]
+    fn values_the_controller_lacks_are_none() {
+        let unknown = Raw {
+            cpu_load: NO_VAL,
+            free_mem: NO_VAL64,
+            reason: Some(String::new()),
+            features: None,
+            ..raw()
+        };
+        let node = unknown.node(Protocol::V23_11).unwrap().unwrap();
+        assert_eq!((node.load, node.mem_free_mb), (None, None));
+        assert_eq!(node.reason, None);
+        assert_eq!(node.features, Vec::<String>::new());
+    }
+
+    /// A reply holding one partition record. `flags` is `DEFAULT` (1) or `HIDDEN` (2).
+    fn partition_record(
+        body: &mut Pack,
+        protocol: Protocol,
+        name: &str,
+        max_time: u32,
+        flags: u16,
+    ) {
+        body.str(Some(name)).u32(0).u32(0).u32(max_time);
+        body.u32(0).u32(0).u32(0).u32(0).u32(0);
+        body.u64(0).u32(0).u32(0).u64(0);
+        if protocol == Protocol::V25_11 {
+            body.u32(u32::from(flags));
+        } else {
+            body.u16(flags);
+        }
+        body.u16(0).u16(0).u16(0).u16(0).u16(0);
+        body.u16(if flags == 2 { 2 } else { 3 });
+        body.u16(0).u16(0).u16(0).u32(0);
+        for _str in 0..8 {
+            body.str(None);
+        }
+        body.str(Some("z[1-2]")).str(None);
+        body.u32(4).str(Some("0x6")).str(None);
+        if protocol == Protocol::V25_11 {
+            body.str(None);
+        }
+        body.str(None).u32(0);
+    }
+
+    #[test]
+    fn every_partition_value_lands_in_its_own_field() {
+        for protocol in Protocol::NEWEST_FIRST {
+            let mut body = Pack::default();
+            body.u32(2).time(0);
+            partition_record(&mut body, protocol, "gpu", 120, 2);
+            partition_record(&mut body, protocol, "all", INFINITE, 1);
+            let records = partitions(&body.0, protocol).unwrap();
+            let nodes = vec![NodeName("z1".into()), NodeName("z2".into())];
+            let expected = [
+                Partition {
+                    name: PartitionName("gpu".into()),
+                    nodes: nodes.clone(),
+                    max_time_s: Some(7_200),
+                    default: false,
+                    hidden: true,
+                    state_raw: "DRAIN".into(),
+                },
+                Partition {
+                    name: PartitionName("all".into()),
+                    nodes,
+                    max_time_s: None,
+                    default: true,
+                    hidden: false,
+                    state_raw: "UP".into(),
+                },
+            ];
+            for (record, expected) in records.iter().zip(&expected) {
+                assert_eq!(&record.partition, expected, "{protocol:?}");
+                assert_eq!(record.node_indices, [1, 2], "{protocol:?}");
+            }
+            assert_eq!(records.len(), 2);
+        }
+    }
+
+    #[test]
+    fn nodes_list_their_partitions_in_order_and_those_in_none_are_left_out() {
+        let mut body = Pack::default();
+        body.u32(3).time(0);
+        for name in ["z1", "z2", "z3"] {
+            v23_11_record(&mut body, Some(name));
+        }
+        let record = |name: &str, node_indices: Vec<u32>| PartitionRecord {
+            partition: Partition {
+                name: PartitionName(name.into()),
+                nodes: Vec::new(),
+                max_time_s: None,
+                default: false,
+                hidden: false,
+                state_raw: "UP".into(),
+            },
+            node_indices,
+        };
+        let partitions = [record("long", vec![0, 2]), record("short", vec![0])];
+        let found = nodes(&body.0, &partitions, Protocol::V23_11).unwrap();
+        let listed: Vec<(&str, Vec<&str>)> = found
+            .iter()
+            .map(|node| {
+                let partitions = node.partitions.iter().map(|name| name.0.as_str());
+                (node.name.0.as_str(), partitions.collect())
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [("z1", vec!["long", "short"]), ("z3", vec!["long"])]
+        );
+    }
 }

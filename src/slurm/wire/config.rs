@@ -609,4 +609,50 @@ mod tests {
         );
         assert_eq!(munge_socket("cred_expire=30"), None);
     }
+
+    fn raw() -> Raw {
+        Raw {
+            accounting_backup: Some("dbd-2".into()),
+            accounting_host: Some("dbd-1".into()),
+            accounting_port: 6819,
+            accounting_type: Some("accounting_storage/slurmdbd".into()),
+            auth_info: Some("socket=/run/m.sock".into()),
+            cluster: Some("zlurm".into()),
+            min_job_age: 300,
+            private_data: 1,
+            slurm_uid: 450,
+            slurmctld_params: Some("rl_enable,rl_bucket_size=50".into()),
+            version: Some("23.11.4".into()),
+        }
+    }
+
+    #[test]
+    fn every_setting_lands_in_its_own_field() {
+        let expected = Config {
+            site: Site {
+                cluster: "zlurm".into(),
+                version: crate::slurm::Version(23, 11, 4),
+                min_job_age_s: 300,
+                private_data: vec!["jobs".into()],
+                rate_limit: Some(crate::slurm::RateLimit {
+                    bucket_size: 50,
+                    refill_rate: 2,
+                    refill_period_s: 1,
+                }),
+            },
+            slurm_uid: 450,
+            accounting: vec!["dbd-1:6819".into(), "dbd-2:6819".into()],
+            munge: Some(PathBuf::from("/run/m.sock")),
+        };
+        assert_eq!(raw().config().unwrap(), expected);
+    }
+
+    #[test]
+    fn a_site_without_slurmdbd_has_no_accounting_addresses() {
+        let local = Raw {
+            accounting_type: Some("accounting_storage/none".into()),
+            ..raw()
+        };
+        assert_eq!(local.config().unwrap().accounting, Vec::<String>::new());
+    }
 }

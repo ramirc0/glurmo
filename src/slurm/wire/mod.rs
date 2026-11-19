@@ -1049,4 +1049,26 @@ mod tests {
         printed.sort_by_key(|o| o.key);
         assert_eq!(wired, printed);
     }
+
+    #[tokio::test]
+    async fn a_job_the_controller_forgot_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let sack = dir.path().join("sack.socket");
+        sack_forever(&sack);
+        let mut invalid_job = Pack::default();
+        invalid_job.u32(INVALID_JOB_ID.0);
+        let (address, _) = controller_answering(RESPONSE_SLURM_RC, invalid_job.0).await;
+        let mut wire = wire_to(vec![address], sack);
+        let forgotten = Call::Lookup {
+            key: glurmo_model::AttemptKey {
+                job: JobId(7),
+                submit: UnixTime(1),
+            },
+            printed: "7".into(),
+        };
+        assert_eq!(
+            wire.answer(&forgotten).await.unwrap(),
+            Answer::Lookup(Lookup::Gone)
+        );
+    }
 }

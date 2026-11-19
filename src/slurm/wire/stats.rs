@@ -133,4 +133,64 @@ mod tests {
         assert_eq!(rpc_name(2003), "REQUEST_JOB_INFO");
         assert_eq!(rpc_name(1007), "1007");
     }
+
+    /// A reply with the scheduler parts, and a distinct value in each field glurmo reads.
+    fn with_scheduler(protocol: Protocol) -> Pack {
+        let v25_11 = protocol == Protocol::V25_11;
+        let mut body = Pack::default();
+        if !v25_11 {
+            body.u32(1);
+        }
+        body.time(0).time(0);
+        body.u32(11).u32(12).u32(0).u32(0).u32(13).u32(0);
+        body.u32(14).u32(15).u32(16);
+        body.u32(0).u32(0).u32(0).u32(0).time(0).u32(0).u32(0);
+        if v25_11 {
+            body.u64(900);
+        } else {
+            body.u32(900);
+        }
+        body.u32(3).u32(0).u32(0).u32(17);
+        body.u32(18).u32(0).u32(4).u64(2_000);
+        body.u32(0).u32(0).u32(0).u32(0).u32(0).time(0);
+        for _sum in 0..7 {
+            body.u32(0);
+        }
+        body.u32(0);
+        body.u32(2).u32(2).u16(2003).u16(1008);
+        body.u32(2).u32(5).u32(9).u32(2).u64(700).u64(300);
+        if v25_11 {
+            body.0.push(0);
+        }
+        for _empty in 0..8 {
+            body.u32(0);
+        }
+        body
+    }
+
+    #[test]
+    fn every_counter_lands_in_its_own_field() {
+        let rpc = |kind: &str, count, total_us| RpcCount {
+            kind: kind.into(),
+            count,
+            total_us,
+        };
+        let expected = Stats {
+            server_threads: Some(11),
+            agent_queue: Some(12),
+            dbd_queue: Some(13),
+            jobs_submitted: Some(14),
+            jobs_started: Some(15),
+            jobs_completed: Some(16),
+            main_cycle_mean_us: Some(300),
+            main_queue_last: Some(17),
+            backfill_cycle_mean_us: Some(500),
+            backfilled_jobs: Some(18),
+            rpcs: vec![rpc("REQUEST_PING", 9, 300), rpc("REQUEST_JOB_INFO", 5, 700)],
+        };
+        for protocol in Protocol::NEWEST_FIRST {
+            let stats = decode(&with_scheduler(protocol).0, protocol).unwrap();
+            assert_eq!(stats, expected, "{protocol:?}");
+        }
+    }
 }

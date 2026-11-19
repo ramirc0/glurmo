@@ -877,4 +877,148 @@ mod tests {
         assert_eq!(reason_name(34), "34", "a retired reason prints its number");
         assert_eq!(reason_name(9999), "9999");
     }
+
+    /// A running job on two hosts of different widths, with a distinct value in each field glurmo reads.
+    fn running() -> Job {
+        Job {
+            state: 1,
+            user_id: 1001,
+            user_name: Some("root".into()),
+            partition: Some("gpu,cpu".into()),
+            time_limit: 90,
+            submit: 100,
+            start: 200,
+            end: 5_600,
+            nodes: Some("n[1-2]".into()),
+            cpus: 6,
+            tres_alloc: Some("cpu=6,mem=3000M,node=2,billing=6,gres/gpu=1".into()),
+            tres_req: Some("cpu=2,mem=1G,node=1,gres/gpu=4".into()),
+            resources: Some(Resources {
+                hosts: "n[1-2]".into(),
+                memory_mb: vec![1_000, 2_000],
+                cores_per_host: vec![(4, 1), (8, 1)],
+                cores: Some(Bitmap {
+                    size: 12,
+                    set: vec![0, 1, 4, 5, 6, 11],
+                }),
+            }),
+            gres_detail: vec![Some("gpu:1(IDX:2)".into()), None],
+            ..pending(20, NO_VAL, None, "align", 0)
+        }
+    }
+
+    fn otter() -> HashMap<u32, Login> {
+        HashMap::from([(1001, Login("otter".into()))])
+    }
+
+    #[test]
+    fn every_job_value_lands_in_its_own_field() {
+        let nodes = vec![NodeName("n1".into()), NodeName("n2".into())];
+        let attempt = running().attempt(UnixTime(300), &otter()).unwrap();
+        let expected = Attempt {
+            key: AttemptKey {
+                job: JobId(20),
+                submit: UnixTime(100),
+            },
+            array: None,
+            login: Login("otter".into()),
+            partitions: vec![PartitionName("gpu".into()), PartitionName("cpu".into())],
+            state: glurmo_model::JobState::Running,
+            state_raw: "RUNNING".into(),
+            cpus: 6,
+            mem_mb: Some(3_000),
+            gpus: 1,
+            time_limit_s: Some(5_400),
+            start: Some(UnixTime(200)),
+            end: Some(UnixTime(5_600)),
+            nodes: nodes.clone(),
+            reason: None,
+            name: "align".into(),
+        };
+        assert_eq!(attempt, expected);
+        let cells = |node: &NodeName, cores: &[u32], gpus: &[u32], mem_mb| NodeCells {
+            node: node.clone(),
+            cores: cores.to_vec(),
+            unplaced: 0,
+            gpus: gpus.to_vec(),
+            mem_mb: Some(mem_mb),
+        };
+        let expected = Placed {
+            job: JobId(20),
+            start: Some(UnixTime(200)),
+            state: glurmo_model::JobState::Running,
+            placement: Placement(vec![
+                cells(&nodes[0], &[0, 1], &[2], 1_000),
+                cells(&nodes[1], &[0, 1, 2, 7], &[], 2_000),
+            ]),
+        };
+        assert_eq!(running().placed().unwrap(), expected);
+    }
+
+    #[test]
+    fn an_unlimited_job_ends_only_once_its_end_has_passed() {
+        let unlimited = Job {
+            time_limit: INFINITE,
+            ..running()
+        };
+        let attempt = unlimited.attempt(UnixTime(300), &otter()).unwrap();
+        assert_eq!((attempt.time_limit_s, attempt.end), (None, None));
+        let attempt = unlimited.attempt(UnixTime(5_600), &otter()).unwrap();
+        assert_eq!(attempt.end, Some(UnixTime(5_600)));
+        let unset = Job {
+            time_limit: NO_VAL,
+            ..running()
+        };
+        let attempt = unset.attempt(UnixTime(300), &otter()).unwrap();
+        assert_eq!(
+            (attempt.time_limit_s, attempt.end),
+            (None, Some(UnixTime(5_600)))
+        );
+    }
+
+    #[test]
+    fn an_owner_the_account_database_lacks_takes_the_controllers_name_then_the_uid() {
+        let logins = HashMap::new();
+        let named = running().attempt(UnixTime(300), &logins).unwrap();
+        assert_eq!(named.login, Login("root".into()));
+        let nameless = Job {
+            user_name: None,
+            ..running()
+        };
+        let attempt = nameless.attempt(UnixTime(300), &logins).unwrap();
+        assert_eq!(attempt.login, Login("1001".into()));
+    }
+
+    #[test]
+    fn a_pending_job_counts_what_it_requested_and_says_why_it_waits() {
+        let waiting = Job {
+            state: 0,
+            tres_alloc: None,
+            state_reason: 1,
+            start: 0,
+            end: 0,
+            nodes: None,
+            array_task: 3,
+            ..running()
+        };
+        let attempt = waiting.attempt(UnixTime(300), &otter()).unwrap();
+        assert_eq!((attempt.mem_mb, attempt.gpus), (Some(1_024), 4));
+        assert_eq!(attempt.reason.as_deref(), Some("Priority"));
+        assert_eq!((attempt.start, attempt.end), (None, None));
+        assert_eq!(attempt.nodes, Vec::new());
+        let array = attempt.array.unwrap();
+        assert_eq!(
+            (array.job, array.spec.as_str(), array.count),
+            (JobId(10), "3", 1)
+        );
+        let described = Job {
+            state_desc: Some("launch failed requeued held".into()),
+            ..waiting
+        };
+        let attempt = described.attempt(UnixTime(300), &otter()).unwrap();
+        assert_eq!(
+            attempt.reason.as_deref(),
+            Some("launch failed requeued held")
+        );
+    }
 }

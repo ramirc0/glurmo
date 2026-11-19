@@ -572,4 +572,90 @@ mod tests {
         );
         assert_eq!(epoch(1_794_731_534), Some(UnixTime(1_794_731_534)));
     }
+
+    /// An ended array task with a distinct value in each field glurmo reads.
+    fn ended() -> Record {
+        Record {
+            id: JobId(9),
+            array_base: 5,
+            array_task: 3,
+            array_range: None,
+            array_max_tasks: 0,
+            user_id: 20_001,
+            user: Some("heron".into()),
+            partition: Some("long".into()),
+            state: 3,
+            req_cpus: 2,
+            tres_alloc: Some("1=8,2=16000,1001=2".into()),
+            tres_req: Some("1=2,2=4000".into()),
+            time_limit: INFINITE,
+            submit: 1_000,
+            start: 1_100,
+            end: 1_900,
+            nodes: Some("z[1-2]".into()),
+        }
+    }
+
+    #[test]
+    fn every_accounting_value_lands_in_its_own_field() {
+        let key = AttemptKey {
+            job: JobId(9),
+            submit: UnixTime(1_000),
+        };
+        let completed = glurmo_model::JobState::Ended(glurmo_model::EndState::Completed);
+        let expected = Outcome {
+            key,
+            end: Some(UnixTime(1_900)),
+            state: completed,
+        };
+        assert_eq!(ended().outcome().unwrap(), expected);
+        let logins = HashMap::from([(20_001, Login("otter".into()))]);
+        let attempt = ended().attempt(Tres { gpu: Some(1001) }, &logins).unwrap();
+        let expected = Attempt {
+            key,
+            array: Some(glurmo_model::ArrayTasks {
+                job: JobId(5),
+                spec: "3".into(),
+                count: 1,
+            }),
+            login: Login("heron".into()),
+            partitions: vec![PartitionName("long".into())],
+            state: completed,
+            state_raw: "COMPLETED".into(),
+            cpus: 8,
+            mem_mb: Some(16_000),
+            gpus: 2,
+            time_limit_s: None,
+            start: Some(UnixTime(1_100)),
+            end: Some(UnixTime(1_900)),
+            nodes: vec![
+                glurmo_model::NodeName("z1".into()),
+                glurmo_model::NodeName("z2".into()),
+            ],
+            reason: None,
+            name: String::new(),
+        };
+        assert_eq!(attempt, expected);
+    }
+
+    /// The window a job condition asks for, as (from, to).
+    fn asked(query: &Query, now: i64, protocol: Protocol) -> (i64, i64) {
+        let body = job_condition("zlurm", query, UnixTime(now), protocol);
+        let time = |back: usize| {
+            let at = body.len() - back;
+            i64::from_be_bytes(body[at..at + 8].try_into().unwrap())
+        };
+        (time(20), time(28))
+    }
+
+    #[test]
+    fn a_window_that_is_empty_or_ends_now_takes_one_more_second_as_sacct_gives_it() {
+        let (from, to) = (UnixTime(100), UnixTime(200));
+        for protocol in Protocol::NEWEST_FIRST {
+            assert_eq!(asked(&Query::Window(from, to), 500, protocol), (100, 200));
+            assert_eq!(asked(&Query::Window(from, from), 500, protocol), (100, 101));
+            assert_eq!(asked(&Query::Window(from, to), 200, protocol), (100, 201));
+            assert_eq!(asked(&Query::Jobs(&[JobId(7)]), 500, protocol), (0, 501));
+        }
+    }
 }
