@@ -13,6 +13,24 @@ pub(crate) const REQUEST: u16 = 2001;
 pub(crate) const RESPONSE: u16 = 2002;
 
 /// What glurmo needs from the configuration.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::config::Config;
+///
+/// let config = Config {
+///     cluster: "zlurm".into(),
+///     version: "23.11.4".into(),
+///     min_job_age_s: 300,
+///     private_data: vec!["jobs".into()],
+///     slurmctld_parameters: Some("rl_enable,rl_bucket_size=50".into()),
+///     slurm_uid: 450,
+///     accounting: vec!["dbd-1:6819".into()],
+///     munge: None,
+/// };
+/// assert!(config.private_data.iter().any(|hidden| hidden == "jobs"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// `ClusterName`.

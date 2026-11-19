@@ -1,4 +1,23 @@
-//! Slurm's RPC protocol, spoken directly to slurmctld and slurmdbd.
+//! Slurm's RPC protocol, spoken directly to slurmctld and slurmdbd, as squeue, sinfo, scontrol, sdiag
+//! and sacct speak it. No Slurm library or command is needed. The crate frames its own messages and
+//! asks the local munged or sack socket for the credential that signs each one.
+//!
+//! A [`Client`] makes the calls, in the protocol of Slurm 25.11 or 23.11. Each call gives records that
+//! hold values as the matching command prints them. Hostlists, TRES and GRES stay text.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! # async fn show() -> anyhow::Result<()> {
+//! use glurmo_rpc::{Client, Issuer, controllers};
+//!
+//! let mut slurm = Client::new(controllers()?, Issuer::find()?);
+//! let config = slurm.connect().await?;
+//! let (jobs, _) = slurm.jobs().await?;
+//! println!("{} runs Slurm {} and lists {} jobs", config.cluster, config.version, jobs.len());
+//! # Ok(())
+//! # }
+//! ```
 
 pub mod accounting;
 pub mod config;
@@ -45,7 +64,16 @@ impl Protocol {
     }
 }
 
-/// Where glurmo gets the credential that signs each request.
+/// Where the client gets the credential that signs each request.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::Issuer;
+///
+/// let munged = Issuer::Munge("/run/munge/munge.socket.2".into());
+/// assert_ne!(munged, Issuer::Sack("/run/slurm/sack.socket".into()));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Issuer {
     /// munged, for `auth/munge`.
@@ -60,6 +88,17 @@ impl Issuer {
     /// # Errors
     ///
     /// Fails when neither runs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_rpc::Issuer;
+    ///
+    /// match Issuer::find() {
+    ///     Ok(Issuer::Munge(socket) | Issuer::Sack(socket)) => assert!(socket.exists()),
+    ///     Err(error) => assert!(error.to_string().starts_with("neither munged")),
+    /// }
+    /// ```
     pub fn find() -> Result<Self> {
         let munge = PathBuf::from(munge::SOCKET);
         if munge.exists() {
@@ -301,6 +340,15 @@ const DEFAULT_PORT: u16 = 6817;
 /// # Errors
 ///
 /// Fails when no slurm.conf can be read or it names no controller.
+///
+/// # Examples
+///
+/// ```
+/// match glurmo_rpc::controllers() {
+///     Ok(addresses) => assert!(addresses.iter().all(|address| address.contains(':'))),
+///     Err(error) => println!("this host names no controller: {error:#}"),
+/// }
+/// ```
 pub fn controllers() -> Result<Vec<String>> {
     let path = std::env::var_os("SLURM_CONF")
         .map(PathBuf::from)
@@ -356,6 +404,19 @@ fn controllers_in(conf: &str) -> Vec<String> {
 /// [`connect`](Self::connect) comes first, because the configuration says who may decode the
 /// client's credentials and where slurmdbd listens. Until then, calls go out in the newest protocol
 /// and anyone may decode their credentials.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn show() -> anyhow::Result<()> {
+/// use glurmo_rpc::{Client, Issuer, controllers};
+///
+/// let mut slurm = Client::new(controllers()?, Issuer::find()?);
+/// let config = slurm.connect().await?;
+/// println!("{} runs Slurm {}", config.cluster, config.version);
+/// # Ok(())
+/// # }
+/// ```
 pub struct Client {
     controller: Controller,
     /// `ClusterName`, which a slurmdbd connection names.
@@ -366,6 +427,15 @@ pub struct Client {
 
 impl Client {
     /// A client for the slurmctld at `addresses`, primary first, whose requests `issuer` signs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_rpc::{Client, Issuer};
+    ///
+    /// let issuer = Issuer::Munge("/run/munge/munge.socket.2".into());
+    /// let slurm = Client::new(vec!["ctl-1:6817".into(), "ctl-2:6817".into()], issuer);
+    /// ```
     pub fn new(addresses: Vec<String>, issuer: Issuer) -> Self {
         Self {
             controller: Controller {
@@ -389,6 +459,18 @@ impl Client {
     ///
     /// Fails when the controller answers in none of the protocols, or the configuration lacks the
     /// cluster's name or the Slurm version.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn show(slurm: &mut glurmo_rpc::Client) -> anyhow::Result<()> {
+    /// let config = slurm.connect().await?;
+    /// if config.private_data.iter().any(|hidden| hidden == "jobs") {
+    ///     println!("{} hides other users' jobs", config.cluster);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn connect(&mut self) -> Result<config::Config> {
         let mut failures = Vec::new();
         for protocol in Protocol::NEWEST_FIRST {
@@ -435,6 +517,22 @@ impl Client {
     /// # Errors
     ///
     /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn show(slurm: &glurmo_rpc::Client) -> anyhow::Result<()> {
+    /// let (jobs, placed) = slurm.jobs().await?;
+    /// let running = jobs.iter().filter(|job| job.state == "RUNNING").count();
+    /// let cores: usize = placed
+    ///     .iter()
+    ///     .flat_map(|job| &job.cells)
+    ///     .map(|cells| cells.cores.len())
+    ///     .sum();
+    /// println!("{running} running jobs hold {cores} cores");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn jobs(&self) -> Result<(Vec<jobs::Job>, Vec<jobs::Placed>)> {
         let reply = self
             .controller
@@ -449,6 +547,18 @@ impl Client {
     ///
     /// Fails when slurmctld does not answer, refuses for another reason, or sends a reply that does
     /// not decode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn show(slurm: &glurmo_rpc::Client) -> anyhow::Result<()> {
+    /// match slurm.job(4242).await? {
+    ///     Some(job) => println!("job 4242 holds cores on {}", job.hosts),
+    ///     None => println!("the controller no longer knows job 4242"),
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn job(&self, id: u32) -> Result<Option<jobs::Placed>> {
         let protocol = self.controller.session.protocol;
         let request = jobs::single_request(id, protocol);
@@ -472,6 +582,17 @@ impl Client {
     /// # Errors
     ///
     /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn show(slurm: &glurmo_rpc::Client) -> anyhow::Result<()> {
+    /// for node in slurm.nodes().await? {
+    ///     println!("{} {} {}", node.name, node.state, node.partitions.join(","));
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn nodes(&self) -> Result<Vec<nodes::Node>> {
         let partitions = self.partition_records().await?;
         let reply = self
@@ -490,6 +611,17 @@ impl Client {
     /// # Errors
     ///
     /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn show(slurm: &glurmo_rpc::Client) -> anyhow::Result<()> {
+    /// for partition in slurm.partitions().await? {
+    ///     println!("{} {} {}", partition.name, partition.state, partition.nodes);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn partitions(&self) -> Result<Vec<nodes::Partition>> {
         let records = self.partition_records().await?;
         Ok(records.into_iter().map(|record| record.partition).collect())
@@ -512,6 +644,18 @@ impl Client {
     /// # Errors
     ///
     /// Fails when slurmctld does not answer, refuses, or sends a reply that does not decode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn show(slurm: &glurmo_rpc::Client) -> anyhow::Result<()> {
+    /// let stats = slurm.stats().await?;
+    /// if let Some(busiest) = stats.rpcs.first() {
+    ///     println!("{} was served {} times", busiest.kind, busiest.count);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn stats(&self) -> Result<stats::Stats> {
         let reply = self
             .controller
@@ -527,6 +671,22 @@ impl Client {
     ///
     /// Fails when the site keeps no accounting in slurmdbd, or slurmdbd does not answer, refuses, or
     /// sends a reply that does not decode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn show(slurm: &glurmo_rpc::Client, now: i64) -> anyhow::Result<()> {
+    /// use glurmo_rpc::accounting::Query;
+    ///
+    /// let last_hour = Query::Window(now - 3_600, now);
+    /// let (records, tres) = slurm.accounting(&last_hour, now).await?;
+    /// for record in &records {
+    ///     let held = tres.counts(record.tres_alloc.as_deref())?;
+    ///     println!("{} {} {:?} CPUs", record.id, record.state, held.cpus);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn accounting(
         &self,
         query: &accounting::Query<'_>,

@@ -32,6 +32,22 @@ pub(crate) fn node_request() -> Vec<u8> {
 }
 
 /// A partition as scontrol shows it.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::nodes::Partition;
+///
+/// let partition = Partition {
+///     name: "5days".into(),
+///     nodes: "z[1001-1004]".into(),
+///     max_time_s: Some(432_000),
+///     default: false,
+///     hidden: false,
+///     state: "UP",
+/// };
+/// assert_eq!(partition.max_time_s, Some(5 * 24 * 3_600));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Partition {
     /// The name.
@@ -57,6 +73,31 @@ pub(crate) struct PartitionRecord {
 }
 
 /// A node as sinfo lists it.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::nodes::Node;
+///
+/// let node = Node {
+///     name: "z1001".into(),
+///     partitions: vec!["gpu".into(), "5days".into()],
+///     state: "mixed+drain".into(),
+///     reason: Some("bad fan".into()),
+///     cpus: 64,
+///     cpus_alloc: 16,
+///     sockets: 2,
+///     cores: 32,
+///     load: Some(15.9),
+///     mem_mb: 512_000,
+///     mem_alloc_mb: 128_000,
+///     mem_free_mb: Some(300_000),
+///     gres: "gpu:a100:4".into(),
+///     gres_used: "gpu:a100:2(IDX:0,2)".into(),
+///     features: vec!["icelake".into()],
+/// };
+/// assert_eq!(node.state.split('+').next(), Some("mixed"));
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     /// The hostname.

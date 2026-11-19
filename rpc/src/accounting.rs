@@ -25,6 +25,17 @@ const TRES_CPU: u32 = 1;
 const TRES_MEM: u32 = 2;
 
 /// Which allocations to read.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::accounting::Query;
+///
+/// let ids = [4242, 4243];
+/// let attempts = Query::Jobs(&ids);
+/// let hour = Query::Window(1_794_000_000, 1_794_003_600);
+/// assert!(matches!(hour, Query::Window(from, to) if to - from == 3_600));
+/// ```
 pub enum Query<'a> {
     /// Every attempt of the jobs with these IDs, whenever they ran.
     Jobs(&'a [u32]),
@@ -33,6 +44,34 @@ pub enum Query<'a> {
 }
 
 /// One allocation as accounting holds it, reduced to what glurmo reads.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::NO_VAL;
+/// use glurmo_rpc::accounting::Record;
+///
+/// let record = Record {
+///     id: 4242,
+///     array_base: 0,
+///     array_task: NO_VAL,
+///     array_range: None,
+///     array_max_tasks: 0,
+///     user_id: 1001,
+///     user: Some("otter".into()),
+///     partition: Some("5days".into()),
+///     state: "COMPLETED",
+///     req_cpus: 8,
+///     tres_alloc: Some("1=8,2=16000,1001=1".into()),
+///     tres_req: Some("1=8,2=16000,1001=1".into()),
+///     time_limit: 1_440,
+///     submit: 1_794_000_000,
+///     start: 1_794_000_100,
+///     end: 1_794_003_700,
+///     nodes: Some("z1001".into()),
+/// };
+/// assert_eq!(record.end - record.start, 3_600);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     /// The job ID, unique to each array task.
@@ -346,6 +385,16 @@ fn record(u: &mut Unpack, protocol: Protocol) -> Result<Record> {
 }
 
 /// The TRES IDs glurmo reads in accounting's `id=count` strings.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::accounting::Tres;
+///
+/// let tres = Tres { gpu: Some(1001) };
+/// assert_eq!(tres.counts(Some("1001=2"))?.gpus, 2);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tres {
     /// The ID of `gres/gpu`, if the site defines it.
@@ -384,6 +433,17 @@ impl Tres {
     /// # Errors
     ///
     /// Fails on an entry that is not `id=count`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_rpc::accounting::Tres;
+    ///
+    /// let held = Tres { gpu: Some(1001) }.counts(Some("1=8,2=16000,4=1,1001=2"))?;
+    /// assert_eq!((held.cpus, held.mem_mb, held.gpus), (Some(8), Some(16_000), 2));
+    /// assert_eq!(Tres { gpu: None }.counts(None)?.cpus, None);
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
     pub fn counts(self, text: Option<&str>) -> Result<Counts> {
         let mut counts = Counts::default();
         for entry in text
@@ -407,6 +467,15 @@ impl Tres {
 }
 
 /// The CPUs, memory and GPUs in a TRES string.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::accounting::Counts;
+///
+/// let requested = Counts { cpus: Some(4), ..Counts::default() };
+/// assert_eq!((requested.mem_mb, requested.gpus), (None, 0));
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     /// CPUs, if the string counts them.
@@ -423,6 +492,26 @@ impl Record {
     /// # Errors
     ///
     /// Fails when the range is not a hex mask.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_rpc::NO_VAL;
+    /// use glurmo_rpc::accounting::Record;
+    ///
+    /// let pending = Record {
+    ///     array_base: 5,
+    ///     array_task: NO_VAL,
+    ///     array_range: Some("0x0D".into()),
+    ///     array_max_tasks: 2,
+    /// #   id: 5, user_id: 1001, user: None, partition: None, state: "PENDING", req_cpus: 1,
+    /// #   tres_alloc: None, tres_req: None, time_limit: 60, submit: 1_794_000_000, start: 0, end: 0,
+    /// #   nodes: None,
+    /// };
+    /// let tasks = pending.array_tasks()?.unwrap();
+    /// assert_eq!((tasks.job, tasks.spec.as_str(), tasks.count), (5, "0,2-3%2", 3));
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
     pub fn array_tasks(&self) -> Result<Option<ArrayTasks>> {
         let range = self.array_range.as_deref().map(hex_tasks).transpose()?;
         Ok(array_tasks(

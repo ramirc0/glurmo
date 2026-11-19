@@ -15,6 +15,15 @@ const GET: u16 = 1;
 
 /// Counters since the controller's last daily reset, as sdiag prints them. The scheduler's counters are
 /// `None` when the controller leaves them out.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::stats::Stats;
+///
+/// let stats = Stats { jobs_started: Some(1_200), ..Stats::default() };
+/// assert_eq!(stats.jobs_completed, None);
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Controller threads busy with RPCs.
@@ -42,6 +51,15 @@ pub struct Stats {
 }
 
 /// How often the controller served one message type, and for how long in total.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::stats::RpcCount;
+///
+/// let rpc = RpcCount { kind: "REQUEST_JOB_INFO".into(), count: 9, total_us: 270_000 };
+/// assert_eq!(rpc.total_us / rpc.count, 30_000);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcCount {
     /// The message type as sdiag names it, such as `REQUEST_JOB_INFO`, or its number.

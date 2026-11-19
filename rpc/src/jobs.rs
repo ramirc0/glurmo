@@ -36,6 +36,15 @@ pub(crate) fn single_request(id: u32, protocol: Protocol) -> Vec<u8> {
 }
 
 /// The tasks of a job array that one record stands for.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::jobs::ArrayTasks;
+///
+/// let tasks = ArrayTasks { job: 3441951, spec: "0-3,8%2".into(), count: 5 };
+/// assert_eq!(tasks.count, 5);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrayTasks {
     /// The array's base job ID.
@@ -47,6 +56,31 @@ pub struct ArrayTasks {
 }
 
 /// A job as squeue lists it.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::jobs::Job;
+///
+/// let job = Job {
+///     id: 4242,
+///     array: None,
+///     user_id: 1001,
+///     user_name: Some("otter".into()),
+///     partition: "gpu,5days".into(),
+///     state: "PENDING",
+///     reason: "Priority".into(),
+///     cpus: 8,
+///     tres: "cpu=8,mem=16G,node=1,gres/gpu=1".into(),
+///     time_limit: 1_440,
+///     submit: 1_794_000_000,
+///     start: 0,
+///     end: 0,
+///     nodes: String::new(),
+///     name: "align".into(),
+/// };
+/// assert_eq!(job.partition.split(',').count(), 2);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
     /// The job ID, unique to each array task.
@@ -84,6 +118,25 @@ pub struct Job {
 }
 
 /// The cores a job holds, as `scontrol -d show job` reports them.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::jobs::{HostCells, Placed};
+///
+/// let job = Placed {
+///     id: 4242,
+///     start: 1_794_000_100,
+///     state: "RUNNING",
+///     hosts: "z[1001-1002]".into(),
+///     cells: vec![
+///         HostCells { cores: vec![0, 1], gres: "gpu:1(IDX:2)".into(), memory_mb: 8_000 },
+///         HostCells { cores: vec![4], gres: String::new(), memory_mb: 4_000 },
+///     ],
+/// };
+/// let cores: usize = job.cells.iter().map(|cells| cells.cores.len()).sum();
+/// assert_eq!(cores, 3);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Placed {
     /// The job ID.
@@ -99,6 +152,15 @@ pub struct Placed {
 }
 
 /// What a job holds on one host.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_rpc::jobs::HostCells;
+///
+/// let cells = HostCells { cores: vec![0, 1], gres: "gpu:a100:2(IDX:0,2)".into(), memory_mb: 16_000 };
+/// assert_eq!(cells.cores.len(), 2);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostCells {
     /// Its cores, counted from the host's first core.
