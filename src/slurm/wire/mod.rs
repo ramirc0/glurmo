@@ -296,6 +296,17 @@ impl std::fmt::Display for ReturnCode {
 
 impl std::error::Error for ReturnCode {}
 
+/// The site facts in the configuration.
+fn site(config: config::Config) -> Result<super::Site> {
+    Ok(super::Site {
+        cluster: config.cluster,
+        version: config.version.parse()?,
+        min_job_age_s: u64::from(config.min_job_age_s),
+        private_data: config.private_data,
+        rate_limit: super::rate_limit(config.slurmctld_parameters.as_deref().unwrap_or_default())?,
+    })
+}
+
 /// The node as the model holds it.
 fn node(node: nodes::Node) -> Result<Node> {
     let (state, flags) = node_state(&node.state);
@@ -524,12 +535,12 @@ impl Wire {
         let config = config::decode(&reply, protocol)?;
         let session = &mut self.controller.session;
         session.decoder = Some(config.slurm_uid);
-        if let (Issuer::Munge(socket), Some(named)) = (&mut session.issuer, config.munge) {
-            *socket = named;
+        if let (Issuer::Munge(socket), Some(named)) = (&mut session.issuer, &config.munge) {
+            socket.clone_from(named);
         }
-        self.cluster.clone_from(&config.site.cluster);
-        self.accounting = config.accounting;
-        Ok(config.site)
+        self.cluster.clone_from(&config.cluster);
+        self.accounting.clone_from(&config.accounting);
+        site(config)
     }
 
     /// Answers one call. The config call must come first, because it says who may decode our
@@ -1252,5 +1263,41 @@ mod tests {
         };
         let default = partition(default).unwrap();
         assert!(default.default && !default.hidden);
+    }
+
+    #[test]
+    fn every_setting_reaches_the_site() {
+        let read = config::Config {
+            cluster: "zlurm".into(),
+            version: "23.11.4".into(),
+            min_job_age_s: 300,
+            private_data: vec!["jobs".into()],
+            slurmctld_parameters: Some("rl_enable,rl_bucket_size=50".into()),
+            slurm_uid: 450,
+            accounting: Vec::new(),
+            munge: None,
+        };
+        let expected = crate::slurm::Site {
+            cluster: "zlurm".into(),
+            version: crate::slurm::Version(23, 11, 4),
+            min_job_age_s: 300,
+            private_data: vec!["jobs".into()],
+            rate_limit: Some(crate::slurm::RateLimit {
+                bucket_size: 50,
+                refill_rate: 2,
+                refill_period_s: 1,
+            }),
+        };
+        assert_eq!(site(read.clone()).unwrap(), expected);
+        let unlimited = config::Config {
+            slurmctld_parameters: None,
+            ..read.clone()
+        };
+        assert_eq!(site(unlimited).unwrap().rate_limit, None);
+        let unversioned = config::Config {
+            version: "next".into(),
+            ..read
+        };
+        assert!(site(unversioned).is_err());
     }
 }

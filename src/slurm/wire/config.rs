@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 
 use super::Protocol;
 use super::pack::Unpack;
-use crate::slurm::{Site, rate_limit};
 
 /// The request.
 pub const REQUEST: u16 = 2001;
@@ -16,8 +15,16 @@ pub const RESPONSE: u16 = 2002;
 /// What glurmo needs from the configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// Site facts.
-    pub site: Site,
+    /// `ClusterName`.
+    pub cluster: String,
+    /// The controller's Slurm version, such as `23.11.4`.
+    pub version: String,
+    /// `MinJobAge`: how long ended jobs stay in the controller's job list, in seconds.
+    pub min_job_age_s: u32,
+    /// What `PrivateData` hides from other users, named as scontrol names it, such as `jobs`.
+    pub private_data: Vec<String>,
+    /// `SlurmctldParameters`, which hold the RPC rate limit.
+    pub slurmctld_parameters: Option<String>,
     /// `SlurmUser`'s UID, which alone may decode our credentials.
     pub slurm_uid: u32,
     /// slurmdbd's addresses, primary first, if the site keeps accounting there.
@@ -68,13 +75,11 @@ impl Raw {
             Vec::new()
         };
         Ok(Config {
-            site: Site {
-                cluster: self.cluster.context("no ClusterName")?,
-                version: self.version.context("no SLURM_VERSION")?.parse()?,
-                min_job_age_s: u64::from(self.min_job_age),
-                private_data: private_data_names(self.private_data),
-                rate_limit: rate_limit(self.slurmctld_params.as_deref().unwrap_or_default())?,
-            },
+            cluster: self.cluster.context("no ClusterName")?,
+            version: self.version.context("no SLURM_VERSION")?,
+            min_job_age_s: self.min_job_age,
+            private_data: private_data_names(self.private_data),
+            slurmctld_parameters: self.slurmctld_params,
             slurm_uid: self.slurm_uid,
             accounting,
             munge: self.auth_info.as_deref().and_then(munge_socket),
@@ -629,17 +634,11 @@ mod tests {
     #[test]
     fn every_setting_lands_in_its_own_field() {
         let expected = Config {
-            site: Site {
-                cluster: "zlurm".into(),
-                version: crate::slurm::Version(23, 11, 4),
-                min_job_age_s: 300,
-                private_data: vec!["jobs".into()],
-                rate_limit: Some(crate::slurm::RateLimit {
-                    bucket_size: 50,
-                    refill_rate: 2,
-                    refill_period_s: 1,
-                }),
-            },
+            cluster: "zlurm".into(),
+            version: "23.11.4".into(),
+            min_job_age_s: 300,
+            private_data: vec!["jobs".into()],
+            slurmctld_parameters: Some("rl_enable,rl_bucket_size=50".into()),
             slurm_uid: 450,
             accounting: vec!["dbd-1:6819".into(), "dbd-2:6819".into()],
             munge: Some(PathBuf::from("/run/m.sock")),
