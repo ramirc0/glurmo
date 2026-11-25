@@ -57,7 +57,7 @@ pub fn Settings() -> impl IntoView {
                         library=state.palettes
                         picked=state.palette_name
                         fallback=""
-                        unpicked="theme's own"
+                        unpicked="theme"
                         choose=move |name| state.palette_name.set(name)
                     />
                     <Picker

@@ -1,5 +1,5 @@
 Palette(
     name: "Time left",
     by: TimeLeft(within: Hours(24)),
-    colors: ["#fcfdbf", "#feb078", "#f1605d", "#b73779", "#721f81", "#2c115f"],
+    colors: ["#2c115f", "#721f81", "#b73779", "#f1605d", "#feb078", "#fcfdbf"],
 )
