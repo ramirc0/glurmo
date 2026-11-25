@@ -676,7 +676,7 @@ mod tests {
                     (Size::Length(2), Pane::Header),
                     (
                         Size::Percentage(40),
-                        Pane::Die {
+                        Pane::Tiles {
                             group: Grouping::Partition,
                         },
                     ),

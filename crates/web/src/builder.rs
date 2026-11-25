@@ -13,7 +13,7 @@ use crate::tree::{self, Path, at, at_mut, dragged, size_mut};
 /// Every panel, with the options a new one starts with.
 const PANELS: [Pane; 12] = [
     Pane::Header,
-    Pane::Die {
+    Pane::Tiles {
         group: Grouping::Hardware,
     },
     Pane::Users,
@@ -50,7 +50,7 @@ fn kind(pane: &Pane) -> &'static str {
         Pane::Split(..) => "Split",
         Pane::Header => "Header",
         Pane::Keys => "Keys",
-        Pane::Die { .. } => "Die",
+        Pane::Tiles { .. } => "Tiles",
         Pane::Users => "Users",
         Pane::Groups => "Groups",
         Pane::Queue { .. } => "Queue",
@@ -68,7 +68,7 @@ pub fn label(pane: &Pane) -> String {
     match pane {
         Pane::Split(Direction::Horizontal, children) => format!("{} side by side", children.len()),
         Pane::Split(Direction::Vertical, children) => format!("{} stacked", children.len()),
-        Pane::Die { group } => format!("Die by {}", words(*group)),
+        Pane::Tiles { group } => format!("Tiles by {}", words(*group)),
         Pane::Queue {
             by: QueueBy::Partition,
         } => "Queue by partition".to_owned(),
@@ -544,7 +544,7 @@ fn PanelControl(
         .collect_view();
     let options = move || {
         match pane() {
-        Some(Pane::Die { group }) => view! {
+        Some(Pane::Tiles { group }) => view! {
             <label>
                 "group by"
                 <select on:change=move |event| {
@@ -552,7 +552,7 @@ fn PanelControl(
                         "partition" => Grouping::Partition,
                         _ => Grouping::Hardware,
                     };
-                    replace(Pane::Die { group });
+                    replace(Pane::Tiles { group });
                 }>
                     <option value="hardware" selected=group == Grouping::Hardware>"hardware"</option>
                     <option value="partition" selected=group == Grouping::Partition>"partition"</option>

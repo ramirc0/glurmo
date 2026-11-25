@@ -1,5 +1,5 @@
 //! The job list: running and pending jobs, grouped, with a search and filters. Hovering a row lights its
-//! jobs' cores on the Die. Hovering a core on the Die lights its job's rows here, and hovering a node
+//! jobs' cores on the Tiles panel. Hovering a core on the Tiles panel lights its job's rows here, and hovering a node
 //! lights the rows of every job on it. The list scrolls to the first.
 
 use std::collections::BTreeSet;
@@ -388,7 +388,7 @@ impl Members {
     }
 
     /// Whether the row lights up under `highlight`: its own, or one of its jobs or nodes under the
-    /// Die's pointer.
+    /// Tiles's pointer.
     fn lit_by(&self, highlight: Option<&Highlight>) -> bool {
         match highlight {
             Some(Highlight::Job(key)) => self.keys.contains(key),
@@ -399,7 +399,7 @@ impl Members {
     }
 }
 
-/// A row that lights its jobs' cores on the Die while hovered, and lights itself while the page's
+/// A row that lights its jobs' cores on the Tiles panel while hovered, and lights itself while the page's
 /// highlight is on one of its jobs or nodes. It reads a copy of the highlight that dies with it. A click
 /// runs `click`.
 #[component]

@@ -2,7 +2,6 @@
 //! layout of panels.
 
 mod app;
-mod die;
 mod feed;
 mod groups;
 mod header;
@@ -15,6 +14,7 @@ mod queue;
 mod sse;
 mod theme_colors;
 mod ticker;
+mod tiles;
 mod users;
 mod view;
 

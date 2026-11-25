@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 
 use super::app::App;
 use super::theme_colors::{ThemeColors, rgb};
-use super::{die, groups, header, history, jobs, mine, nodes, partitions, queue, ticker, users};
+use super::{groups, header, history, jobs, mine, nodes, partitions, queue, ticker, tiles, users};
 use glurmo_model::jobs::Words;
 use glurmo_model::layout::{Direction, Pane, Size};
 use glurmo_model::palette::Coloring;
@@ -226,7 +226,7 @@ fn walk(scene: &Scene, pane: &Pane, area: Rect, buf: &mut Buffer, limits: &mut V
         Pane::Header => return header::header(scene, area, buf),
         Pane::Keys => return header::keys(scene, area, buf),
         Pane::History { span } => return history::draw(scene, *span, area, buf),
-        Pane::Die { group } => die::draw(scene, *group, area, buf, focus),
+        Pane::Tiles { group } => tiles::draw(scene, *group, area, buf, focus),
         Pane::Users => users::draw(scene, area, buf, focus),
         Pane::Groups => groups::draw(scene, area, buf, focus),
         Pane::Queue { by } => queue::draw(scene, *by, area, buf, focus),
@@ -439,7 +439,7 @@ pub(super) mod tests {
         let layout = from_ron(
             r#"Layout(name: "rest", root: Split(Horizontal, [
                 (Fill(1), Split(Vertical, [
-                    (Fill(1), Die(group: Partition)),
+                    (Fill(1), Tiles(group: Partition)),
                     (Length(8), Mine),
                 ])),
                 (Length(64), Split(Vertical, [
@@ -461,7 +461,11 @@ pub(super) mod tests {
             .draw(|frame| app.limits = draw(frame, &app))
             .unwrap();
         insta::assert_snapshot!("rest_help", terminal.backend());
-        assert_eq!(app.limits.len(), 5, "die, mine, partitions, queue, ticker");
+        assert_eq!(
+            app.limits.len(),
+            5,
+            "tiles, mine, partitions, queue, ticker"
+        );
     }
 
     #[tokio::test]
@@ -524,9 +528,9 @@ pub(super) mod tests {
     #[tokio::test]
     async fn a_time_left_palette_shows_its_steps_on_the_cores_frame() {
         let mut app = busy_app().await;
-        let layout = from_ron(r#"Layout(name: "die", root: Die(group: Hardware))"#).unwrap();
-        app.library.layouts.insert("die".into(), layout);
-        app.layout = "die".into();
+        let layout = from_ron(r#"Layout(name: "tiles", root: Tiles(group: Hardware))"#).unwrap();
+        app.library.layouts.insert("tiles".into(), layout);
+        app.layout = "tiles".into();
         app.palette = Some("time-left".into());
         let terminal = render(&mut app, 100, 3);
         insta::assert_snapshot!("time_left_legend", terminal.backend());

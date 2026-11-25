@@ -186,7 +186,7 @@ mod tests {
     use super::*;
     use glurmo_model::layout::Grouping;
 
-    /// `Header` over `Die | (Users / Ticker)`, sized as the built-in layouts are.
+    /// `Header` over `Tiles | (Users / Ticker)`, sized as the built-in layouts are.
     fn tree() -> Pane {
         Pane::Split(
             Direction::Vertical,
@@ -199,7 +199,7 @@ mod tests {
                         vec![
                             (
                                 Size::Percentage(70),
-                                Pane::Die {
+                                Pane::Tiles {
                                     group: Grouping::Hardware,
                                 },
                             ),

@@ -131,20 +131,20 @@ main.tv {
   overflow: auto;
 }
 
-.panel.die {
+.panel.tiles {
   position: relative;
   background: none;
   padding: 0;
   overflow: hidden auto;
 }
 
-.die .board {
+.tiles .board {
   display: flex;
   flex: 1 0 auto;
   flex-direction: column;
 }
 
-.die .legend {
+.tiles .legend {
   display: flex;
   gap: 14px;
   padding: 0 4px 4px;
@@ -152,7 +152,7 @@ main.tv {
   color: var(--muted);
 }
 
-.die .legend .swatch {
+.tiles .legend .swatch {
   margin-right: 5px;
 }
 

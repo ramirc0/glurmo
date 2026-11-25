@@ -1,4 +1,4 @@
-//! The Die's tooltip: the job that holds a core or GPU, or the node and who holds its cores.
+//! The Tiles panel's tooltip: the job that holds a core or GPU, or the node and who holds its cores.
 
 use std::collections::BTreeMap;
 
@@ -6,8 +6,8 @@ use glurmo_model::units::{gigabytes, load, since, span};
 use glurmo_model::{Attempt, Cluster, JobState, Node, Occupancies, Occupancy, Owner};
 use leptos::prelude::*;
 
-use crate::die::{Spot, owner_at};
 use crate::paint::display_name;
+use crate::tiles::{Spot, owner_at};
 
 /// The most holders a node's tooltip lists.
 const HOLDERS: usize = 6;

@@ -30,6 +30,9 @@ pub struct Layout {
 ///
 /// let pane = Pane::Split(Direction::Vertical, vec![(Size::Length(1), Pane::Header), (Size::Fill(1), Pane::Users)]);
 /// assert!(matches!(pane, Pane::Split(Direction::Vertical, _)));
+///
+/// let old: Pane = serde_json::from_str(r#"{"Die": {"group": "Hardware"}}"#).unwrap();
+/// assert!(matches!(old, Pane::Tiles { .. }), "the name from before the rename still reads");
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pane {
@@ -39,8 +42,10 @@ pub enum Pane {
     Header,
     /// The key bindings.
     Keys,
-    /// Every core and GPU, colored by who holds it.
-    Die {
+    /// Every core and GPU, a tile per node, colored by the palette. Layouts from before the rename
+    /// call it `Die`.
+    #[serde(alias = "Die")]
+    Tiles {
         /// How to group nodes.
         group: Grouping,
     },

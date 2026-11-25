@@ -38,7 +38,7 @@ fn Bar(part: u64, whole: u64, #[prop(into)] fill: String) -> impl IntoView {
     }
 }
 
-/// A table row that lights `highlight` on the Die while hovered, except on a wall display, where the
+/// A table row that lights `highlight` on the Tiles panel while hovered, except on a wall display, where the
 /// highlight cycles on its own. It shows as lit while `current`, a copy of the page's highlight, is its
 /// own.
 #[component]

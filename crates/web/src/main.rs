@@ -8,7 +8,6 @@
 
 mod base16;
 mod builder;
-mod die;
 mod editor;
 mod feed;
 mod history;
@@ -21,6 +20,7 @@ mod settings;
 mod shelf;
 mod state;
 mod theme_editor;
+mod tiles;
 mod tip;
 mod tree;
 

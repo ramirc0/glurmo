@@ -33,7 +33,7 @@ pub enum Link {
     Lost(f64),
 }
 
-/// What the Die lights up while everything else fades.
+/// What the Tiles panel lights up while everything else fades.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Highlight {
     /// One user's cores and GPUs.
@@ -44,7 +44,7 @@ pub enum Highlight {
     Partition(PartitionName),
     /// One node.
     Node(NodeName),
-    /// The job under the pointer on the Die. The job list lights its row and scrolls to it.
+    /// The job under the pointer on the Tiles panel. The job list lights its row and scrolls to it.
     Job(AttemptKey),
     /// The jobs in a row of the job list.
     Jobs(BTreeSet<AttemptKey>),
@@ -102,7 +102,7 @@ pub struct State {
     /// Whether the editor is open. A memo, so views that only care whether it is open are not rebuilt
     /// on every edit of the draft.
     pub editing: Memo<bool>,
-    /// What stands out on the Die while the rest fades.
+    /// What stands out on the Tiles panel while the rest fades.
     pub highlight: RwSignal<Option<Highlight>>,
     /// Copies of the highlight for table rows.
     pub row_highlights: RowHighlights,

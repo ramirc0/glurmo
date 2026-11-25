@@ -130,14 +130,14 @@ pub fn owner_at(occupancy: &Occupancies, node: &Node, spot: Spot) -> Option<Owne
 
 /// Lights what the pointer is on: the job that holds a core or GPU, else the node. Clears what it lit
 /// once the pointer leaves the tiles. Highlights from elsewhere stay until the pointer finds a tile.
-fn light_from_die(state: State, lit: Option<Highlight>) {
+fn light_from_tiles(state: State, lit: Option<Highlight>) {
     if state.tv {
         return;
     }
-    let from_die = state.highlight.with_untracked(|highlight| {
+    let from_tiles = state.highlight.with_untracked(|highlight| {
         matches!(highlight, Some(Highlight::Job(_) | Highlight::Node(_)))
     });
-    if (lit.is_some() || from_die)
+    if (lit.is_some() || from_tiles)
         && state
             .highlight
             .with_untracked(|highlight| *highlight != lit)
@@ -533,11 +533,11 @@ fn place<'a>(node: &'a Node, frame: Rect, pitch: &Pitch) -> Tile<'a> {
     }
 }
 
-/// The die panel. Hovering a core shows the job that holds it, and hovering elsewhere on a tile shows
+/// The Tiles panel. Hovering a core shows the job that holds it, and hovering elsewhere on a tile shows
 /// the node. Tiles fit the panel's visible height. When even the smallest tiles overflow it, the board
 /// grows to its own height and the panel scrolls.
 #[component]
-pub fn Die(group: Grouping) -> impl IntoView {
+pub fn Tiles(group: Grouping) -> impl IntoView {
     let state = expect_context::<State>();
     let tip = RwSignal::new(None::<Tip>);
     let panel = NodeRef::<leptos::html::Section>::new();
@@ -571,7 +571,7 @@ pub fn Die(group: Grouping) -> impl IntoView {
         });
         let (found, lit) = found.unzip();
         tip.set(found.map(|tip| tip.at(x, y, width, height)));
-        light_from_die(state, lit);
+        light_from_tiles(state, lit);
     };
     let draw = move |context: &CanvasRenderingContext2d, width: f64, height: f64| {
         let Some(theme) = state.theme.get() else {
@@ -606,7 +606,7 @@ pub fn Die(group: Grouping) -> impl IntoView {
     };
     view! {
         <section
-            class="panel die"
+            class="panel tiles"
             node_ref=panel
             on:mousemove=move |event| {
                 if !state.tv {
@@ -615,7 +615,7 @@ pub fn Die(group: Grouping) -> impl IntoView {
             }
             on:mouseleave=move |_| {
                 tip.set(None);
-                light_from_die(state, None);
+                light_from_tiles(state, None);
             }
         >
             <Legend/>

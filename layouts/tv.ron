@@ -2,7 +2,7 @@ Layout(name: "tv", root:
     Split(Vertical, [
         (Length(2), Header),
         (Fill(1), Split(Horizontal, [
-            (Percentage(75), Die(group: Hardware)),
+            (Percentage(75), Tiles(group: Hardware)),
             (Fill(1), Split(Vertical, [(Fill(1), Users), (Length(10), Partitions)])),
         ])),
         (Length(12), History(span: Hours(24))),

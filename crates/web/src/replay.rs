@@ -57,7 +57,7 @@ pub enum Cell {
     Gpu(usize),
 }
 
-/// A cell that changed hands, which the Die lights for a while: a flash when a start takes it, and the
+/// A cell that changed hands, which the Tiles panel lights for a while: a flash when a start takes it, and the
 /// old holder's color fading when an end frees it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Effect {

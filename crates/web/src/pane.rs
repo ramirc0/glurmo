@@ -6,11 +6,11 @@ use glurmo_model::layout::{Direction, Pane, Size};
 use leptos::prelude::*;
 
 use crate::builder::{Cover, Grip, label};
-use crate::die::Die;
 use crate::history::History;
 use crate::jobs::Jobs;
 use crate::panels::{Groups, Header, Keys, Mine, Nodes, Partitions, Queue, Ticker, Users};
 use crate::state::State;
+use crate::tiles::Tiles;
 use crate::tree::Path;
 
 /// The view of `pane`, at `path` in its layout, and everything inside it.
@@ -54,7 +54,7 @@ fn panel(pane: &Pane) -> AnyView {
         Pane::Split(..) => ().into_any(),
         Pane::Header => view! { <Header/> }.into_any(),
         Pane::Keys => view! { <Keys/> }.into_any(),
-        Pane::Die { group } => view! { <Die group=group/> }.into_any(),
+        Pane::Tiles { group } => view! { <Tiles group=group/> }.into_any(),
         Pane::Users => view! { <Users/> }.into_any(),
         Pane::Groups => view! { <Groups/> }.into_any(),
         Pane::Queue { by } => view! { <Queue by=by/> }.into_any(),
