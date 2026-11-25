@@ -21,8 +21,9 @@ web:
     cd crates/web && trunk build --release
 
 # Load the web view from a running server in headless Chromium, print its console and save a screenshot.
+[positional-arguments]
 web-check server out *args:
-    node crates/web/check.mjs {{server}} {{out}} {{args}}
+    node crates/web/check.mjs "$@"
 
 # Replay the busy fixture with every job in its own row and its first queue held twice over, about
 # 1,400 rows, and fail if hovering a row slows down after 200 rebuilds of the jobs table.
