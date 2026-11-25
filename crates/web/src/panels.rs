@@ -7,16 +7,22 @@ use glurmo_model::units::{percent, since, span, thousands};
 use glurmo_model::{Attempt, JobState, Login, NodeName, NodeState, PartitionName};
 use leptos::prelude::*;
 
-use crate::paint::{Rgb, clock, display_name, user_color};
+use crate::paint::{Rgb, clock, display_name, painted};
 use crate::state::{Highlight, Link, State};
+use glurmo_model::palette::Coloring;
+use glurmo_model::theme::Color;
 
-/// The CSS color of `login` in the current theme.
+/// The CSS color of `login` under the palette.
 pub fn color_of(state: State, login: &Login) -> String {
+    css_of(state, |coloring| coloring.user(login))
+}
+
+/// The CSS color that `pick` takes from the coloring, or the rest color when it takes none.
+fn css_of(state: State, pick: impl Fn(&Coloring) -> Option<&Color>) -> String {
     state.theme.with(|theme| {
-        theme.as_ref().map_or_else(String::new, |theme| {
-            state
-                .cluster
-                .with(|cluster| user_color(theme, cluster, login).css())
+        state.coloring.with(|coloring| match (theme, coloring) {
+            (Some(theme), Some(coloring)) => painted(theme, coloring, pick(coloring)).css(),
+            _ => String::new(),
         })
     })
 }
@@ -298,6 +304,7 @@ pub fn Groups() -> impl IntoView {
             <table>
                 <thead>
                     <tr>
+                        <th></th>
                         <th class="name">"group"</th>
                         <th>"users"</th>
                         <th>"cores"</th>
@@ -319,8 +326,12 @@ pub fn Groups() -> impl IntoView {
                                 } else {
                                     percent(held.cores, capacity).clamp(1, 100)
                                 };
+                                let color = css_of(state, |coloring| coloring.group(&name));
                                 view! {
                                     <LitRow highlight=Highlight::Group(name.clone()) current=current>
+                                        <td>
+                                            <span class="swatch" style:background=color.clone()></span>
+                                        </td>
                                         <td class="name">{name.0}</td>
                                         <td>{thousands(users)}</td>
                                         <td>{thousands(held.cores)}</td>
@@ -332,7 +343,7 @@ pub fn Groups() -> impl IntoView {
                                                 <span
                                                     class="fill"
                                                     style:width=format!("{share}%")
-                                                    style:background="var(--subtle)"
+                                                    style:background=color
                                                 ></span>
                                             </span>
                                         </td>
@@ -750,6 +761,10 @@ pub fn Keys() -> impl IntoView {
             <span>
                 <kbd>"t"</kbd>
                 " theme"
+            </span>
+            <span>
+                <kbd>"p"</kbd>
+                " palette"
             </span>
             <span>
                 <kbd>"l"</kbd>

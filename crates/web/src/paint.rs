@@ -1,5 +1,6 @@
 //! Colors from the theme, a canvas that redraws when its panel resizes, and clock times.
 
+use glurmo_model::palette::Coloring;
 use glurmo_model::theme::{Color, Theme};
 use glurmo_model::{Cluster, Login, UnixTime};
 use leptos::html;
@@ -49,19 +50,13 @@ impl Rgb {
     }
 }
 
-/// The color of `login`, from the palette slot the server gave it, or the muted color for someone
-/// not seen yet.
-pub fn user_color(theme: &Theme, cluster: &Cluster, login: &Login) -> Rgb {
-    slot_color(theme, cluster.users.get(login).map(|user| user.color_slot))
-}
-
-/// The color of palette slot `slot`, or the muted color for none.
-pub fn slot_color(theme: &Theme, slot: Option<u32>) -> Rgb {
-    slot.and_then(|slot| {
-        let index = usize::try_from(slot).ok()? % theme.users.len().max(1);
-        theme.users.get(index)
-    })
-    .map_or_else(|| Rgb::of(&theme.ui.muted), Rgb::of)
+/// A color `coloring` gave, for the canvas. `None` is the rest color: the palette's own, or a quiet
+/// one between the theme's muted text and its free cores.
+pub fn painted(theme: &Theme, coloring: &Coloring, color: Option<&Color>) -> Rgb {
+    color.or(coloring.rest()).map_or_else(
+        || Rgb::of(&theme.ui.muted).fade(Rgb::of(&theme.state.free), 0.55),
+        Rgb::of,
+    )
 }
 
 /// How to show `login`: the full name when the server sends one.

@@ -8,6 +8,7 @@ use leptos::prelude::*;
 use crate::replay::{Engine, Playhead};
 use crate::tree::Path;
 use glurmo_model::layout::{Layout, Pane};
+use glurmo_model::palette::{Coloring, Palette};
 use glurmo_model::summary::Ticker;
 use glurmo_model::theme::Theme;
 use glurmo_model::usage::Usage;
@@ -79,8 +80,12 @@ pub struct State {
     pub themes: RwSignal<BTreeMap<String, Theme>>,
     /// Layouts by file name.
     pub layouts: RwSignal<BTreeMap<String, Layout>>,
+    /// Palettes by file name.
+    pub palettes: RwSignal<BTreeMap<String, Palette>>,
     /// The theme asked for.
     pub theme_name: RwSignal<String>,
+    /// The palette asked for. Empty asks for the theme's own user colors.
+    pub palette_name: RwSignal<String>,
     /// The layout asked for.
     pub layout_name: RwSignal<String>,
     /// The theme being edited, which every panel draws with until the editor closes.
@@ -91,6 +96,9 @@ pub struct State {
     pub theme: Memo<Option<Theme>>,
     /// The layout shown: the draft, else the one asked for once layouts have loaded.
     pub layout: Memo<Option<Layout>>,
+    /// Who takes which color: the palette asked for, else the theme's own, worked out for the cluster
+    /// as it stands. `None` until a theme has loaded.
+    pub coloring: Memo<Option<Coloring>>,
     /// Whether the editor is open. A memo, so views that only care whether it is open are not rebuilt
     /// on every edit of the draft.
     pub editing: Memo<bool>,
@@ -159,12 +167,14 @@ pub struct Timeline {
     pub end: Option<UnixTime>,
 }
 
-/// What the address asks for, as in `?layout=tv&theme=rose-pine-dawn&me=otter&tv&at=1794700000&speed=60`.
+/// What the address asks for, as in `?layout=tv&theme=rose-pine-dawn&palette=mono&me=otter&tv&at=1794700000&speed=60`.
 pub struct Address {
     /// The layout.
     pub layout: String,
     /// The theme.
     pub theme: String,
+    /// The palette, or the theme's own user colors when none is named.
+    pub palette: Option<String>,
     /// The viewer's login.
     pub me: Option<String>,
     /// Whether to run as a wall display. A layout named `tv` implies it.
@@ -190,6 +200,7 @@ impl Address {
         });
         Self {
             theme: get("theme").unwrap_or_else(|| DEFAULT_THEME.to_owned()),
+            palette: get("palette"),
             me: get("me"),
             layout,
             tv,
@@ -203,7 +214,7 @@ impl State {
     /// A state with nothing loaded yet, picking what `address` asks for.
     pub fn new(address: Address) -> Self {
         let cluster = RwSignal::new(Cluster::default());
-        let themes = RwSignal::new(BTreeMap::new());
+        let themes = RwSignal::new(BTreeMap::<String, Theme>::new());
         let layouts = RwSignal::new(BTreeMap::new());
         let theme_name = RwSignal::new(address.theme);
         let layout_name = RwSignal::new(address.layout);
@@ -212,27 +223,46 @@ impl State {
         let highlight = RwSignal::new(None);
         let row_highlights = RowHighlights::new();
         Effect::new(move |_| highlight.with(|lit| row_highlights.send(lit.as_ref())));
+        let occupancy = Memo::new(move |_| cluster.with(Cluster::occupancy));
+        let theme = Memo::new(move |_| {
+            draft_theme.get().or_else(|| {
+                themes.with(|themes| {
+                    pick(themes, &theme_name.get(), DEFAULT_THEME).map(|(_, theme)| theme.clone())
+                })
+            })
+        });
+        let palettes = RwSignal::new(BTreeMap::<String, Palette>::new());
+        let palette_name = RwSignal::new(address.palette.unwrap_or_default());
+        let palette = Memo::new(move |_| {
+            palettes
+                .with(|palettes| palettes.get(&palette_name.get()).cloned())
+                .or_else(|| theme.with(|theme| theme.as_ref().map(Palette::of_theme)))
+        });
+        let coloring = Memo::new(move |_| {
+            palette.with(|palette| {
+                let palette = palette.as_ref()?;
+                Some(cluster.with(|cluster| {
+                    occupancy.with(|occupancy| palette.coloring(cluster, occupancy))
+                }))
+            })
+        });
         Self {
             cluster,
-            occupancy: Memo::new(move |_| cluster.with(Cluster::occupancy)),
+            occupancy,
             cluster_name: RwSignal::new(String::new()),
             link: RwSignal::new(Link::Connecting),
             ticker: RwSignal::new(Ticker::default()),
             usage: RwSignal::new(Ok(Usage::default())),
             themes,
             layouts,
+            palettes,
             theme_name,
+            palette_name,
             layout_name,
             draft_theme,
             draft_layout,
-            theme: Memo::new(move |_| {
-                draft_theme.get().or_else(|| {
-                    themes.with(|themes| {
-                        pick(themes, &theme_name.get(), DEFAULT_THEME)
-                            .map(|(_, theme)| theme.clone())
-                    })
-                })
-            }),
+            theme,
+            coloring,
             layout: Memo::new(move |_| {
                 draft_layout.get().or_else(|| {
                     layouts.with(|layouts| {

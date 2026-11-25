@@ -1,5 +1,5 @@
-//! The gear at the top right of the page and the menu it opens: the theme, the layout and the way into
-//! the editor. The menu is a popover, so the browser closes it on a press outside it or on Esc.
+//! The gear at the top right of the page and the menu it opens: the theme, the palette, the layout and
+//! the way into the editor. The menu is a popover, so the browser closes it on a press outside it or on Esc.
 
 use std::collections::BTreeMap;
 
@@ -52,6 +52,15 @@ pub fn Settings() -> impl IntoView {
                         choose=move |name| state.theme_name.set(name)
                     />
                     <Picker
+                        label="palette"
+                        key="p"
+                        library=state.palettes
+                        picked=state.palette_name
+                        fallback=""
+                        unpicked="theme's own"
+                        choose=move |name| state.palette_name.set(name)
+                    />
+                    <Picker
                         label="layout"
                         key="l"
                         library=state.layouts
@@ -73,7 +82,8 @@ pub fn Settings() -> impl IntoView {
 }
 
 /// A line of the menu that picks one of `library` by name, beside the key that cycles through them. It
-/// shows the entry in effect, which is `fallback` when `picked` names none.
+/// shows the entry in effect, which is `fallback` when `picked` names none. With `unpicked`, naming none
+/// is a choice of its own, listed first under that label.
 #[component]
 fn Picker<T>(
     label: &'static str,
@@ -81,13 +91,23 @@ fn Picker<T>(
     library: RwSignal<BTreeMap<String, T>>,
     picked: RwSignal<String>,
     fallback: &'static str,
+    #[prop(optional)] unpicked: Option<&'static str>,
     choose: impl Fn(String) + 'static,
 ) -> impl IntoView
 where
     T: Send + Sync + 'static,
 {
     let in_effect = Memo::new(move |_| {
-        library.with(|entries| pick(entries, &picked.get(), fallback).map(|(name, _)| name.clone()))
+        library.with(|entries| match unpicked {
+            Some(_) => Some(picked.get())
+                .filter(|name| entries.contains_key(name))
+                .or(Some(String::new())),
+            None => pick(entries, &picked.get(), fallback).map(|(name, _)| name.clone()),
+        })
+    });
+    let none = unpicked.map(|label| {
+        let selected = move || in_effect.with(|name| name.as_deref() == Some(""));
+        view! { <option value="" prop:selected=selected>{label}</option> }
     });
     let options = move || {
         library.with(|entries| {
@@ -105,7 +125,7 @@ where
     };
     view! {
         <label>
-            {label} <select on:change=move |event| choose(event_target_value(&event))>{options}</select>
+            {label} <select on:change=move |event| choose(event_target_value(&event))>{none} {options}</select>
             <kbd>{key}</kbd>
         </label>
     }

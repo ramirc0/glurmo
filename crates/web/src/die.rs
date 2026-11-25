@@ -7,14 +7,15 @@
 use std::fmt::Write;
 
 use glurmo_model::layout::Grouping;
+use glurmo_model::palette::Coloring;
 use glurmo_model::summary::{NodeGroup, node_groups};
 use glurmo_model::theme::Theme;
-use glurmo_model::units::{gigabytes, load, thousands};
+use glurmo_model::units::{gigabytes, horizon, load, thousands};
 use glurmo_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use leptos::prelude::*;
 use web_sys::CanvasRenderingContext2d;
 
-use crate::paint::{Rgb, Surface, user_color};
+use crate::paint::{Rgb, Surface, painted};
 use crate::replay::{Cell, Effect, Effects};
 use crate::state::{Highlight, State};
 use crate::tip::Tip;
@@ -578,6 +579,9 @@ pub fn Die(group: Grouping) -> impl IntoView {
         };
         let height = visible().map_or(height, |(_, height)| height);
         let highlight = state.highlight.get();
+        let Some(coloring) = state.coloring.get() else {
+            return;
+        };
         let playhead = state.replay.get();
         state.cluster.with(|cluster| {
             state.occupancy.with(|occupancy| {
@@ -592,6 +596,7 @@ pub fn Die(group: Grouping) -> impl IntoView {
                         cluster,
                         occupancy,
                         highlight: highlight.as_ref(),
+                        coloring: &coloring,
                         effects: playhead.map(|playhead| (&engine.effects, playhead.at)),
                     };
                     ink.board(&groups, &board);
@@ -613,6 +618,7 @@ pub fn Die(group: Grouping) -> impl IntoView {
                 light_from_die(state, None);
             }
         >
+            <Legend/>
             <div
                 class="board"
                 style:min-height=move || overflow.get().map(|height| format!("{height}px"))
@@ -624,6 +630,41 @@ pub fn Die(group: Grouping) -> impl IntoView {
     }
 }
 
+/// Under a palette by time left, each step's color with the time left at which it ends, then the rest
+/// color for jobs with more. Nothing under any other palette.
+#[component]
+fn Legend() -> impl IntoView {
+    let state = expect_context::<State>();
+    move || {
+        let theme = state.theme.get()?;
+        let coloring = state.coloring.get()?;
+        let swatch = |color: Rgb, label: String| {
+            view! {
+                <span>
+                    <span class="swatch" style:background=color.css()></span>
+                    {label}
+                </span>
+            }
+        };
+        let mut steps: Vec<_> = coloring
+            .steps()
+            .map(|(end_s, color)| {
+                (
+                    end_s,
+                    swatch(painted(&theme, &coloring, Some(color)), horizon(end_s)),
+                )
+            })
+            .collect();
+        let (last, _) = steps.last()?;
+        let rest = swatch(
+            painted(&theme, &coloring, None),
+            format!("{}+", horizon(*last)),
+        );
+        let steps: Vec<_> = steps.drain(..).map(|(_, step)| step).collect();
+        Some(view! { <div class="legend">"time left" {steps} {rest}</div> })
+    }
+}
+
 /// What drawing needs at hand.
 struct Ink<'a> {
     context: &'a CanvasRenderingContext2d,
@@ -631,6 +672,7 @@ struct Ink<'a> {
     cluster: &'a Cluster,
     occupancy: &'a Occupancies,
     highlight: Option<&'a Highlight>,
+    coloring: &'a Coloring,
     /// While replaying, the cells that just changed hands and the playhead.
     effects: Option<(&'a Effects, f64)>,
 }
@@ -726,8 +768,10 @@ impl Ink<'_> {
             Some(Owner::Attempt(key)) => match self.cluster.running.get(&key) {
                 Some(running) => {
                     let login = &running.attempt.login;
+                    let now = self.cluster.at.unwrap_or_default();
+                    let color = self.coloring.core(&running.attempt, now);
                     (
-                        user_color(self.theme, self.cluster, login),
+                        painted(self.theme, self.coloring, color),
                         Some(login),
                         Some(key),
                     )
@@ -833,7 +877,7 @@ impl Ink<'_> {
                 (swollen, color.fade(text, 1.0 - 0.85 * strength))
             }
             Some((effect, strength)) if !effect.started && owner.is_none() => {
-                let held = user_color(self.theme, self.cluster, &effect.login);
+                let held = painted(self.theme, self.coloring, self.coloring.user(&effect.login));
                 (rect, held.fade(empty, 0.6 * strength))
             }
             _ => (rect, color),

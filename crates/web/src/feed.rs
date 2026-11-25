@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use glurmo_model::layout::Layout;
+use glurmo_model::palette::Palette;
 use glurmo_model::theme::Theme;
 use glurmo_model::usage::{Step, Usage, step_for};
 use glurmo_model::{Cluster, Delta, UnixTime};
@@ -145,7 +146,8 @@ pub fn watch_fonts(state: State) {
     loaded.forget();
 }
 
-/// Reads the server's themes and layouts into `state`, with the ones saved in this browser on top.
+/// Reads the server's themes, palettes and layouts into `state`, with the themes and layouts saved in
+/// this browser on top.
 pub fn load_library(state: State) {
     spawn_local(async move {
         match fetch::<BTreeMap<String, Theme>>("/api/themes").await {
@@ -154,6 +156,12 @@ pub fn load_library(state: State) {
                 state.themes.try_set(themes);
             }
             Err(error) => web_sys::console::error_1(&format!("no themes: {error}").into()),
+        }
+        match fetch::<BTreeMap<String, Palette>>("/api/palettes").await {
+            Ok(palettes) => {
+                state.palettes.try_set(palettes);
+            }
+            Err(error) => web_sys::console::error_1(&format!("no palettes: {error}").into()),
         }
         match fetch::<BTreeMap<String, Layout>>("/api/layouts").await {
             Ok(mut layouts) => {

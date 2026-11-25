@@ -134,7 +134,7 @@ Config(
 * `slurm` picks the backend. `Wire` speaks Slurm's protocol. `Cli` runs `squeue`, `sinfo`, `scontrol`, `sdiag` and `sacct` instead, for a cluster newer than the protocol glurmo knows. `controller` overrides the addresses in slurm.conf.
 * `sample` sets how often each kind of data is read. `lookups` caps placement lookups per tick, and only the `Cli` backend makes them.
 * `store` keeps history in a SQLite file, `$XDG_STATE_HOME/glurmo/<cluster>.sqlite` by default, with a nightly copy in `$XDG_DATA_HOME/glurmo`. The file must sit on a local disk, because SQLite locks are unreliable on NFS, Ceph or Lustre. Where the home directory is on one of those, set `XDG_STATE_HOME` to a local disk, or name the file with `path`. `backfill` reads that much history from accounting into a new store. A TimescaleDB server can hold history in place of the file, as described below.
-* `tui` picks the server the terminal view follows and its first layout and theme. `me` names whose jobs `m` and the `Mine` panel show, in place of `$USER`.
+* `tui` picks the server the terminal view follows and its first layout and theme. `palette` there names its first palette. `me` names whose jobs `m` and the `Mine` panel show, in place of `$USER`.
 * `names` shows full names from the account database, or logins with `Login`.
 * `groups` picks the user groups to show: `only` names the ones to keep, and `hide` names ones to leave out, such as a group that holds every user. glurmo reads each user's groups from the account database when it first sees the user, and again for everyone when it starts. A private group named after its login never shows.
 * `gpu_models` names the GPUs in each partition, for clusters whose GRES lists no GPU type.
@@ -318,8 +318,8 @@ http://head:8765/?me=otter
 
 * Hovering a user, partition or node row lights up its cores. Hovering a core shows its job, and hovering a node shows its state.
 * The `Groups` panel lists user groups with what their members hold. A user in two groups counts in both. Hovering a group lights its members' cores. No built-in layout has it, so add it in the editor or a layout file.
-* `t` and `l` cycle themes and layouts. `f` fills the screen with the panel under the pointer, and `f` or `esc` brings the layout back.
-* The gear at the top right picks a theme or a layout by name and opens the editor. A wall display has no gear.
+* `t`, `p` and `l` cycle themes, palettes and layouts. `f` fills the screen with the panel under the pointer, and `f` or `esc` brings the layout back.
+* The gear at the top right picks a theme, a palette or a layout by name and opens the editor. A wall display has no gear.
 
 The `Jobs` panel lists running and pending jobs:
 
@@ -361,6 +361,7 @@ Press `e`, or pick *Edit layout and theme* from the gear, to edit the layout and
 | `esc` | Clear the filter, then the fill |
 | `l` | Next layout |
 | `t` | Next theme |
+| `p` | Next palette |
 | `?` | Help |
 
 The terminal view writes its messages to `~/.local/state/glurmo/tui.log`. In embedded mode the history panel stays empty until the first five-minute bin closes.
@@ -372,6 +373,29 @@ The terminal view writes its messages to `~/.local/state/glurmo/tui.log`. In emb
 Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pine-moon` and `rose-pine-dawn`, plus 20 base16 schemes such as `catppuccin-mocha`, `gruvbox-light` and `tokyo-night-dark`. The built-in layouts are `tui`, `web`, `tv` and `jobs`.
 
 A file in `~/.config/glurmo/themes/` or `~/.config/glurmo/layouts/` adds one, or replaces the built-in of the same name. Views reload them within 2 seconds of an edit. See `themes/` and `layouts/` for the format.
+
+## Palettes
+
+A theme styles the page. A palette decides which colors the cores take, and every panel follows it. Pick one with `p`, from the gear, or with `?palette=mono` in the address. With none picked, the theme's own user colors go to the users who hold the most.
+
+```ron
+Palette(
+    name: "Us and them",
+    by: Group,
+    colors: [],
+    bound: [("lab-a", "#9ccfd8")],
+    rest: "#6e6a86",
+)
+```
+
+* `by` is `User`, `Group` or `TimeLeft(within: Hours(24))`.
+* Names in `bound` take their colors first. They are logins, or group names under `Group`.
+* The biggest holders not bound then take `colors`, one each and in order.
+* Everyone else takes `rest`. Without it they take a quiet color from the theme.
+* Under `Group`, a user takes the color of the first colored group they are in: bound groups in their order, then groups by what they hold.
+* Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span, or with no limit, takes `rest`. The user and group tables and the history go quiet.
+
+So a palette with no `colors` and a `rest` is mono, and one bound group with a `rest` is us and them. The built-in palettes are `mono`, `okabe-ito`, `groups`, `viridis` and `time-left`. A file in `~/.config/glurmo/palettes/` adds one or replaces a built-in. See `palettes/` for more examples.
 
 ## Recordings
 

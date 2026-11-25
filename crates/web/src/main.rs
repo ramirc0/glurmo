@@ -104,6 +104,11 @@ fn App() -> impl IntoView {
             "t" if !editing => state
                 .themes
                 .with_untracked(|themes| advance(state.theme_name, themes)),
+            "p" if !editing => state.palettes.with_untracked(|palettes| {
+                let picked = state.palette_name.get_untracked();
+                let next = palettes.keys().find(|name| **name > picked);
+                state.palette_name.set(next.cloned().unwrap_or_default());
+            }),
             "l" if !editing => {
                 state.filled.set(None);
                 state

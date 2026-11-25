@@ -144,6 +144,18 @@ main.tv {
   flex-direction: column;
 }
 
+.die .legend {
+  display: flex;
+  gap: 14px;
+  padding: 0 4px 4px;
+  font: 500 11px var(--mono);
+  color: var(--muted);
+}
+
+.die .legend .swatch {
+  margin-right: 5px;
+}
+
 .tip {
   position: absolute;
   z-index: 3;
