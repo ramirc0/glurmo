@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub mod jobs;
 pub mod layout;
+pub mod palette;
 pub mod summary;
 pub mod theme;
 pub mod units;
