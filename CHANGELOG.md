@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- A gear at the top right of the web view opens a menu that picks the theme and the layout by name and opens the editor.
+
 ### Changed
 
 - The lines the protocol client logs, such as the protocol it settles on, carry the module `glurmo_rpc`. Before, they carried `glurmo::slurm::wire`.

@@ -316,6 +316,7 @@ http://head:8765/?me=otter
 
 * Hovering a user, partition or node row lights up its cores. Hovering a core shows its job, and hovering a node shows its state.
 * `t` and `l` cycle themes and layouts. `f` fills the screen with the panel under the pointer, and `f` or `esc` brings the layout back.
+* The gear at the top right picks a theme or a layout by name and opens the editor. A wall display has no gear.
 
 The `Jobs` panel lists running and pending jobs:
 
@@ -335,7 +336,7 @@ The history panel is a timeline:
 * The address can start a replay too, as in `?at=1794700000&speed=60`.
 * A replay shows no load, free memory, pending reasons or job names, because the history does not keep them.
 
-Press `e` to edit the layout and theme on the live page:
+Press `e`, or pick *Edit layout and theme* from the gear, to edit the layout and theme on the live page:
 
 * Click a panel to pick it, then split, remove or change it in the sidebar. Drag a panel onto another to swap them, and drag the gap between panes to resize them.
 * The theme side has a color picker for every color and imports a pasted base16 scheme.

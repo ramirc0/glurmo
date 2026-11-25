@@ -51,8 +51,9 @@ impl Default for Editor {
 }
 
 impl Editor {
-    /// Opens the editor on the layout and theme the page shows.
+    /// Opens the editor on the layout and theme the page shows, in place of any panel filling the stage.
     pub fn open(self, state: State) {
+        state.filled.set(None);
         self.layout_file.set(state.layout_name.get_untracked());
         self.theme_file.set(state.theme_name.get_untracked());
         self.picked.set(Path::root());

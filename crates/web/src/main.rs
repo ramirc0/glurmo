@@ -17,6 +17,7 @@ mod paint;
 mod pane;
 mod panels;
 mod replay;
+mod settings;
 mod shelf;
 mod state;
 mod theme_editor;
@@ -31,6 +32,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use editor::{Editor, Sidebar};
+use settings::Settings;
 use state::{Address, Highlight, State};
 use tree::Path;
 
@@ -84,6 +86,8 @@ fn App() -> impl IntoView {
         let replaying = state.replay.with_untracked(Option::is_some);
         let filled = state.filled.with_untracked(Option::is_some);
         match event.key().as_str() {
+            // The browser closes the menu on this press.
+            "Escape" if settings::showing() => {}
             "e" | "Escape" if editing => Editor::close(state),
             "f" | "Escape" if filled => state.filled.set(None),
             "f" if !editing => state.filled.set(state.pointed.get_value()),
@@ -96,10 +100,7 @@ fn App() -> impl IntoView {
                     .and_then(|n| replay::SPEEDS.get(n - 1));
                 replay::play(state, speed.copied());
             }
-            "e" if !state.tv => {
-                state.filled.set(None);
-                editor.open(state);
-            }
+            "e" if !state.tv => editor.open(state),
             "t" if !editing => state
                 .themes
                 .with_untracked(|themes| advance(state.theme_name, themes)),
@@ -139,6 +140,7 @@ fn App() -> impl IntoView {
                 }}
             </div>
             {move || state.editing.get().then(|| view! { <Sidebar/> })}
+            {(!state.tv).then(|| view! { <Settings/> })}
         </main>
     }
 }
