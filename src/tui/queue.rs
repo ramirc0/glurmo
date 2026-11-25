@@ -15,7 +15,7 @@ const KEY: usize = 12;
 
 /// One row per partition or user, most tasks first, with the longest wait and the commonest reason.
 pub fn draw(scene: &Scene, by: QueueBy, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let rows = waiting(
         scene
             .cluster()
@@ -30,7 +30,7 @@ pub fn draw(scene: &Scene, by: QueueBy, area: Rect, buf: &mut Buffer, focus: Foc
         .map(|waiting| {
             let key = waiting.key;
             let color = match by {
-                QueueBy::Partition => palette.text,
+                QueueBy::Partition => tones.text,
                 QueueBy::Login => scene.color(&glurmo_model::Login(key.to_owned())),
             };
             let wait = waiting
@@ -50,9 +50,9 @@ pub fn draw(scene: &Scene, by: QueueBy, area: Rect, buf: &mut Buffer, focus: Foc
                         thousands(waiting.gpus),
                         wait
                     ),
-                    palette.text,
+                    tones.text,
                 ),
-                Span::styled(waiting.reason.to_owned(), palette.subtle),
+                Span::styled(waiting.reason.to_owned(), tones.subtle),
             ])
         })
         .collect();
@@ -65,9 +65,7 @@ pub fn draw(scene: &Scene, by: QueueBy, area: Rect, buf: &mut Buffer, focus: Foc
             "{first:<KEY$}{:>6}{:>8}{:>8}{:>6}{:>6}  why",
             "jobs", "tasks", "cpus", "gpus", "wait"
         ),
-        Style::new()
-            .fg(palette.muted)
-            .add_modifier(Modifier::ITALIC),
+        Style::new().fg(tones.muted).add_modifier(Modifier::ITALIC),
     ));
     let note = format!("{} tasks", thousands(total));
     scrolled(

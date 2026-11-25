@@ -75,7 +75,7 @@ pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
 /// Stacks each column's cores from the bottom, one color per login, on a scale up to the usable cores
 /// or the peak, whichever is higher. Each cell takes the color of the login under its middle.
 fn stack(scene: &Scene, columns: &[Column], area: Rect, buf: &mut Buffer) {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
     let peak = columns.iter().map(total).max().unwrap_or(0);
     let capacity = scene.cores().total.max(peak).max(1);
@@ -95,7 +95,7 @@ fn stack(scene: &Scene, columns: &[Column], area: Rect, buf: &mut Buffer) {
                 reached += cores * rows;
                 (reached >= middle).then_some(*login)
             });
-            let color = login.map_or(palette.muted, |login| {
+            let color = login.map_or(tones.muted, |login| {
                 *colors
                     .entry(login)
                     .or_insert_with(|| scene.color(&Login(login.to_owned())))
@@ -108,7 +108,7 @@ fn stack(scene: &Scene, columns: &[Column], area: Rect, buf: &mut Buffer) {
     let label = |text: String| {
         Text::styled(
             format!("{text:>width$}", width = usize::from(LABELS - 1)),
-            palette.muted,
+            tones.muted,
         )
     };
     let left = area.x - LABELS;
@@ -126,14 +126,14 @@ fn queue(scene: &Scene, columns: &[Column], area: Rect, buf: &mut Buffer) {
     buf.set_span(
         area.x,
         area.y,
-        &Text::styled("queue", scene.palette.muted),
+        &Text::styled("queue", scene.tones.muted),
         LABELS,
     );
     for (x, column) in (area.x + LABELS..).zip(columns) {
         if column.waiting > 0 {
             let eighths = (column.waiting * 8 + deepest / 2) / deepest;
             let glyph = LOWER[usize::try_from(eighths.clamp(1, 8)).unwrap_or(8)];
-            buf.set_string(x, area.y, glyph, Style::new().fg(scene.palette.drain));
+            buf.set_string(x, area.y, glyph, Style::new().fg(scene.tones.drain));
         }
     }
 }
@@ -168,13 +168,13 @@ fn axis(scene: &Scene, from: i64, span_s: i64, area: Rect, buf: &mut Buffer) {
             continue;
         }
         let x = area.x + u16::try_from(start).unwrap_or(0);
-        buf.set_string(x, area.y, &text, scene.palette.muted);
+        buf.set_string(x, area.y, &text, scene.tones.muted);
         free_from = start + width + 2;
     }
 }
 
 fn note(scene: &Scene, text: &str, area: Rect, buf: &mut Buffer) {
-    Paragraph::new(Line::styled(text.to_owned(), scene.palette.muted)).render(area, buf);
+    Paragraph::new(Line::styled(text.to_owned(), scene.tones.muted)).render(area, buf);
 }
 
 #[cfg(test)]

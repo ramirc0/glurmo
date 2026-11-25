@@ -8,11 +8,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 
 use super::app::App;
-use super::palette::Palette;
+use super::theme_colors::{ThemeColors, rgb};
 use super::{die, groups, header, history, jobs, mine, nodes, partitions, queue, ticker, users};
 use glurmo_model::jobs::Words;
 use glurmo_model::layout::{Direction, Pane, Size};
+use glurmo_model::palette::Coloring;
 use glurmo_model::summary::{self, Tally};
+use glurmo_model::theme;
 use glurmo_model::{Attempt, Cluster, Login, Occupancies, Owner, UnixTime};
 
 /// What every panel draws from, worked out once per frame.
@@ -20,7 +22,9 @@ pub struct Scene<'a> {
     /// The state.
     pub app: &'a App,
     /// The theme's colors.
-    pub palette: Palette,
+    pub tones: ThemeColors,
+    /// Who takes which color under the palette.
+    pub coloring: Coloring,
     /// Who holds each core and GPU.
     pub occupancy: Occupancies,
     /// The time of the last delta, which ages count from.
@@ -41,10 +45,12 @@ pub struct Focus {
 impl<'a> Scene<'a> {
     /// The scene for one frame of `app`.
     pub fn new(app: &'a App) -> Self {
+        let occupancy = app.cluster.occupancy();
         Self {
             app,
-            palette: Palette::of(app.theme()),
-            occupancy: app.cluster.occupancy(),
+            tones: ThemeColors::of(app.theme()),
+            coloring: app.palette().coloring(&app.cluster, &occupancy),
+            occupancy,
             now: app.cluster.at.unwrap_or_default(),
             filter: Words::of(app.filter().unwrap_or_default()),
         }
@@ -63,14 +69,17 @@ impl<'a> Scene<'a> {
         }
     }
 
-    /// The color of `login`, from the palette slot the sampler gave it.
+    /// The color of `login` under the palette.
     pub fn color(&self, login: &Login) -> Color {
-        self.cluster()
-            .users
-            .get(login)
-            .map_or(self.palette.muted, |user| {
-                self.palette.user(user.color_slot)
-            })
+        self.painted(self.coloring.user(login))
+    }
+
+    /// A palette color for the terminal. `None` is the rest color, which is the palette's own or a
+    /// quiet one from the theme.
+    pub fn painted(&self, color: Option<&theme::Color>) -> Color {
+        color
+            .or(self.coloring.rest())
+            .map_or_else(|| self.tones.fade(self.tones.muted, 0.55), rgb)
     }
 
     /// How to show `login`: the full name when the server sends one.
@@ -96,11 +105,17 @@ impl<'a> Scene<'a> {
     pub fn cell(&self, owner: Option<Owner>, empty: Color) -> Color {
         match owner {
             None => empty,
-            Some(Owner::Hidden) => self.palette.muted,
+            Some(Owner::Hidden) => self.tones.muted,
             Some(owner) => match self.attempt(owner) {
-                Some(attempt) if self.shows_attempt(attempt) => self.color(&attempt.login),
-                Some(attempt) => self.palette.fade(self.color(&attempt.login), 0.3),
-                None => self.palette.muted,
+                Some(attempt) => {
+                    let color = self.painted(self.coloring.core(attempt, self.now));
+                    if self.shows_attempt(attempt) {
+                        color
+                    } else {
+                        self.tones.fade(color, 0.3)
+                    }
+                }
+                None => self.tones.muted,
             },
         }
     }
@@ -108,9 +123,9 @@ impl<'a> Scene<'a> {
     /// A panel's frame, with `title` in the top border and `note` in the bottom one.
     pub fn block(&self, title: &str, note: &str, focus: Focus) -> Block<'static> {
         let border = if focus.focused {
-            self.palette.subtle
+            self.tones.subtle
         } else {
-            self.palette.fade(self.palette.muted, 0.5)
+            self.tones.fade(self.tones.muted, 0.5)
         };
         let mut block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -118,12 +133,12 @@ impl<'a> Scene<'a> {
             .title(Line::from(Span::styled(
                 format!(" {title} "),
                 Style::new()
-                    .fg(self.palette.text)
+                    .fg(self.tones.text)
                     .add_modifier(Modifier::BOLD),
             )));
         if !note.is_empty() {
             block = block.title_bottom(
-                Line::from(Span::styled(format!(" {note} "), self.palette.muted)).right_aligned(),
+                Line::from(Span::styled(format!(" {note} "), self.tones.muted)).right_aligned(),
             );
         }
         block
@@ -165,10 +180,7 @@ pub fn draw(frame: &mut Frame, app: &App) -> Vec<u16> {
     let scene = Scene::new(app);
     let area = frame.area();
     let buf = frame.buffer_mut();
-    buf.set_style(
-        area,
-        Style::new().bg(scene.palette.base).fg(scene.palette.text),
-    );
+    buf.set_style(area, Style::new().bg(scene.tones.base).fg(scene.tones.text));
     let root = &app.layout().root;
     let filled = app
         .filled
@@ -266,11 +278,11 @@ pub fn scrolled(
 
 /// The filter being typed, over the bottom line.
 fn prompt(scene: &Scene, area: Rect, buf: &mut Buffer) {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let line = Line::from(vec![
-        Span::styled(" filter ", Style::new().fg(palette.base).bg(palette.drain)),
-        Span::styled(format!(" {}▏", scene.app.filter.text), palette.text),
-        Span::styled("   enter keeps it, esc clears it", palette.muted),
+        Span::styled(" filter ", Style::new().fg(tones.base).bg(tones.drain)),
+        Span::styled(format!(" {}▏", scene.app.filter.text), tones.text),
+        Span::styled("   enter keeps it, esc clears it", tones.muted),
     ]);
     let bottom = Rect::new(
         area.x,
@@ -278,7 +290,7 @@ fn prompt(scene: &Scene, area: Rect, buf: &mut Buffer) {
         area.width,
         1.min(area.height),
     );
-    buf.set_style(bottom, Style::new().bg(palette.base));
+    buf.set_style(bottom, Style::new().bg(tones.base));
     buf.set_line(bottom.x, bottom.y, &line, bottom.width);
 }
 
@@ -294,15 +306,16 @@ fn help(scene: &Scene, area: Rect, buf: &mut Buffer) {
         ("esc", "clear the filter, then the fill"),
         ("l", "next layout"),
         ("t", "next theme"),
+        ("p", "next palette"),
         ("?", "this help"),
     ];
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let lines: Vec<Line> = keys
         .iter()
         .map(|(key, what)| {
             Line::from(vec![
-                Span::styled(format!("{key:>8}  "), palette.drain),
-                Span::styled(*what, palette.text),
+                Span::styled(format!("{key:>8}  "), tones.drain),
+                Span::styled(*what, tones.text),
             ])
         })
         .collect();
@@ -315,7 +328,7 @@ fn help(scene: &Scene, area: Rect, buf: &mut Buffer) {
         height,
     );
     Clear.render(popup, buf);
-    buf.set_style(popup, Style::new().bg(palette.base));
+    buf.set_style(popup, Style::new().bg(tones.base));
     let block = scene.block(
         "keys",
         "any key closes",
@@ -467,6 +480,56 @@ pub(super) mod tests {
         app.layout = "groups".into();
         let terminal = render(&mut app, 70, 6);
         insta::assert_snapshot!("groups", terminal.backend());
+    }
+
+    #[tokio::test]
+    async fn a_palette_colors_the_biggest_holders_and_the_rest_alike() {
+        let mut app = busy_app().await;
+        let held = summary::holdings(&app.cluster, &app.cluster.occupancy());
+        let logins: Vec<Login> = held
+            .users
+            .iter()
+            .map(|(login, _)| (*login).clone())
+            .collect();
+        assert!(held.users[2].1.cores > 0, "three users hold cores");
+        let two =
+            from_ron(r##"Palette(name: "two", colors: ["#111111", "#222222"], rest: "#333333")"##)
+                .unwrap();
+        app.library.palettes.insert("two".into(), two);
+        app.palette = Some("two".into());
+        let scene = Scene::new(&app);
+        let colors: Vec<Color> = logins
+            .iter()
+            .take(4)
+            .map(|login| scene.color(login))
+            .collect();
+        let grey = |level| Color::Rgb(level, level, level);
+        assert_eq!(colors, [grey(0x11), grey(0x22), grey(0x33), grey(0x33)]);
+    }
+
+    #[tokio::test]
+    async fn p_goes_through_the_palettes_and_back_to_the_themes_own() {
+        let mut app = busy_app().await;
+        let mut seen = Vec::new();
+        for _ in 0..=app.library.palettes.len() {
+            app.key(crossterm::event::KeyEvent::from(
+                crossterm::event::KeyCode::Char('p'),
+            ));
+            seen.push(app.palette.clone());
+        }
+        let names: Vec<Option<String>> = app.library.palettes.keys().cloned().map(Some).collect();
+        assert_eq!(seen, [names, vec![None]].concat());
+    }
+
+    #[tokio::test]
+    async fn a_time_left_palette_shows_its_steps_on_the_cores_frame() {
+        let mut app = busy_app().await;
+        let layout = from_ron(r#"Layout(name: "die", root: Die(group: Hardware))"#).unwrap();
+        app.library.layouts.insert("die".into(), layout);
+        app.layout = "die".into();
+        app.palette = Some("time-left".into());
+        let terminal = render(&mut app, 100, 3);
+        insta::assert_snapshot!("time_left_legend", terminal.backend());
     }
 
     #[tokio::test]

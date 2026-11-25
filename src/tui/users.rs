@@ -17,7 +17,7 @@ const SHARE: usize = 8;
 
 /// One row per user, most cores first, and a row for cores the scheduler hides.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let holdings = holdings(scene.cluster(), &scene.occupancy);
     let hidden = holdings.hidden;
     let rows: Vec<_> = holdings
@@ -32,10 +32,10 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             Span::styled(swatch, color),
             Span::styled(
                 format!(" {:<NAME$}", name.chars().take(NAME).collect::<String>()),
-                palette.text,
+                tones.text,
             ),
             if you {
-                Span::styled(" you ", Style::new().fg(palette.base).bg(palette.drain))
+                Span::styled(" you ", Style::new().fg(tones.base).bg(tones.drain))
             } else {
                 Span::raw("     ")
             },
@@ -47,7 +47,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
                     thousands(held.jobs),
                     thousands(held.pending)
                 ),
-                palette.text,
+                tones.text,
             ),
         ];
         let filled = (held.cores * SHARE as u64)
@@ -56,7 +56,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             .max(usize::from(held.cores > 0))
             .min(SHARE);
         spans.push(Span::styled("■".repeat(filled), color));
-        spans.push(Span::styled("■".repeat(SHARE - filled), palette.overlay));
+        spans.push(Span::styled("■".repeat(SHARE - filled), tones.overlay));
         Line::from(spans)
     };
     let mut lines: Vec<Line> = rows
@@ -72,16 +72,14 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
         })
         .collect();
     if hidden.cores + hidden.gpus > 0 {
-        lines.push(row("░", palette.muted, "hidden", false, &hidden));
+        lines.push(row("░", tones.muted, "hidden", false, &hidden));
     }
     let head = Line::from(Span::styled(
         format!(
             "  {:<NAME$}     {:>6}{:>5}{:>5}{:>6}  share",
             "user", "cores", "gpus", "jobs", "pend"
         ),
-        Style::new()
-            .fg(palette.muted)
-            .add_modifier(Modifier::ITALIC),
+        Style::new().fg(tones.muted).add_modifier(Modifier::ITALIC),
     ));
     let note = format!("{} users", rows.len());
     scrolled(

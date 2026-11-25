@@ -9,7 +9,7 @@ use crate::clock::clock;
 
 /// One line per start or end: the time, which it was, the owner, and the cores and partition.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let lines = scene
         .app
         .ticker
@@ -21,9 +21,9 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
         .map(|tick| {
             let clock = clock(tick.at, &scene.app.tz, "%H:%M:%S");
             let (mark, color) = if tick.started {
-                ("▶ start", palette.text)
+                ("▶ start", tones.text)
             } else {
-                ("■ end  ", palette.muted)
+                ("■ end  ", tones.muted)
             };
             let gpus = if tick.gpus > 0 {
                 format!(" {} gpu", tick.gpus)
@@ -31,18 +31,18 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
                 String::new()
             };
             Line::from(vec![
-                Span::styled(format!("{clock} "), palette.muted),
+                Span::styled(format!("{clock} "), tones.muted),
                 Span::styled(format!("{mark} "), color),
                 Span::styled(
                     format!("{:<12}", scene.name(&tick.login)),
                     scene.color(&tick.login),
                 ),
-                Span::styled(format!("{:>4} cpu{gpus}  ", tick.cpus), palette.text),
+                Span::styled(format!("{:>4} cpu{gpus}  ", tick.cpus), tones.text),
                 Span::styled(
                     tick.partition
                         .as_ref()
                         .map_or_else(String::new, |p| p.0.clone()),
-                    palette.subtle,
+                    tones.subtle,
                 ),
             ])
         })

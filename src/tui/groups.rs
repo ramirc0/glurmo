@@ -17,7 +17,7 @@ const SHARE: usize = 8;
 
 /// One row per group, most cores first. A user in two groups counts in both.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let capacity = scene.cores().total;
     let lines: Vec<Line> = group_holdings(scene.cluster(), &scene.occupancy)
         .into_iter()
@@ -40,10 +40,10 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
                         thousands(held.jobs),
                         thousands(held.pending)
                     ),
-                    palette.text,
+                    tones.text,
                 ),
-                Span::styled("■".repeat(filled), palette.subtle),
-                Span::styled("■".repeat(SHARE - filled), palette.overlay),
+                Span::styled("■".repeat(filled), tones.subtle),
+                Span::styled("■".repeat(SHARE - filled), tones.overlay),
             ])
         })
         .collect();
@@ -52,9 +52,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             "{:<NAME$}{:>6}{:>7}{:>5}{:>5}{:>6}  share",
             "group", "users", "cores", "gpus", "jobs", "pend"
         ),
-        Style::new()
-            .fg(palette.muted)
-            .add_modifier(Modifier::ITALIC),
+        Style::new().fg(tones.muted).add_modifier(Modifier::ITALIC),
     ));
     let note = format!("{} groups", lines.len());
     scrolled(

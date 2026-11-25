@@ -83,6 +83,24 @@ pub fn span(seconds: i64) -> String {
     }
 }
 
+/// Writes a stretch of time left in whole hours up to two days, then as [`span`] does, so a day
+/// reads as `24h` beside `4h` and `8h`.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::units::horizon;
+///
+/// assert_eq!(horizon(86_400), "24h");
+/// assert_eq!(horizon(3 * 86_400), "3d");
+/// ```
+pub fn horizon(seconds: i64) -> String {
+    match seconds {
+        3_600..172_800 => format!("{}h", seconds / 3_600),
+        _ => span(seconds),
+    }
+}
+
 /// How long ago `then` was at `now`.
 ///
 /// # Examples

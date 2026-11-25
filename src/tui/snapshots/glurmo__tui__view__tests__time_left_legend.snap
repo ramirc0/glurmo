@@ -1,0 +1,7 @@
+---
+source: src/tui/view.rs
+expression: terminal.backend()
+---
+"╭ cores ─────────────────────────────────────────────────────── ■4h ■8h ■12h ■16h ■20h ■24h ■24h+ ─╮"
+"│cascadelake  24 nodes  615/1,248 cores held                                                       │"
+"╰──────────────────────────────────────────────────────────────────────────── host · cores by user ╯"

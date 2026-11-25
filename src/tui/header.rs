@@ -19,7 +19,7 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
     if area.is_empty() {
         return;
     }
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let cluster = scene.cluster();
     let site = scene
         .app
@@ -37,30 +37,24 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
         .values()
         .map(|attempt| u64::from(attempt.tasks()))
         .sum();
-    let label = |text: &str| Span::styled(format!("{text} "), palette.muted);
-    let value = |text: String| Span::styled(text, palette.text);
+    let label = |text: &str| Span::styled(format!("{text} "), tones.muted);
+    let value = |text: String| Span::styled(text, tones.text);
     let mut spans = vec![
         Span::styled(
             " glurmo ",
             Style::new()
-                .fg(palette.base)
-                .bg(palette.user(0))
+                .fg(tones.base)
+                .bg(tones.user(0))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(" {site} "),
-            Style::new().fg(palette.text).add_modifier(Modifier::BOLD),
+            Style::new().fg(tones.text).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {when}   "), palette.subtle),
+        Span::styled(format!(" {when}   "), tones.subtle),
         label("cores"),
     ];
-    spans.extend(bar(
-        cores.held,
-        cores.total,
-        16,
-        palette.user(0),
-        palette.free,
-    ));
+    spans.extend(bar(cores.held, cores.total, 16, tones.user(0), tones.free));
     spans.push(value(format!(
         " {}/{} {}%   ",
         thousands(cores.held),
@@ -69,7 +63,7 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
     )));
     if gpus.total > 0 {
         spans.push(label("gpus"));
-        spans.extend(bar(gpus.held, gpus.total, 8, palette.user(1), palette.free));
+        spans.extend(bar(gpus.held, gpus.total, 8, tones.user(1), tones.free));
         spans.push(value(format!(" {}/{}   ", gpus.held, gpus.total)));
     }
     spans.extend([
@@ -98,7 +92,7 @@ pub fn header(scene: &Scene, area: Rect, buf: &mut Buffer) {
         let width = u16::try_from(text.chars().count())
             .unwrap_or(u16::MAX)
             .min(area.width);
-        let style = Style::new().fg(palette.base).bg(palette.down);
+        let style = Style::new().fg(tones.base).bg(tones.down);
         buf.set_stringn(
             area.right() - width,
             area.y,
@@ -132,19 +126,24 @@ pub fn bar(part: u64, whole: u64, width: u16, fill: Color, track: Color) -> Vec<
     spans
 }
 
-/// The keys, with the filter, layout and theme on the right. Keys that would run into those are left out.
+/// The keys, with the filter, layout, theme and palette on the right. Keys that would run into those are left out.
 pub fn keys(scene: &Scene, area: Rect, buf: &mut Buffer) {
     if area.is_empty() {
         return;
     }
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let mut right = Vec::new();
     if let Some(filter) = scene.app.filter() {
-        right.push(Span::styled(format!("filter “{filter}”   "), palette.drain));
+        right.push(Span::styled(format!("filter “{filter}”   "), tones.drain));
     }
     right.push(Span::styled(
-        format!("{} · {} ", scene.app.layout().name, scene.app.theme().name),
-        palette.muted,
+        format!(
+            "{} · {} · {} ",
+            scene.app.layout().name,
+            scene.app.theme().name,
+            scene.app.palette().name
+        ),
+        tones.muted,
     ));
     let right = Line::from(right);
     let right_width = u16::try_from(right.width())
@@ -162,6 +161,7 @@ pub fn keys(scene: &Scene, area: Rect, buf: &mut Buffer) {
         ("m", "mine"),
         ("l", "layout"),
         ("t", "theme"),
+        ("p", "palette"),
         ("?", "help"),
         ("f", "fill"),
     ] {
@@ -173,9 +173,9 @@ pub fn keys(scene: &Scene, area: Rect, buf: &mut Buffer) {
         }
         spans.push(Span::styled(
             chip,
-            Style::new().fg(palette.text).bg(palette.overlay),
+            Style::new().fg(tones.text).bg(tones.overlay),
         ));
-        spans.push(Span::styled(label, palette.subtle));
+        spans.push(Span::styled(label, tones.subtle));
     }
     buf.set_line(area.x, area.y, &Line::from(spans), area.width - right_width);
 }

@@ -6,7 +6,7 @@ use glurmo_model::theme::{self, Theme};
 
 /// The colors one frame draws with.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Palette {
+pub struct ThemeColors {
     /// The page.
     pub base: Color,
     /// Raised elements, such as key chips.
@@ -26,7 +26,7 @@ pub struct Palette {
     users: Vec<Color>,
 }
 
-impl Palette {
+impl ThemeColors {
     /// The terminal colors of `theme`.
     pub fn of(theme: &Theme) -> Self {
         Self {
@@ -42,7 +42,7 @@ impl Palette {
         }
     }
 
-    /// The color for palette slot `slot`, which wraps around the theme's user colors.
+    /// The theme's user color `slot`, wrapping around. The header's bars take the first two as accents.
     pub fn user(&self, slot: u32) -> Color {
         let index = usize::try_from(slot).unwrap_or_default();
         self.users
@@ -67,7 +67,8 @@ impl Palette {
     }
 }
 
-fn rgb(color: &theme::Color) -> Color {
+/// `color` as a terminal color.
+pub fn rgb(color: &theme::Color) -> Color {
     let (r, g, b) = color.rgb();
     Color::Rgb(r, g, b)
 }
@@ -77,21 +78,21 @@ mod tests {
     use super::*;
     use crate::config::from_ron;
 
-    fn rose_pine() -> Palette {
-        Palette::of(&from_ron(include_str!("../../themes/rose-pine.ron")).unwrap())
+    fn rose_pine() -> ThemeColors {
+        ThemeColors::of(&from_ron(include_str!("../../themes/rose-pine.ron")).unwrap())
     }
 
     #[test]
     fn user_slots_wrap_around_the_palette() {
-        let palette = rose_pine();
-        assert_eq!(palette.user(0), Color::Rgb(0x9c, 0xcf, 0xd8));
-        assert_eq!(palette.user(6), palette.user(0));
+        let tones = rose_pine();
+        assert_eq!(tones.user(0), Color::Rgb(0x9c, 0xcf, 0xd8));
+        assert_eq!(tones.user(6), tones.user(0));
     }
 
     #[test]
     fn fading_moves_toward_the_page() {
-        let palette = rose_pine();
-        assert_eq!(palette.fade(palette.text, 0.0), palette.base);
-        assert_eq!(palette.fade(palette.text, 1.0), palette.text);
+        let tones = rose_pine();
+        assert_eq!(tones.fade(tones.text, 0.0), tones.base);
+        assert_eq!(tones.fade(tones.text, 1.0), tones.text);
     }
 }

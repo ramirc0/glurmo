@@ -12,6 +12,7 @@ use crate::hub::Message;
 use crate::library::Library;
 use crate::slurm::Site;
 use glurmo_model::layout::{Layout, Pane};
+use glurmo_model::palette::Palette;
 use glurmo_model::summary::Ticker;
 use glurmo_model::theme::Theme;
 use glurmo_model::usage::Usage;
@@ -38,6 +39,8 @@ pub struct App {
     pub layout: String,
     /// The theme drawn with.
     pub theme: String,
+    /// The palette cores are colored by, or `None` for the theme's own user colors.
+    pub palette: Option<String>,
     /// Whoever runs the view.
     pub me: Login,
     /// The filter.
@@ -75,6 +78,7 @@ impl App {
             library,
             layout: tui.layout.clone(),
             theme: tui.theme.clone(),
+            palette: tui.palette.clone(),
             me,
             filter: Filter::default(),
             help: false,
@@ -99,6 +103,15 @@ impl App {
             .or_else(|| layouts.get("tui"))
             .or_else(|| layouts.values().next())
             .expect("the built-in layouts are always there")
+    }
+
+    /// The palette cores are colored by: the one picked, else the theme's own user colors.
+    pub fn palette(&self) -> Palette {
+        self.palette
+            .as_ref()
+            .and_then(|name| self.library.palettes.get(name))
+            .cloned()
+            .unwrap_or_else(|| Palette::of_theme(self.theme()))
     }
 
     /// The theme drawn with: the one picked, else `rose-pine`, else the first there is.
@@ -202,6 +215,13 @@ impl App {
                 self.scrolls.clear();
             }
             KeyCode::Char('t') => self.theme = next(&self.library.themes, &self.theme),
+            KeyCode::Char('p') => {
+                let mut names = self.library.palettes.keys();
+                self.palette = match &self.palette {
+                    Some(picked) => names.find(|name| *name > picked).cloned(),
+                    None => names.next().cloned(),
+                };
+            }
             KeyCode::Char('?') => self.help = true,
             _ => {}
         }

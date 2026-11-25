@@ -14,7 +14,7 @@ const NAME: usize = 16;
 
 /// One line per job of yours: ID, name, partition, CPUs, GPUs, time so far, and nodes or reason.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let cluster = scene.cluster();
     let me = &scene.app.me;
     let mut running: Vec<&Attempt> = cluster
@@ -34,13 +34,13 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             format!("/{}", span(limit.cast_signed()))
         });
         Line::from(vec![
-            Span::styled(format!("{id:<14}"), palette.text),
+            Span::styled(format!("{id:<14}"), tones.text),
             Span::styled(
                 format!(
                     "{:<NAME$} ",
                     attempt.name.chars().take(NAME).collect::<String>()
                 ),
-                palette.subtle,
+                tones.subtle,
             ),
             Span::styled(
                 format!(
@@ -49,11 +49,11 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
                     attempt.cpus,
                     attempt.gpus
                 ),
-                palette.text,
+                tones.text,
             ),
-            Span::styled(format!("{state:<3}"), palette.muted),
-            Span::styled(format!("{:>9}  ", time + &limit), palette.text),
-            Span::styled(place, palette.subtle),
+            Span::styled(format!("{state:<3}"), tones.muted),
+            Span::styled(format!("{:>9}  ", time + &limit), tones.text),
+            Span::styled(place, tones.subtle),
         ])
     };
     let mut lines: Vec<Line> = running
@@ -85,9 +85,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             "{:<14}{:<NAME$} {:<9}{:>5}{:>4}  {:<3}{:>9}  where or why",
             "job", "name", "partition", "cpus", "gpu", "st", "time"
         ),
-        Style::new()
-            .fg(palette.muted)
-            .add_modifier(Modifier::ITALIC),
+        Style::new().fg(tones.muted).add_modifier(Modifier::ITALIC),
     ));
     let note = format!(
         "{running_count} running, {} pending",

@@ -9,7 +9,7 @@ use glurmo_model::NodeState;
 
 /// Counts by state on the first line, then one line per node that is out.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let nodes = &scene.cluster().nodes;
     let mut counts = Vec::new();
     for (state, word) in [
@@ -21,8 +21,8 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             .iter()
             .filter(|node| node.state == state && node.trouble().is_none())
             .count();
-        counts.push(Span::styled(format!("{count} "), palette.text));
-        counts.push(Span::styled(format!("{word}   "), palette.muted));
+        counts.push(Span::styled(format!("{count} "), tones.text));
+        counts.push(Span::styled(format!("{word}   "), tones.muted));
     }
     let out: Vec<_> = nodes
         .iter()
@@ -31,8 +31,8 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             scene.shows(&[&node.name.0, word, node.reason.as_deref().unwrap_or("")])
         })
         .collect();
-    counts.push(Span::styled(format!("{} ", out.len()), palette.down));
-    counts.push(Span::styled("out", palette.muted));
+    counts.push(Span::styled(format!("{} ", out.len()), tones.down));
+    counts.push(Span::styled("out", tones.muted));
     let width = out
         .iter()
         .map(|(node, _)| node.name.0.len())
@@ -42,14 +42,14 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
         .iter()
         .map(|(node, word)| {
             let color = if matches!(*word, "draining" | "drained") {
-                palette.drain
+                tones.drain
             } else {
-                palette.down
+                tones.down
             };
             Line::from(vec![
-                Span::styled(format!("{:<width$}  ", node.name.0), palette.text),
+                Span::styled(format!("{:<width$}  ", node.name.0), tones.text),
                 Span::styled(format!("{word:<9}"), color),
-                Span::styled(node.reason.clone().unwrap_or_default(), palette.subtle),
+                Span::styled(node.reason.clone().unwrap_or_default(), tones.subtle),
             ])
         })
         .collect();

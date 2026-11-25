@@ -15,7 +15,7 @@ use glurmo_model::units::{count, gigabytes, since, span, thousands};
 /// and nodes or reason. Narrow panels drop the name and partitions, and wide ones add full names, time
 /// left and submit times.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let columns = Columns::of(area.width);
     let search = Search {
         text: scene.app.filter().unwrap_or_default(),
@@ -57,13 +57,11 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
                 if running { "■ " } else { "□ " },
                 scene.color(&first.login),
             )];
-            spans.extend(row.spans(columns, palette.text.into(), palette.subtle.into()));
+            spans.extend(row.spans(columns, tones.text.into(), tones.subtle.into()));
             Line::from(spans)
         })
         .collect();
-    let muted = Style::new()
-        .fg(palette.muted)
-        .add_modifier(Modifier::ITALIC);
+    let muted = Style::new().fg(tones.muted).add_modifier(Modifier::ITALIC);
     let mut head = vec![Span::raw("  ")];
     head.extend(Row::head().spans(columns, muted, muted));
     let tasks = |which: Phase| -> u64 {

@@ -108,6 +108,8 @@ pub struct Tui {
     pub layout: String,
     /// The theme to start with.
     pub theme: String,
+    /// The palette to start with. `None` takes the theme's own user colors.
+    pub palette: Option<String>,
     /// Whose jobs `m` and the `Mine` panel show. `None` takes `$USER`.
     pub me: Option<Login>,
 }
@@ -118,6 +120,7 @@ impl Default for Tui {
             server: None,
             layout: "tui".to_owned(),
             theme: "rose-pine".to_owned(),
+            palette: None,
             me: None,
         }
     }

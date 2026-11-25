@@ -14,7 +14,7 @@ const NAME: usize = 12;
 
 /// One row per partition, in the scheduler's order. The default partition is starred.
 pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let cluster = scene.cluster();
     let lines = partition_loads(cluster, &scene.occupancy)
         .iter()
@@ -34,7 +34,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             Line::from(vec![
                 Span::styled(
                     format!("{:<NAME$}", name.chars().take(NAME).collect::<String>()),
-                    palette.text,
+                    tones.text,
                 ),
                 Span::styled(
                     format!(
@@ -44,7 +44,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
                         format!("{}c", thousands(load.free_cores)),
                         gpus,
                     ),
-                    palette.text,
+                    tones.text,
                 ),
             ])
         })
@@ -54,9 +54,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             "{:<NAME$}{:>6}{:>6}{:>8}{:>8}{:>6}",
             "partition", "limit", "run", "pend", "free", ""
         ),
-        Style::new()
-            .fg(palette.muted)
-            .add_modifier(Modifier::ITALIC),
+        Style::new().fg(tones.muted).add_modifier(Modifier::ITALIC),
     ));
     scrolled(
         scene.block("partitions", "", focus),

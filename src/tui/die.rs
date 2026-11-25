@@ -12,7 +12,7 @@ use ratatui::widgets::Block;
 use super::view::{Focus, Scene, scrolled};
 use glurmo_model::layout::Grouping;
 use glurmo_model::summary::{NodeGroup, node_groups};
-use glurmo_model::units::{load, thousands};
+use glurmo_model::units::{horizon, load, thousands};
 use glurmo_model::{Node, NodeFlag, NodeState};
 
 /// Columns between node entries.
@@ -44,14 +44,40 @@ pub fn draw(scene: &Scene, grouping: Grouping, area: Rect, buf: &mut Buffer, foc
     } else {
         "host · cores by user"
     };
-    scrolled(
+    let limit = scrolled(
         scene.block("cores", note, focus),
         None,
         lines,
         area,
         buf,
         focus,
-    )
+    );
+    let legend = legend(scene);
+    let width = u16::try_from(legend.width()).unwrap_or(u16::MAX);
+    if width > 0 && width + 12 < area.width {
+        buf.set_line(area.right() - width - 2, area.y, &legend, width);
+    }
+    limit
+}
+
+/// Under a palette by time left, each step's color with the time left at which it ends, then the
+/// rest color for jobs with more. Empty under any other palette.
+fn legend(scene: &Scene) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut last = 0;
+    for (end_s, color) in scene.coloring.steps() {
+        spans.push(Span::styled(" ■", scene.painted(Some(color))));
+        spans.push(Span::styled(horizon(end_s), scene.tones.muted));
+        last = end_s;
+    }
+    if last > 0 {
+        spans.push(Span::styled(" ■", scene.painted(None)));
+        spans.push(Span::styled(
+            format!("{}+ ", horizon(last)),
+            scene.tones.muted,
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Each group's title, then its entries in lines `width` wide. A group whose entries are wider than
@@ -84,20 +110,18 @@ fn lines_of(scene: &Scene, groups: &[NodeGroup], width: u16, gauges: bool) -> Ve
 
 /// The group's name, its node count, and the cores and GPUs held.
 fn title(scene: &Scene, group: &NodeGroup) -> Line<'static> {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let cores = group.cores(&scene.occupancy);
     let gpus = group.gpus(&scene.occupancy);
     let count = group.nodes.len();
     let mut spans = vec![
         Span::styled(
             group.name.clone(),
-            Style::new()
-                .fg(palette.user(0))
-                .add_modifier(Modifier::BOLD),
+            Style::new().fg(tones.user(0)).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  {count} node{}", if count == 1 { "" } else { "s" }),
-            palette.subtle,
+            tones.subtle,
         ),
         Span::styled(
             format!(
@@ -105,13 +129,13 @@ fn title(scene: &Scene, group: &NodeGroup) -> Line<'static> {
                 thousands(cores.held),
                 thousands(cores.total)
             ),
-            palette.muted,
+            tones.muted,
         ),
     ];
     if gpus.total > 0 {
         spans.push(Span::styled(
             format!("  {}/{} gpus held", gpus.held, gpus.total),
-            palette.muted,
+            tones.muted,
         ));
     }
     Line::from(spans)
@@ -205,10 +229,10 @@ impl Entry {
 
 /// One node's entry, its columns as wide as `shape` says.
 fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Entry {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     let out = out(scene, node);
-    let empty = out.map_or(palette.free, |color| palette.fade(color, OUT));
-    let name_color = out.filter(|_| !node.is_usable()).unwrap_or(palette.subtle);
+    let empty = out.map_or(tones.free, |color| tones.fade(color, OUT));
+    let name_color = out.filter(|_| !node.is_usable()).unwrap_or(tones.subtle);
     let name = Span::styled(
         format!("{:<width$}", node.name.0, width = usize::from(shape.name)),
         name_color,
@@ -226,8 +250,8 @@ fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Entry {
                 return Span::raw(" ");
             }
             let top = scene.cell(cores[i], empty);
-            let bottom = cores.get(i + half).map_or(palette.base, |cell| {
-                palette.fade(scene.cell(*cell, empty), LOWER)
+            let bottom = cores.get(i + half).map_or(tones.base, |cell| {
+                tones.fade(scene.cell(*cell, empty), LOWER)
             });
             Span::styled("▀", Style::new().fg(top).bg(bottom))
         })
@@ -251,11 +275,11 @@ fn entry(scene: &Scene, node: &Node, shape: &Shape) -> Entry {
 
 /// A node's load and free memory, or why it is out.
 fn gauges(scene: &Scene, node: &Node, out: Option<Color>) -> Vec<Span<'static>> {
-    let palette = &scene.palette;
+    let tones = &scene.tones;
     if let Some(word) = node.trouble() {
         return vec![Span::styled(
             format!("{word:<10}"),
-            out.unwrap_or(palette.text),
+            out.unwrap_or(tones.text),
         )];
     }
     let load = node.load.map_or_else(|| "-".to_owned(), load);
@@ -264,17 +288,17 @@ fn gauges(scene: &Scene, node: &Node, out: Option<Color>) -> Vec<Span<'static>> 
         .map(|free| (free * 100).checked_div(node.mem_mb).unwrap_or(0).min(99));
     let free = free.map_or_else(|| "-".to_owned(), |free| format!("{free}%"));
     vec![
-        Span::styled(format!("{load:>5}"), palette.text),
-        Span::styled(format!(" {free:>4}"), palette.muted),
+        Span::styled(format!("{load:>5}"), tones.text),
+        Span::styled(format!(" {free:>4}"), tones.muted),
     ]
 }
 
 /// The color of a node that is out: down or draining. `None` for a node that takes jobs.
 fn out(scene: &Scene, node: &Node) -> Option<Color> {
     match node.state {
-        _ if node.flags.contains(&NodeFlag::NotResponding) => Some(scene.palette.down),
-        NodeState::Down | NodeState::Unknown => Some(scene.palette.down),
-        NodeState::Draining | NodeState::Drained => Some(scene.palette.drain),
+        _ if node.flags.contains(&NodeFlag::NotResponding) => Some(scene.tones.down),
+        NodeState::Down | NodeState::Unknown => Some(scene.tones.down),
+        NodeState::Draining | NodeState::Drained => Some(scene.tones.drain),
         _ => None,
     }
 }
