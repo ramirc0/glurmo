@@ -120,6 +120,19 @@ pub struct NodeName(pub String);
 #[serde(transparent)]
 pub struct PartitionName(pub String);
 
+/// A user group, as the system's group database names it.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::GroupName;
+///
+/// assert_eq!(serde_json::to_string(&GroupName("encode".into())).unwrap(), r#""encode""#);
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GroupName(pub String);
+
 /// Where a job is in its life.
 ///
 /// # Examples
@@ -689,6 +702,7 @@ pub struct RpcCount {
 ///
 /// let user: User = serde_json::from_str(r#"{"login": "otter", "name": null, "color_slot": 3}"#).unwrap();
 /// assert_eq!(user.login, Login("otter".into()));
+/// assert!(user.groups.is_empty());
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
@@ -698,6 +712,10 @@ pub struct User {
     pub name: Option<String>,
     /// A palette slot, assigned in order of first sight and kept for good.
     pub color_slot: u32,
+    /// The groups the user is in, by name, less the private one named after the login. A server from
+    /// before groups sends none.
+    #[serde(default)]
+    pub groups: Vec<GroupName>,
 }
 
 /// A stretch of failed ticks, which leaves the view stale. It usually means the controller is down.

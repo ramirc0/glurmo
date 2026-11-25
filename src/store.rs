@@ -439,6 +439,7 @@ impl Store {
                     login: Login(row.get(0)?),
                     name: row.get(1)?,
                     color_slot: row.get(2)?,
+                    groups: Vec::new(),
                 })
             },
         )?;
@@ -1749,6 +1750,7 @@ mod tests {
             login: Login(login.into()),
             name: name.map(str::to_owned),
             color_slot,
+            groups: Vec::new(),
         };
         assert_eq!(
             store.new_users().unwrap(),

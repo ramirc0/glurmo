@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::layout::{Grouping, QueueBy};
 use crate::{
-    Attempt, Cluster, Delta, Event, Login, Node, Occupancies, Occupancy, Owner, Partition,
-    PartitionName, UnixTime,
+    Attempt, Cluster, Delta, Event, GroupName, Login, Node, Occupancies, Occupancy, Owner,
+    Partition, PartitionName, UnixTime,
 };
 
 /// How many cores or GPUs there are, and how many of them jobs hold.
@@ -188,6 +188,84 @@ pub fn holdings<'a>(cluster: &'a Cluster, occupancy: &Occupancies) -> Holdings<'
         )
     });
     Holdings { users, hidden }
+}
+
+/// What the members of one group hold and wait for.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::GroupName;
+/// use glurmo_model::summary::{GroupHolding, Holding};
+///
+/// let name = GroupName("encode".into());
+/// let group = GroupHolding { name: &name, users: 3, held: Holding::default() };
+/// assert_eq!(group.users, 3);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupHolding<'a> {
+    /// The group.
+    pub name: &'a GroupName,
+    /// Members with a job running or waiting.
+    pub users: u64,
+    /// What those members hold and wait for, summed.
+    pub held: Holding,
+}
+
+/// What each group's members hold and wait for, most cores first, then most GPUs, then most tasks
+/// waiting. A user in two groups counts in both, so the groups do not add up to the cluster.
+///
+/// # Examples
+///
+/// ```
+/// # let attempt = r#"{
+/// #     "key": {"job": 4242, "submit": 1700000000}, "array": null, "login": "otter",
+/// #     "partitions": ["5days"], "state": "pending", "state_raw": "PENDING", "cpus": 8,
+/// #     "mem_mb": null, "gpus": 0, "time_limit_s": null, "start": null, "end": null,
+/// #     "nodes": [], "reason": "Priority", "name": "align"
+/// # }"#;
+/// # let user = r#"{"login": "otter", "name": null, "color_slot": 0, "groups": ["encode", "mohd"]}"#;
+/// use glurmo_model::{Attempt, Cluster, User};
+/// use glurmo_model::summary::group_holdings;
+///
+/// let mut cluster = Cluster::default();
+/// let attempt: Attempt = serde_json::from_str(attempt).unwrap();
+/// let user: User = serde_json::from_str(user).unwrap();
+/// cluster.queue.insert(attempt.key, attempt);
+/// cluster.users.insert(user.login.clone(), user);
+/// let groups = group_holdings(&cluster, &cluster.occupancy());
+/// assert_eq!(groups.len(), 2);
+/// assert_eq!((groups[0].name.0.as_str(), groups[0].users, groups[0].held.pending), ("encode", 1, 1));
+/// ```
+pub fn group_holdings<'a>(cluster: &'a Cluster, occupancy: &Occupancies) -> Vec<GroupHolding<'a>> {
+    let mut groups: BTreeMap<&GroupName, GroupHolding> = BTreeMap::new();
+    for (login, held) in holdings(cluster, occupancy).users {
+        for name in cluster
+            .users
+            .get(login)
+            .into_iter()
+            .flat_map(|user| &user.groups)
+        {
+            let group = groups.entry(name).or_insert(GroupHolding {
+                name,
+                users: 0,
+                held: Holding::default(),
+            });
+            group.users += 1;
+            group.held.cores += held.cores;
+            group.held.gpus += held.gpus;
+            group.held.jobs += held.jobs;
+            group.held.pending += held.pending;
+        }
+    }
+    let mut groups: Vec<_> = groups.into_values().collect();
+    groups.sort_by_key(|group| {
+        (
+            std::cmp::Reverse((group.held.cores, group.held.gpus, group.held.pending)),
+            group.name,
+        )
+    });
+    groups
 }
 
 /// What waits in the queue under one partition or user.
