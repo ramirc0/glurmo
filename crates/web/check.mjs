@@ -5,7 +5,9 @@
 // Usage: node crates/web/check.mjs SERVER OUT.png [--size 1920x1080] [--query '?layout=tv'] [--settle 8] [--pull 3]
 //        [--pinch SCALE], which zooms in as a pinch does, [--zoom LEVEL], which zooms as the browser's
 //        zoom does, [--eval EXPRESSION], which prints the expression's value, awaited if it is a promise,
-//        after the page settles.
+//        after the page settles. The expression can press a real key, which the browser acts on as it
+//        does not on a synthetic event: press(JSON.stringify({ key: "Escape", code: "Escape",
+//        windowsVirtualKeyCode: 27 })).
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -109,9 +111,13 @@ listeners.push(({ method, params }) => {
   } else if (method === "Log.entryAdded" && params.entry.level === "error") {
     lines.push(`log.error: ${params.entry.text} ${params.entry.url ?? ""}`);
     if (!(pull && params.entry.text.includes("ERR_"))) failed = true;
+  } else if (method === "Runtime.bindingCalled" && params.name === "press") {
+    const key = JSON.parse(params.payload);
+    for (const type of ["keyDown", "keyUp"]) page("Input.dispatchKeyEvent", { type, ...key });
   }
 });
 await page("Runtime.enable");
+await page("Runtime.addBinding", { name: "press" });
 await page("Log.enable");
 await page("Page.enable");
 // Browser zoom keeps the screen's pixels and scales CSS pixels, so the page lays out a wider viewport.
