@@ -26,6 +26,7 @@ use crate::past::{self, Frame};
 use crate::sampler::Health;
 use crate::store::{By, History, UsageQuery};
 use glurmo_model::layout::Layout;
+use glurmo_model::palette::Palette;
 use glurmo_model::theme::Theme;
 use glurmo_model::{Delta, Outage, UnixTime};
 
@@ -68,6 +69,7 @@ pub fn router(hub: Hub, history: History, library: watch::Receiver<Library>) -> 
         .route("/api/themes", get(themes))
         .route("/api/themes/{name}", get(theme))
         .route("/theme.css", get(theme_css))
+        .route("/api/palettes", get(palettes))
         .route("/api/layouts", get(layouts))
         .route("/api/layouts/{name}", get(layout))
         .route("/api/ron", post(ron))
@@ -172,10 +174,11 @@ fn sse_event(boot: UnixTime, message: &Message) -> Result<sse::Event, axum::Erro
     }
 }
 
-/// The names of the themes and layouts.
+/// The names of the themes, palettes and layouts.
 #[derive(Serialize)]
 struct Names {
     themes: Vec<String>,
+    palettes: Vec<String>,
     layouts: Vec<String>,
 }
 
@@ -183,6 +186,7 @@ impl Names {
     fn of(library: &Library) -> Self {
         Self {
             themes: library.themes.keys().cloned().collect(),
+            palettes: library.palettes.keys().cloned().collect(),
             layouts: library.layouts.keys().cloned().collect(),
         }
     }
@@ -360,6 +364,10 @@ async fn theme_css(
     Ok(([(header::CONTENT_TYPE, "text/css")], theme.css()))
 }
 
+async fn palettes(State(app): State<App>) -> Json<std::collections::BTreeMap<String, Palette>> {
+    Json(app.library.borrow().palettes.clone())
+}
+
 async fn layouts(State(app): State<App>) -> Json<std::collections::BTreeMap<String, Layout>> {
     Json(app.library.borrow().layouts.clone())
 }
@@ -373,19 +381,22 @@ async fn layout(State(app): State<App>, Path(name): Path<String>) -> Result<Json
     Ok(Json(layout.clone()))
 }
 
-/// A theme or layout to write as RON.
+/// A theme, palette or layout to write as RON.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Export {
     Theme(Box<Theme>),
+    Palette(Palette),
     Layout(Layout),
 }
 
-/// Writes a theme or layout, sent as `{"theme": ...}` or `{"layout": ...}`, as RON to save in a file.
+/// Writes a theme, palette or layout, sent as `{"theme": ...}`, `{"palette": ...}` or `{"layout": ...}`,
+/// as RON to save in a file.
 /// It changes nothing on the server.
 async fn ron(Json(export): Json<Export>) -> Result<String, Failure> {
     let ron = match export {
         Export::Theme(theme) => to_ron(&theme)?,
+        Export::Palette(palette) => to_ron(&palette)?,
         Export::Layout(layout) => to_ron(&layout)?,
     };
     Ok(ron)
@@ -705,6 +716,13 @@ mod tests {
         let ron = ron_of(&router, "theme", &json).await;
         assert!(ron.starts_with("Theme("), "{ron}");
         assert_eq!(crate::config::from_ron::<Theme>(&ron).unwrap(), theme);
+
+        for (name, palette) in Library::load(dir.path()).palettes {
+            let json = serde_json::to_string(&palette).unwrap();
+            let ron = ron_of(&router, "palette", &json).await;
+            assert!(ron.starts_with("Palette("), "{name}: {ron}");
+            assert_eq!(crate::config::from_ron::<Palette>(&ron).unwrap(), palette);
+        }
     }
 
     #[tokio::test]

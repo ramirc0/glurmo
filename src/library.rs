@@ -1,4 +1,4 @@
-//! Themes and layouts: the built-in ones, plus `*.ron` files under the config directory that add to
+//! Themes, palettes and layouts: the built-in ones, plus `*.ron` files under the config directory that add to
 //! them or replace them by file name.
 
 use std::collections::BTreeMap;
@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 
 use crate::config::from_ron;
 use glurmo_model::layout::Layout;
+use glurmo_model::palette::Palette;
 use glurmo_model::theme::Theme;
 
 const THEMES: [(&str, &str); 23] = [
@@ -76,11 +77,21 @@ const LAYOUTS: [(&str, &str); 4] = [
     ("jobs", include_str!("../layouts/jobs.ron")),
 ];
 
-/// Every theme and layout, by file name without `.ron`.
+const PALETTES: [(&str, &str); 5] = [
+    ("mono", include_str!("../palettes/mono.ron")),
+    ("okabe-ito", include_str!("../palettes/okabe-ito.ron")),
+    ("groups", include_str!("../palettes/groups.ron")),
+    ("viridis", include_str!("../palettes/viridis.ron")),
+    ("time-left", include_str!("../palettes/time-left.ron")),
+];
+
+/// Every theme, palette and layout, by file name without `.ron`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Library {
     /// Themes.
     pub themes: BTreeMap<String, Theme>,
+    /// Palettes.
+    pub palettes: BTreeMap<String, Palette>,
     /// Layouts.
     pub layouts: BTreeMap<String, Layout>,
 }
@@ -90,18 +101,19 @@ pub struct Library {
 pub type Stamp = Vec<(PathBuf, Option<SystemTime>, u64)>;
 
 impl Library {
-    /// The built-ins, with `dir/themes/*.ron` and `dir/layouts/*.ron` on top. A file that does not parse
+    /// The built-ins, with `dir/themes/*.ron`, `dir/palettes/*.ron` and `dir/layouts/*.ron` on top. A file that does not parse
     /// is reported on stderr and skipped.
     pub fn load(dir: &Path) -> Self {
         Self {
             themes: shelve(&THEMES, &dir.join("themes")),
+            palettes: shelve(&PALETTES, &dir.join("palettes")),
             layouts: shelve(&LAYOUTS, &dir.join("layouts")),
         }
     }
 
     /// The library files under `dir` and when each last changed. A different stamp means a file changed.
     pub fn stamp(dir: &Path) -> Stamp {
-        let mut stamp: Stamp = ["themes", "layouts"]
+        let mut stamp: Stamp = ["themes", "palettes", "layouts"]
             .iter()
             .flat_map(|kind| ron_files(&dir.join(kind)))
             .map(|path| {
@@ -176,6 +188,7 @@ mod tests {
     fn built_ins_parse() {
         let library = Library::load(Path::new("/nonexistent"));
         assert_eq!(library.themes.len(), THEMES.len());
+        assert_eq!(library.palettes.len(), PALETTES.len());
         assert_eq!(library.layouts.len(), LAYOUTS.len());
         assert!(matches!(library.layouts["tui"].root, Pane::Split(..)));
     }
