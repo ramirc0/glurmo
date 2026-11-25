@@ -126,6 +126,7 @@ Config(
     server: (listen: "127.0.0.1:8765"),
     tui: (server: "http://head:8765", layout: "tui", theme: "rose-pine", me: "otter"),
     names: FullName,
+    groups: (hide: ["everyone"]),
     gpu_models: {"gpu": "V100", "gpuh200": "H200"},
 )
 ```
@@ -135,6 +136,7 @@ Config(
 * `store` keeps history in a SQLite file, `$XDG_STATE_HOME/glurmo/<cluster>.sqlite` by default, with a nightly copy in `$XDG_DATA_HOME/glurmo`. The file must sit on a local disk, because SQLite locks are unreliable on NFS, Ceph or Lustre. Where the home directory is on one of those, set `XDG_STATE_HOME` to a local disk, or name the file with `path`. `backfill` reads that much history from accounting into a new store. A TimescaleDB server can hold history in place of the file, as described below.
 * `tui` picks the server the terminal view follows and its first layout and theme. `me` names whose jobs `m` and the `Mine` panel show, in place of `$USER`.
 * `names` shows full names from the account database, or logins with `Login`.
+* `groups` hides user groups by name, such as one that holds every user. glurmo reads each user's groups from the account database when it first sees the user, and again for everyone when it starts. A private group named after its login never shows.
 * `gpu_models` names the GPUs in each partition, for clusters whose GRES lists no GPU type.
 
 ### History on TimescaleDB
@@ -315,6 +317,7 @@ http://head:8765/?me=otter
 ![The tv layout](media/web-tv.png)
 
 * Hovering a user, partition or node row lights up its cores. Hovering a core shows its job, and hovering a node shows its state.
+* The `Groups` panel lists user groups with what their members hold. A user in two groups counts in both. Hovering a group lights its members' cores. No built-in layout has it, so add it in the editor or a layout file.
 * `t` and `l` cycle themes and layouts. `f` fills the screen with the panel under the pointer, and `f` or `esc` brings the layout back.
 * The gear at the top right picks a theme or a layout by name and opens the editor. A wall display has no gear.
 

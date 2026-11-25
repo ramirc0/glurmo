@@ -33,6 +33,7 @@ glurmo speaks Slurm's RPC protocol to slurmctld and slurmdbd, as `squeue` and `s
 * The controller's address comes from `SlurmctldHost` and `SlurmctldPort` in slurm.conf. glurmo looks for it at `$SLURM_CONF`, `/etc/slurm/slurm.conf` and `/run/slurm/conf/slurm.conf`. Everything else comes from the configuration reply.
 * Node info lists no partitions. Membership comes from each partition's node bitmap, and nodes in no partition are left out, as sinfo leaves them out.
 * Logins come from each job's UID, as squeue's do, because the controller's own name for a UID can differ. glurmo reads `/etc/passwd`, then asks SSSD over `/var/lib/sss/pipes/nss`. Without SSSD, it runs `getent passwd`.
+* A user's groups come from the same places: the primary GID of the passwd entry, `/etc/group`, and SSSD's `SSS_NSS_INITGR` for the GIDs with `SSS_NSS_GETGRGID` for each name. Without SSSD, glurmo runs `id -Gn`.
 
 ## Checking the decoders
 

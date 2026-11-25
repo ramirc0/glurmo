@@ -7,6 +7,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 ### Added
 
 - A gear at the top right of the web view opens a menu that picks the theme and the layout by name and opens the editor.
+- A `Groups` panel lists user groups with what their members hold, in both views. In the web view, hovering a group lights its members' cores. Groups are the Unix groups of each job's owner, read from `/etc/group` and SSSD, and `groups: (hide: [...])` in the config leaves some out.
 
 ### Changed
 
