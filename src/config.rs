@@ -132,6 +132,15 @@ impl Default for Tui {
 pub struct Groups {
     /// Groups to leave out, such as one that holds every user.
     pub hide: Vec<GroupName>,
+    /// The only groups to show, when any are named.
+    pub only: Vec<GroupName>,
+}
+
+impl Groups {
+    /// Whether `group` shows.
+    pub fn shows(&self, group: &GroupName) -> bool {
+        !self.hide.contains(group) && (self.only.is_empty() || self.only.contains(group))
+    }
 }
 
 /// How to show people.
@@ -244,6 +253,20 @@ pub mod seconds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn groups_show_unless_hidden_or_left_out_of_only() {
+        let group = |name: &str| GroupName(name.to_owned());
+        let all = Groups::default();
+        assert!(all.shows(&group("encode")));
+        let labs: Config =
+            from_ron(r#"Config(groups: (only: ["zusers", "susers"], hide: ["susers"]))"#).unwrap();
+        let shown: Vec<bool> = ["zusers", "susers", "encode"]
+            .iter()
+            .map(|name| labs.groups.shows(&group(name)))
+            .collect();
+        assert_eq!(shown, [true, false, false]);
+    }
 
     #[test]
     fn a_full_config_parses() {

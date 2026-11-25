@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::config::{Config, Names, Reach};
+use crate::config::{Config, Groups, Names, Reach};
 use crate::diff::{Known, placed};
 use crate::hub::Hub;
 use crate::logging::{self, Streak};
@@ -17,7 +17,7 @@ use crate::passwd;
 use crate::slurm::recording::Exhausted;
 use crate::slurm::{Lookup, Slurm, Source};
 use crate::store::{Store, Window};
-use glurmo_model::{Attempt, AttemptKey, Event, GroupName, Login, Node, Outage, UnixTime, User};
+use glurmo_model::{Attempt, AttemptKey, Event, Login, Node, Outage, UnixTime, User};
 
 /// A call slower than this counts against its kind, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
@@ -343,8 +343,8 @@ pub struct Sampler {
     hub: Hub,
     store: Option<Store>,
     names: Names,
-    /// Groups the config leaves out.
-    hidden_groups: Vec<GroupName>,
+    /// Which groups the config shows.
+    groups: Groups,
     /// GPU models by partition, for nodes whose GRES names no type.
     gpu_models: BTreeMap<String, String>,
     /// Reads accounting into the store, for a live cluster.
@@ -384,7 +384,7 @@ impl Sampler {
             hub,
             store,
             names: config.names,
-            hidden_groups: config.groups.hide.clone(),
+            groups: config.groups.clone(),
             gpu_models: config.gpu_models.clone(),
             historian,
             backfill_span_s: 21_600,
@@ -663,7 +663,7 @@ impl Sampler {
         Ok(())
     }
 
-    /// Gives new users their groups, less the ones the config hides. A live cluster's users are looked
+    /// Gives new users the groups the config shows. A live cluster's users are looked
     /// up in this host's account database, and what it says is stored. A replay's logins are its
     /// recording's, so they keep what the store holds.
     async fn group(&mut self, mut users: Vec<User>) -> Vec<User> {
@@ -689,8 +689,7 @@ impl Sampler {
             }
         }
         for user in &mut users {
-            user.groups
-                .retain(|group| !self.hidden_groups.contains(group));
+            user.groups.retain(|group| self.groups.shows(group));
         }
         users
     }
