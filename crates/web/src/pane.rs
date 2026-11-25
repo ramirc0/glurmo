@@ -9,7 +9,7 @@ use crate::builder::{Cover, Grip, label};
 use crate::die::Die;
 use crate::history::History;
 use crate::jobs::Jobs;
-use crate::panels::{Header, Keys, Mine, Nodes, Partitions, Queue, Ticker, Users};
+use crate::panels::{Groups, Header, Keys, Mine, Nodes, Partitions, Queue, Ticker, Users};
 use crate::state::State;
 use crate::tree::Path;
 
@@ -56,6 +56,7 @@ fn panel(pane: &Pane) -> AnyView {
         Pane::Keys => view! { <Keys/> }.into_any(),
         Pane::Die { group } => view! { <Die group=group/> }.into_any(),
         Pane::Users => view! { <Users/> }.into_any(),
+        Pane::Groups => view! { <Groups/> }.into_any(),
         Pane::Queue { by } => view! { <Queue by=by/> }.into_any(),
         Pane::Partitions => view! { <Partitions/> }.into_any(),
         Pane::Nodes => view! { <Nodes/> }.into_any(),

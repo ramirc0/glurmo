@@ -46,6 +46,8 @@ pub enum Pane {
     },
     /// Who holds how many cores and GPUs.
     Users,
+    /// What each user group's members hold.
+    Groups,
     /// Pending jobs.
     Queue {
         /// How to sum them.

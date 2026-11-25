@@ -4,6 +4,7 @@
 mod app;
 mod die;
 mod feed;
+mod groups;
 mod header;
 mod history;
 mod jobs;

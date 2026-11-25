@@ -737,6 +737,9 @@ impl Ink<'_> {
         };
         let lit = match self.highlight {
             Some(Highlight::User(lit)) => login == Some(lit),
+            Some(Highlight::Group(lit)) => login
+                .and_then(|login| self.cluster.users.get(login))
+                .is_some_and(|user| user.groups.contains(lit)),
             Some(Highlight::Job(lit)) => key == Some(*lit),
             Some(Highlight::Jobs(lit)) => key.is_some_and(|key| lit.contains(&key)),
             _ => true,

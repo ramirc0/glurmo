@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 
 use super::app::App;
 use super::palette::Palette;
-use super::{die, header, history, jobs, mine, nodes, partitions, queue, ticker, users};
+use super::{die, groups, header, history, jobs, mine, nodes, partitions, queue, ticker, users};
 use glurmo_model::jobs::Words;
 use glurmo_model::layout::{Direction, Pane, Size};
 use glurmo_model::summary::{self, Tally};
@@ -216,6 +216,7 @@ fn walk(scene: &Scene, pane: &Pane, area: Rect, buf: &mut Buffer, limits: &mut V
         Pane::History { span } => return history::draw(scene, *span, area, buf),
         Pane::Die { group } => die::draw(scene, *group, area, buf, focus),
         Pane::Users => users::draw(scene, area, buf, focus),
+        Pane::Groups => groups::draw(scene, area, buf, focus),
         Pane::Queue { by } => queue::draw(scene, *by, area, buf, focus),
         Pane::Partitions => partitions::draw(scene, area, buf, focus),
         Pane::Nodes => nodes::draw(scene, area, buf, focus),
@@ -347,7 +348,7 @@ pub(super) mod tests {
     use glurmo_model::jobs::{Order, Search, job_groups};
     use glurmo_model::usage::Step;
     use glurmo_model::usage::Usage;
-    use glurmo_model::{AttemptKey, UnixTime};
+    use glurmo_model::{AttemptKey, GroupName, UnixTime};
 
     /// The busy quarter hour as a view sees it after following every delta, seen by the user with
     /// the most running jobs, over a made-up day of usage by the four busiest users.
@@ -448,6 +449,24 @@ pub(super) mod tests {
             .unwrap();
         insta::assert_snapshot!("rest_help", terminal.backend());
         assert_eq!(app.limits.len(), 5, "die, mine, partitions, queue, ticker");
+    }
+
+    #[tokio::test]
+    async fn the_groups_panel_sums_each_groups_members() {
+        let mut app = busy_app().await;
+        for (index, user) in app.cluster.users.values_mut().enumerate() {
+            let member_of = [(2, "encode"), (3, "mohd")];
+            user.groups = member_of
+                .iter()
+                .filter(|(every, _)| index % every == 0)
+                .map(|(_, name)| GroupName((*name).to_owned()))
+                .collect();
+        }
+        let layout = from_ron(r#"Layout(name: "groups", root: Groups)"#).unwrap();
+        app.library.layouts.insert("groups".into(), layout);
+        app.layout = "groups".into();
+        let terminal = render(&mut app, 70, 6);
+        insta::assert_snapshot!("groups", terminal.backend());
     }
 
     #[tokio::test]

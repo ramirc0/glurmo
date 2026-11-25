@@ -2,7 +2,7 @@
 //! the ticker, and the key line.
 
 use glurmo_model::layout::QueueBy;
-use glurmo_model::summary::{self, Holding, holdings, partition_loads, waiting};
+use glurmo_model::summary::{self, Holding, group_holdings, holdings, partition_loads, waiting};
 use glurmo_model::units::{percent, since, span, thousands};
 use glurmo_model::{Attempt, JobState, Login, NodeName, NodeState, PartitionName};
 use leptos::prelude::*;
@@ -268,6 +268,78 @@ pub fn Users() -> impl IntoView {
                             );
                         }
                         lines
+                    }}
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+/// One row per user group, most cores first. A user in two groups counts in both. Hovering a row
+/// highlights its members' cores, except on a wall display, where the highlight cycles on its own.
+#[component]
+pub fn Groups() -> impl IntoView {
+    let state = expect_context::<State>();
+    let rows = move || {
+        state.cluster.with(|cluster| {
+            state.occupancy.with(|occupancy| {
+                let capacity = summary::cores(cluster, occupancy).total;
+                let groups: Vec<_> = group_holdings(cluster, occupancy)
+                    .into_iter()
+                    .map(|group| (group.name.clone(), group.users, group.held))
+                    .collect();
+                (groups, capacity)
+            })
+        })
+    };
+    view! {
+        <section class="panel groups">
+            <h2>"groups" <small>{move || format!("{} groups", rows().0.len())}</small></h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th class="name">"group"</th>
+                        <th>"users"</th>
+                        <th>"cores"</th>
+                        <th>"gpus"</th>
+                        <th>"jobs"</th>
+                        <th>"pend"</th>
+                        <th class="share">"share"</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {move || {
+                        let (groups, capacity) = rows();
+                        let current = state.row_highlight();
+                        groups
+                            .into_iter()
+                            .map(|(name, users, held)| {
+                                let share = if held.cores == 0 {
+                                    0
+                                } else {
+                                    percent(held.cores, capacity).clamp(1, 100)
+                                };
+                                view! {
+                                    <LitRow highlight=Highlight::Group(name.clone()) current=current>
+                                        <td class="name">{name.0}</td>
+                                        <td>{thousands(users)}</td>
+                                        <td>{thousands(held.cores)}</td>
+                                        <td>{held.gpus}</td>
+                                        <td>{thousands(held.jobs)}</td>
+                                        <td>{thousands(held.pending)}</td>
+                                        <td class="share">
+                                            <span class="bar">
+                                                <span
+                                                    class="fill"
+                                                    style:width=format!("{share}%")
+                                                    style:background="var(--subtle)"
+                                                ></span>
+                                            </span>
+                                        </td>
+                                    </LitRow>
+                                }
+                            })
+                            .collect_view()
                     }}
                 </tbody>
             </table>

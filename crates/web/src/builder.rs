@@ -11,12 +11,13 @@ use crate::state::State;
 use crate::tree::{self, Path, at, at_mut, dragged, size_mut};
 
 /// Every panel, with the options a new one starts with.
-const PANELS: [Pane; 11] = [
+const PANELS: [Pane; 12] = [
     Pane::Header,
     Pane::Die {
         group: Grouping::Hardware,
     },
     Pane::Users,
+    Pane::Groups,
     Pane::Queue {
         by: QueueBy::Partition,
     },
@@ -51,6 +52,7 @@ fn kind(pane: &Pane) -> &'static str {
         Pane::Keys => "Keys",
         Pane::Die { .. } => "Die",
         Pane::Users => "Users",
+        Pane::Groups => "Groups",
         Pane::Queue { .. } => "Queue",
         Pane::Partitions => "Partitions",
         Pane::Nodes => "Nodes",

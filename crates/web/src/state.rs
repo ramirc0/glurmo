@@ -12,7 +12,7 @@ use glurmo_model::summary::Ticker;
 use glurmo_model::theme::Theme;
 use glurmo_model::usage::Usage;
 use glurmo_model::{
-    AttemptKey, Cluster, Login, Node, NodeName, Occupancies, PartitionName, UnixTime,
+    AttemptKey, Cluster, GroupName, Login, Node, NodeName, Occupancies, PartitionName, UnixTime,
 };
 
 /// The theme drawn with when the address names none, or one that does not exist.
@@ -37,6 +37,8 @@ pub enum Link {
 pub enum Highlight {
     /// One user's cores and GPUs.
     User(Login),
+    /// The cores and GPUs of one group's members.
+    Group(GroupName),
     /// The nodes in one partition.
     Partition(PartitionName),
     /// One node.
@@ -51,7 +53,7 @@ impl Highlight {
     /// Whether `node`'s whole tile fades. A user or job highlight fades cores, not tiles.
     pub fn fades(&self, node: &Node) -> bool {
         match self {
-            Self::User(_) | Self::Job(_) | Self::Jobs(_) => false,
+            Self::User(_) | Self::Group(_) | Self::Job(_) | Self::Jobs(_) => false,
             Self::Partition(partition) => !node.partitions.contains(partition),
             Self::Node(name) => node.name != *name,
         }
