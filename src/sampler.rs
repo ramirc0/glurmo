@@ -17,7 +17,7 @@ use crate::passwd;
 use crate::slurm::recording::Exhausted;
 use crate::slurm::{Lookup, Slurm, Source};
 use crate::store::{Store, Window};
-use glurmo_model::{Attempt, AttemptKey, Event, Login, Node, Outage, UnixTime, User};
+use glurmo_model::{Attempt, AttemptKey, Event, GroupName, Login, Node, Outage, UnixTime, User};
 
 /// A call slower than this counts against its kind, like a failure.
 const SLOW: Duration = Duration::from_secs(2);
@@ -343,6 +343,8 @@ pub struct Sampler {
     hub: Hub,
     store: Option<Store>,
     names: Names,
+    /// Groups the config leaves out.
+    hidden_groups: Vec<GroupName>,
     /// GPU models by partition, for nodes whose GRES names no type.
     gpu_models: BTreeMap<String, String>,
     /// Reads accounting into the store, for a live cluster.
@@ -382,6 +384,7 @@ impl Sampler {
             hub,
             store,
             names: config.names,
+            hidden_groups: config.groups.hide.clone(),
             gpu_models: config.gpu_models.clone(),
             historian,
             backfill_span_s: 21_600,
@@ -585,6 +588,7 @@ impl Sampler {
         if let Ok(users) = users
             && !users.is_empty()
         {
+            let users = self.group(users).await;
             events.push(Event::Users(self.name(users).await));
         }
         events
@@ -657,6 +661,38 @@ impl Sampler {
             historian.reading = historian.windows.try_send(window).is_ok();
         }
         Ok(())
+    }
+
+    /// Gives new users their groups, less the ones the config hides. A live cluster's users are looked
+    /// up in this host's account database, and what it says is stored. A replay's logins are its
+    /// recording's, so they keep what the store holds.
+    async fn group(&mut self, mut users: Vec<User>) -> Vec<User> {
+        if self.slurm.is_live() {
+            let logins: Vec<Login> = users.iter().map(|user| user.login.clone()).collect();
+            match passwd::groups(&logins).await {
+                Ok(mut groups) => {
+                    for user in &mut users {
+                        if let Some(member_of) = groups.get_mut(&user.login) {
+                            user.groups.clone_from(member_of);
+                        }
+                    }
+                    if let Some(store) = self.store.take() {
+                        let started = Instant::now();
+                        let (store, outcome) =
+                            blocking(store, move |store| store.group_users(&groups)).await;
+                        self.store = Some(store);
+                        self.storing
+                            .tally(started.elapsed(), outcome.as_ref().err());
+                    }
+                }
+                Err(error) => tracing::warn!("cannot look up user groups: {error:#}"),
+            }
+        }
+        for user in &mut users {
+            user.groups
+                .retain(|group| !self.hidden_groups.contains(group));
+        }
+        users
     }
 
     /// Gives new users their full names when the config asks for them, from the store or the system.

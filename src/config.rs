@@ -9,7 +9,7 @@ use ron::extensions::Extensions;
 use serde::{Deserialize, Serialize};
 
 use crate::slurm::{Backend, Intervals};
-use glurmo_model::Login;
+use glurmo_model::{GroupName, Login};
 
 /// Everything `config.ron` can set. Every field has a default.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -25,6 +25,8 @@ pub struct Config {
     pub server: Server,
     /// How to show people.
     pub names: Names,
+    /// Which user groups to show.
+    pub groups: Groups,
     /// The terminal view.
     pub tui: Tui,
     /// GPU models by partition, for nodes whose GRES names no type.
@@ -119,6 +121,14 @@ impl Default for Tui {
             me: None,
         }
     }
+}
+
+/// Which user groups to show.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Groups {
+    /// Groups to leave out, such as one that holds every user.
+    pub hide: Vec<GroupName>,
 }
 
 /// How to show people.

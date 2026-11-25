@@ -17,8 +17,8 @@ use crate::rollup::{BIN_S, Span, bin_of, rollup};
 use connection::{Connection, Location, Value, params};
 use glurmo_model::usage::Step;
 use glurmo_model::{
-    ArrayTasks, Attempt, AttemptKey, EndState, Event, JobId, JobState, Login, Node, NodeFlag,
-    NodeName, NodeState, PartitionName, Placement, UnixTime, User,
+    ArrayTasks, Attempt, AttemptKey, EndState, Event, GroupName, JobId, JobState, Login, Node,
+    NodeFlag, NodeName, NodeState, PartitionName, Placement, UnixTime, User,
 };
 use timescale::Timescale;
 
@@ -29,7 +29,7 @@ const GRACE_S: i64 = 30;
 
 /// SQLite's schema changes, applied in order. `PRAGMA user_version` counts how many have run.
 /// A change to the schema goes into both this list and [`TIMESCALE_MIGRATIONS`].
-const SQLITE_MIGRATIONS: [&str; 3] = [
+const SQLITE_MIGRATIONS: [&str; 4] = [
     "
     CREATE TABLE attempts (
         job INTEGER NOT NULL,
@@ -87,11 +87,14 @@ const SQLITE_MIGRATIONS: [&str; 3] = [
         WHERE start IS NOT NULL AND end IS NOT NULL AND nodes = '[]' HAVING count(*) > 0;
     UPDATE attempts SET start = NULL WHERE start IS NOT NULL AND end IS NOT NULL AND nodes = '[]';
 ",
+    // A user's groups as a JSON list of names, or NULL until they are looked up.
+    "ALTER TABLE users ADD COLUMN member_of TEXT;",
 ];
 
 /// TimescaleDB's schema changes, applied in order. The `schema` key in `meta` counts how many have run.
 /// The tables are SQLite's, with `attempts` and `usage` as hypertables in 30-day chunks.
-const TIMESCALE_MIGRATIONS: [&str; 1] = [r#"
+const TIMESCALE_MIGRATIONS: [&str; 2] = [
+    r#"
     CREATE EXTENSION IF NOT EXISTS timescaledb;
     CREATE TABLE attempts (
         job BIGINT NOT NULL,
@@ -145,7 +148,9 @@ const TIMESCALE_MIGRATIONS: [&str; 1] = [r#"
         AS 'SELECT extract(epoch FROM now())::bigint';
     SELECT set_integer_now_func('attempts', 'unix_now');
     SELECT set_integer_now_func('usage', 'unix_now');
-"#];
+"#,
+    "ALTER TABLE users ADD COLUMN member_of TEXT;",
+];
 
 /// Compresses chunks once they are 7 days old. It runs with the first TimescaleDB migration, on a
 /// server whose license allows compression. The columns to segment by are named, because
@@ -165,7 +170,7 @@ const TIMESCALE_COMPRESSION: &str = r#"
 /// The store's tables and their columns, in the order a copy fills them. `attempts` and `usage` also
 /// name the column whose days split their copy.
 const TABLES: [(&str, &str, Option<&str>); 5] = [
-    ("users", "login, full_name, color_slot", None),
+    ("users", "login, full_name, color_slot, member_of", None),
     ("node_states", "node, at, state, reason", None),
     ("meta", "key, value", None),
     (
@@ -431,15 +436,18 @@ impl Store {
     /// Fails when a read fails.
     pub fn new_users(&mut self) -> Result<Vec<User>> {
         let users = self.db.query_map(
-            "SELECT login, full_name, color_slot FROM users WHERE color_slot >= ?1
+            "SELECT login, full_name, color_slot, member_of FROM users WHERE color_slot >= ?1
              ORDER BY color_slot",
             params![self.users_seen],
             |row| {
+                let member_of: Option<String> = row.get(3)?;
                 Ok(User {
                     login: Login(row.get(0)?),
                     name: row.get(1)?,
                     color_slot: row.get(2)?,
-                    groups: Vec::new(),
+                    groups: member_of
+                        .and_then(|names| serde_json::from_str(&names).ok())
+                        .unwrap_or_default(),
                 })
             },
         )?;
@@ -460,6 +468,23 @@ impl Store {
             tx.execute(
                 "UPDATE users SET full_name = ?2 WHERE login = ?1",
                 params![&login.0, name],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Stores users' groups.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a write fails.
+    pub fn group_users(&mut self, groups: &HashMap<Login, Vec<GroupName>>) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for (login, member_of) in groups {
+            tx.execute(
+                "UPDATE users SET member_of = ?2 WHERE login = ?1",
+                params![&login.0, serde_json::to_string(member_of)?],
             )?;
         }
         tx.commit()?;
@@ -1763,10 +1788,21 @@ mod tests {
                 "Grey Heron".to_owned(),
             )]))
             .unwrap();
+        let encode = vec![GroupName("encode".into()), GroupName("mohd".into())];
+        store
+            .group_users(&HashMap::from([
+                (Login("otter".into()), encode.clone()),
+                (Login("heron".into()), Vec::new()),
+            ]))
+            .unwrap();
         drop(store);
+        let otter = User {
+            groups: encode,
+            ..user("otter", None, 0)
+        };
         assert_eq!(
             home.open(2).new_users().unwrap(),
-            [user("otter", None, 0), user("heron", Some("Grey Heron"), 1)]
+            [otter, user("heron", Some("Grey Heron"), 1)]
         );
     }
 
@@ -2512,7 +2548,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(wait_s(&store), 890, "the start in 2106 kept it waiting");
-        store.db.execute_batch("PRAGMA user_version = 2").unwrap();
+        store
+            .db
+            .execute_batch("ALTER TABLE users DROP COLUMN member_of; PRAGMA user_version = 2")
+            .unwrap();
         drop(store);
 
         let store = home.open(2);

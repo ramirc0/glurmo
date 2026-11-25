@@ -1,8 +1,9 @@
-//! Logins and full names from the system's account database, found as `passwd: files sss` would find
-//! them: `/etc/passwd` first, then SSSD's NSS responder over its socket. A static musl binary cannot
-//! load NSS modules, so glurmo speaks SSSD's protocol itself. Without SSSD it falls back to `getent`.
+//! Logins, full names and groups from the system's account database, found as `passwd: files sss` and
+//! `group: files sss` would find them: `/etc/passwd` and `/etc/group` first, then SSSD's NSS responder
+//! over its socket. A static musl binary cannot load NSS modules, so glurmo speaks SSSD's protocol
+//! itself. Without SSSD it falls back to `getent` and `id`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -12,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::process::Command;
 
-use glurmo_model::Login;
+use glurmo_model::{GroupName, Login};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -49,6 +50,104 @@ pub async fn logins(uids: &[u32]) -> Result<HashMap<u32, Login>> {
         .collect())
 }
 
+/// The groups the account database puts each of `logins` in, by name: the primary one and every one that
+/// lists the login as a member, less a private one named after the login. A login the database does
+/// not know has none.
+///
+/// # Errors
+///
+/// Fails when SSSD or `id` fails or runs past the timeout.
+pub async fn groups(logins: &[Login]) -> Result<HashMap<Login, Vec<GroupName>>> {
+    let local = std::fs::read_to_string("/etc/group").unwrap_or_default();
+    let socket = Path::new(SSS_NSS);
+    if !socket.exists() {
+        let mut found = HashMap::new();
+        for login in logins {
+            found.insert(login.clone(), shared(login, id(login).await?));
+        }
+        return Ok(found);
+    }
+    let keys: Vec<Key> = logins.iter().map(|login| Key::Login(&login.0)).collect();
+    let primary: HashMap<Login, u32> = entries(&keys)
+        .await?
+        .into_iter()
+        .map(|entry| (entry.login, entry.gid))
+        .collect();
+    let mut names: HashMap<u32, String> = HashMap::new();
+    let mut found = HashMap::new();
+    let lookups = async {
+        let mut stream = connect(socket).await?;
+        for login in logins {
+            let mut member_of: Vec<String> = Vec::new();
+            let mut gids = gids_reply(
+                &request(&mut stream, INITGR, &[login.0.as_bytes(), b"\0"].concat()).await?,
+            )?;
+            gids.extend(primary.get(login));
+            for line in local.lines() {
+                let Some((name, gid, members)) = group_line(line) else {
+                    continue;
+                };
+                names.entry(gid).or_insert_with(|| name.to_owned());
+                if members.split(',').any(|member| member == login.0) {
+                    member_of.push(name.to_owned());
+                }
+            }
+            for gid in gids {
+                let name = if let Some(name) = names.get(&gid) {
+                    name.clone()
+                } else {
+                    let reply = request(&mut stream, GETGRGID, &gid.to_ne_bytes()).await?;
+                    let name = group_reply(&reply)?.unwrap_or_else(|| gid.to_string());
+                    names.insert(gid, name.clone());
+                    name
+                };
+                member_of.push(name);
+            }
+            found.insert(login.clone(), shared(login, member_of));
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::time::timeout(TIMEOUT, lookups)
+        .await
+        .context("SSSD ran past its timeout")??;
+    Ok(found)
+}
+
+/// `member_of` as group names in name order, each once, without the private group named after `login`.
+fn shared(login: &Login, member_of: Vec<String>) -> Vec<GroupName> {
+    let names: BTreeSet<String> = member_of
+        .into_iter()
+        .filter(|name| *name != login.0)
+        .collect();
+    names.into_iter().map(GroupName).collect()
+}
+
+/// A line of `/etc/group` as the group's name, its GID and its comma-separated members.
+fn group_line(line: &str) -> Option<(&str, u32, &str)> {
+    let mut fields = line.split(':');
+    let name = fields.next()?;
+    let gid = fields.nth(1)?.parse().ok()?;
+    Some((name, gid, fields.next().unwrap_or_default()))
+}
+
+/// Asks `id -Gn`, for sites whose groups come from NSS modules other than SSSD. An unknown login has
+/// no groups.
+async fn id(login: &Login) -> Result<Vec<String>> {
+    let output = Command::new("id")
+        .args(["-Gn", "--", &login.0])
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(TIMEOUT, output)
+        .await
+        .context("id ran past its timeout")?
+        .context("cannot run id")?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect())
+}
+
 /// What to look an account up by.
 #[derive(Clone, Copy)]
 enum Key<'a> {
@@ -68,6 +167,7 @@ impl Key<'_> {
 struct Entry {
     login: Login,
     uid: u32,
+    gid: u32,
     full_name: Option<String>,
 }
 
@@ -100,18 +200,14 @@ async fn entries(keys: &[Key<'_>]) -> Result<Vec<Entry>> {
 const GET_VERSION: u32 = 0x0001;
 const GETPWNAM: u32 = 0x0011;
 const GETPWUID: u32 = 0x0012;
+const GETGRGID: u32 = 0x0022;
+const INITGR: u32 = 0x0026;
 const NSS_PROTOCOL: u32 = 1;
 const HEADER: usize = 16;
 
 /// Asks SSSD's NSS responder for each key, as `libnss_sss` does.
 async fn sssd(socket: &Path, keys: &[Key<'_>]) -> Result<Vec<Entry>> {
-    let mut stream = UnixStream::connect(socket)
-        .await
-        .with_context(|| format!("cannot reach SSSD at {}", socket.display()))?;
-    let version = request(&mut stream, GET_VERSION, &NSS_PROTOCOL.to_ne_bytes()).await?;
-    if version.get(..4) != Some(&NSS_PROTOCOL.to_ne_bytes()[..]) {
-        bail!("SSSD speaks another NSS protocol");
-    }
+    let mut stream = connect(socket).await?;
     let mut entries = Vec::new();
     for key in keys {
         let (command, body) = match *key {
@@ -122,6 +218,18 @@ async fn sssd(socket: &Path, keys: &[Key<'_>]) -> Result<Vec<Entry>> {
         entries.extend(passwd_reply(&reply)?);
     }
     Ok(entries)
+}
+
+/// Opens SSSD's socket and checks that it speaks the protocol glurmo knows.
+async fn connect(socket: &Path) -> Result<UnixStream> {
+    let mut stream = UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("cannot reach SSSD at {}", socket.display()))?;
+    let version = request(&mut stream, GET_VERSION, &NSS_PROTOCOL.to_ne_bytes()).await?;
+    if version.get(..4) != Some(&NSS_PROTOCOL.to_ne_bytes()[..]) {
+        bail!("SSSD speaks another NSS protocol");
+    }
+    Ok(stream)
 }
 
 /// Sends one request and returns its reply's body. SSSD frames both with four host-order words:
@@ -159,7 +267,7 @@ fn passwd_reply(reply: &[u8]) -> Result<Option<Entry>> {
     if word(0)? == 0 {
         return Ok(None);
     }
-    let uid = word(2)?;
+    let (uid, gid) = (word(2)?, word(3)?);
     let mut strings = reply
         .get(16..)
         .context("short passwd reply")?
@@ -174,8 +282,43 @@ fn passwd_reply(reply: &[u8]) -> Result<Option<Entry>> {
     Ok(Some(Entry {
         login: Login(login),
         uid,
+        gid,
         full_name: full_name(&gecos),
     }))
+}
+
+/// Reads an initgroups reply: a count, a reserved word, then that many GIDs.
+fn gids_reply(reply: &[u8]) -> Result<Vec<u32>> {
+    let mut words = reply
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(u32::from_ne_bytes);
+    let count = words.next().context("short initgroups reply")? as usize;
+    let gids: Vec<u32> = words.skip(1).take(count).collect();
+    if gids.len() != count {
+        bail!(
+            "an initgroups reply with {} of its {count} groups",
+            gids.len()
+        );
+    }
+    Ok(gids)
+}
+
+/// Reads a group reply for its name: a count, a reserved word, the GID, the member count, then the
+/// name, password and members as NUL-terminated strings. A count of zero means no such group.
+fn group_reply(reply: &[u8]) -> Result<Option<String>> {
+    let count = reply.get(..4).context("short group reply")?;
+    if u32::from_ne_bytes(count.try_into()?) == 0 {
+        return Ok(None);
+    }
+    let name = reply
+        .get(16..)
+        .and_then(|strings| strings.split(|&byte| byte == 0).next())
+        .filter(|name| !name.is_empty())
+        .context("a group reply without a name")?;
+    Ok(Some(String::from_utf8_lossy(name).into_owned()))
 }
 
 /// Asks `getent passwd`, for sites whose accounts come from NSS modules other than SSSD.
@@ -211,10 +354,12 @@ fn parse(passwd: &str) -> impl Iterator<Item = Entry> + '_ {
         let mut fields = line.split(':');
         let login = fields.next()?;
         let uid = fields.nth(1)?.parse().ok()?;
-        let gecos = fields.nth(1)?;
+        let gid = fields.next()?.parse().ok()?;
+        let gecos = fields.next()?;
         Some(Entry {
             login: Login(login.to_owned()),
             uid,
+            gid,
             full_name: full_name(gecos),
         })
     })
@@ -274,6 +419,70 @@ mod tests {
             let reply: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
             assert!(passwd_reply(&reply).is_err(), "{} bytes", reply.len());
         }
+    }
+
+    #[test]
+    fn group_lines_give_the_name_the_gid_and_the_members() {
+        assert_eq!(
+            group_line("gpujobs:x:1003:otter,heron"),
+            Some(("gpujobs", 1003, "otter,heron"))
+        );
+        assert_eq!(group_line("adm:x:4:"), Some(("adm", 4, "")));
+        assert_eq!(group_line("broken:x"), None);
+    }
+
+    #[test]
+    fn a_private_group_is_left_out_and_the_rest_come_in_name_order() {
+        let member_of = ["mohd", "otter", "encode", "mohd"]
+            .map(str::to_owned)
+            .to_vec();
+        let names: Vec<String> = shared(&Login("otter".into()), member_of)
+            .into_iter()
+            .map(|group| group.0)
+            .collect();
+        assert_eq!(names, ["encode", "mohd"]);
+    }
+
+    #[test]
+    fn sssd_initgroups_replies_list_gids() {
+        let words =
+            |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_ne_bytes()).collect() };
+        assert_eq!(
+            gids_reply(&words(&[2, 0, 10000, 10002])).unwrap(),
+            [10000, 10002]
+        );
+        assert_eq!(gids_reply(&words(&[0, 0])).unwrap(), [0_u32; 0]);
+        assert!(gids_reply(&words(&[2, 0, 10000])).is_err());
+        assert!(gids_reply(&[]).is_err());
+    }
+
+    #[test]
+    fn sssd_group_replies_hold_one_name_or_none() {
+        let mut reply: Vec<u8> = [1_u32, 0, 10002, 2]
+            .iter()
+            .flat_map(|w| w.to_ne_bytes())
+            .collect();
+        reply.extend(b"encode\0*\0otter\0heron\0");
+        assert_eq!(group_reply(&reply).unwrap().as_deref(), Some("encode"));
+        let none: Vec<u8> = [0_u32, 0].iter().flat_map(|w| w.to_ne_bytes()).collect();
+        assert_eq!(group_reply(&none).unwrap(), None);
+        assert!(group_reply(&reply[..16]).is_err());
+        assert!(group_reply(&[]).is_err());
+    }
+
+    /// Run on a host where `id` reads the same account database, as on js029 and AICR.
+    #[tokio::test]
+    #[ignore = "needs the host's account database"]
+    async fn groups_match_id() {
+        let me = Login(std::env::var("USER").unwrap());
+        let found = groups(std::slice::from_ref(&me)).await.unwrap();
+        assert_eq!(found[&me], shared(&me, id(&me).await.unwrap()));
+        assert_ne!(found[&me], []);
+        let nobody = Login("no-such-login-here".into());
+        assert_eq!(
+            groups(std::slice::from_ref(&nobody)).await.unwrap()[&nobody],
+            []
+        );
     }
 
     #[tokio::test]
