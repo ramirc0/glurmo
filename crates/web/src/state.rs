@@ -15,6 +15,12 @@ use glurmo_model::{
     AttemptKey, Cluster, Login, Node, NodeName, Occupancies, PartitionName, UnixTime,
 };
 
+/// The theme drawn with when the address names none, or one that does not exist.
+pub const DEFAULT_THEME: &str = "rose-pine";
+
+/// The layout shown when the address names none, or one that does not exist.
+pub const DEFAULT_LAYOUT: &str = "web";
+
 /// The state of the stream from the server.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Link {
@@ -173,7 +179,7 @@ impl Address {
         let search = window().location().search().unwrap_or_default();
         let params = web_sys::UrlSearchParams::new_with_str(&search).ok();
         let get = |name: &str| params.as_ref().and_then(|params| params.get(name));
-        let layout = get("layout").unwrap_or_else(|| "web".to_owned());
+        let layout = get("layout").unwrap_or_else(|| DEFAULT_LAYOUT.to_owned());
         let tv = params.as_ref().is_some_and(|params| params.has("tv")) || layout == "tv";
         let at = get("at").and_then(|at| {
             at.parse()
@@ -181,7 +187,7 @@ impl Address {
                 .or_else(|| Some(js_sys::Date::parse(&at) / 1_000.0).filter(|at| at.is_finite()))
         });
         Self {
-            theme: get("theme").unwrap_or_else(|| "rose-pine".to_owned()),
+            theme: get("theme").unwrap_or_else(|| DEFAULT_THEME.to_owned()),
             me: get("me"),
             layout,
             tv,
@@ -219,12 +225,18 @@ impl State {
             draft_layout,
             theme: Memo::new(move |_| {
                 draft_theme.get().or_else(|| {
-                    themes.with(|themes| pick(themes, &theme_name.get(), "rose-pine").cloned())
+                    themes.with(|themes| {
+                        pick(themes, &theme_name.get(), DEFAULT_THEME)
+                            .map(|(_, theme)| theme.clone())
+                    })
                 })
             }),
             layout: Memo::new(move |_| {
                 draft_layout.get().or_else(|| {
-                    layouts.with(|layouts| pick(layouts, &layout_name.get(), "web").cloned())
+                    layouts.with(|layouts| {
+                        pick(layouts, &layout_name.get(), DEFAULT_LAYOUT)
+                            .map(|(_, layout)| layout.clone())
+                    })
                 })
             }),
             editing: Memo::new(move |_| draft_layout.with(Option::is_some)),
@@ -264,12 +276,16 @@ impl State {
     }
 }
 
-/// The entry named `name`, else `fallback`, else the first.
-fn pick<'a, T>(entries: &'a BTreeMap<String, T>, name: &str, fallback: &str) -> Option<&'a T> {
+/// The entry named `name`, else `fallback`, else the first, with the name it goes by.
+pub fn pick<'a, T>(
+    entries: &'a BTreeMap<String, T>,
+    name: &str,
+    fallback: &str,
+) -> Option<(&'a String, &'a T)> {
     entries
-        .get(name)
-        .or_else(|| entries.get(fallback))
-        .or_else(|| entries.values().next())
+        .get_key_value(name)
+        .or_else(|| entries.get_key_value(fallback))
+        .or_else(|| entries.iter().next())
 }
 
 fn longest_history(pane: &Pane) -> Option<i64> {
@@ -286,6 +302,17 @@ fn longest_history(pane: &Pane) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_names_the_entry_it_settles_on() {
+        let entries = BTreeMap::from([("dawn".to_owned(), 1), ("moon".to_owned(), 2)]);
+        let named =
+            |name: &str, fallback| pick(&entries, name, fallback).map(|(name, _)| name.as_str());
+        assert_eq!(named("moon", "dawn"), Some("moon"));
+        assert_eq!(named("noon", "moon"), Some("moon"));
+        assert_eq!(named("noon", "dusk"), Some("dawn"));
+        assert_eq!(pick(&BTreeMap::<String, u8>::new(), "noon", "dusk"), None);
+    }
 
     #[test]
     fn row_highlights_keep_only_the_copies_of_live_rows() {
