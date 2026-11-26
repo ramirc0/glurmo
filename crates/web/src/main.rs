@@ -95,7 +95,7 @@ fn App() -> impl IntoView {
             "f" if !editing => state.filled.set(state.pointed.get_value()),
             "Escape" if replaying => replay::live(state),
             "0" if replaying => replay::play(state, None),
-            key @ ("1" | "2" | "3" | "4") if replaying => {
+            key @ ("1" | "2" | "3" | "4" | "5") if replaying => {
                 let speed = key
                     .parse::<usize>()
                     .ok()

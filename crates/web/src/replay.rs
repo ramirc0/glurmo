@@ -14,7 +14,7 @@ use crate::feed::fetch;
 use crate::state::State;
 
 /// The speeds offered, in seconds of history per second.
-pub const SPEEDS: [u32; 4] = [1, 10, 60, 600];
+pub const SPEEDS: [u32; 5] = [1, 10, 60, 600, 3_600];
 
 /// How long a start flashes and an end glows, in seconds of history, as in the mockup.
 const FLASH_S: f64 = 45.0;
@@ -23,9 +23,10 @@ const AFTERGLOW_S: f64 = 150.0;
 /// A replay this close to now has caught up, and the live view takes over.
 const CAUGHT_UP_S: f64 = 15.0;
 
-/// Wall seconds of history to fetch ahead of the playhead, within five minutes to an hour of history.
+/// Wall seconds of history to fetch ahead of the playhead, within five minutes to six hours of history.
+/// At the top speed an hour of history passes each second, so shorter fetches would stall the playhead.
 const AHEAD_S: f64 = 120.0;
-const WINDOW_S: (f64, f64) = (300.0, 3_600.0);
+const WINDOW_S: (f64, f64) = (300.0, 21_600.0);
 
 /// Where a replay is.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -13,6 +13,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - A palette tab in the web view's editor builds palettes: colors in order, filled from a colormap if wanted, names bound to a color, and the color of everyone else. It saves in the browser and exports RON, as the theme tab does.
 
 - History keeps each job's time limit, so a replay under a time-left palette shows cores cooling off. An existing store reads its history from accounting once more, in the background, to fill in the limits of jobs stored before this.
+- A replay can play at 3600×, an hour of history each second, from its heading or the key `5`.
+- `reversed: true` in a palette, or *reverse the colors* in the editor, takes its colors last to first.
 
 ### Changed
 

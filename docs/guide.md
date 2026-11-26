@@ -335,7 +335,7 @@ The history panel is a timeline:
 
 * The wheel pans it back. Shift or ctrl with the wheel, or a pinch, zooms it around the pointer. A drag highlights a stretch, and letting go zooms to it. A white line marks the moment under the pointer, with its time.
 * Type a span such as `6h` or `3d` in its heading, and *now* brings it back.
-* A click replays the cluster from that moment, paused. The heading then offers 1×, 10×, 60× and 600×, pause and *live*. The keys `1` to `4`, `0` and `esc` do the same.
+* A click replays the cluster from that moment, paused. The heading then offers 1×, 10×, 60×, 600× and 3600×, pause and *live*. The keys `1` to `5`, `0` and `esc` do the same.
 * The address can start a replay too, as in `?at=1794700000&speed=60`.
 * A replay shows no load, free memory, pending reasons or job names, because the history does not keep them.
 
@@ -343,7 +343,7 @@ Press `e`, or pick *Edit layout and theme* from the gear, to edit the layout, th
 
 * Click a panel to pick it, then split, remove or change it in the sidebar. Drag a panel onto another to swap them, and drag the gap between panes to resize them.
 * The theme side has a color picker for every color and imports a pasted base16 scheme.
-* The palette side sets what the palette colors by, its colors in order, the names bound to a color, and the color of everyone else. *Fill* replaces the colors with that many samples of a colormap, brightest first, ⇄ reverses them, and *hand out* picks who takes them.
+* The palette side sets what the palette colors by, its colors in order, the names bound to a color, and the color of everyone else. *Fill* replaces the colors with that many samples of a colormap, brightest first, *reverse the colors* turns them around, and *hand out* picks who takes them.
 * *Save in this browser* keeps the result in local storage. *Export RON* gives the file to save in the configuration directory.
 * `e` or `esc` closes the editor and drops unsaved changes.
 
@@ -394,6 +394,7 @@ Palette(
 * Names in `bound` take their colors first. They are logins, or group names under `Group`.
 * Everyone else takes `colors` as `deal` says. `Cycle`, the default, gives every user a color by the order glurmo first saw them, and comes around again once the colors run out. `Biggest` gives one color each to the biggest holders, then to users who only wait. `Spread` stretches the colors over every holder, each taking a mix of the two nearest, so a ramp covers everyone.
 * `Biggest` and `Spread` rank users by the core time they held over the stretch the history panel shows, so colors hold still while a replay plays. A user with none there ranks by what they hold now.
+* `reversed: true` takes `colors` last to first, which turns a ramp around without rewriting it.
 * Whoever is left once the colors run out takes `rest`. Without it they take a quiet color from the theme.
 * Under `Group`, a user takes the color of the first colored group they are in: bound groups in their order, then groups by what they hold.
 * Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span takes the last color. One with no limit takes `rest`, and so does one from history kept before glurmo stored limits. It names no owner, so the user and group tables show no color beside a name, and the history takes one plain color. A row of the job list takes its own job's color.
