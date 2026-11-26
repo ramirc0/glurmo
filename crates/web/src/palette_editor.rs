@@ -104,6 +104,19 @@ pub fn PalettePanel() -> impl IntoView {
             <Colors/>
             <Fill/>
             {move || (!timed.get()).then(|| view! {
+                <label class="check">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || {
+                            state.draft_palette.with(|draft| draft.as_ref().is_some_and(|palette| palette.spread))
+                        }
+                        on:change=move |event| {
+                            let spread = event_target_checked(&event);
+                            edit(state, |palette| palette.spread = spread);
+                        }
+                    />
+                    "spread the colors over every holder"
+                </label>
                 <h3>"bound"</h3>
                 <Bound/>
             })}

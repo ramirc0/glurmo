@@ -68,6 +68,42 @@ impl Color {
     }
 }
 
+impl Color {
+    /// This color moved toward `other` by `share`, from 0 for this color to 1 for the other.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_model::theme::Color;
+    ///
+    /// let black = Color::try_from("#000000".to_owned()).unwrap();
+    /// let white = Color::try_from("#ffffff".to_owned()).unwrap();
+    /// assert_eq!(String::from(black.mix(&white, 0.5)), "#808080");
+    /// assert_eq!(black.mix(&white, 0.0), black);
+    /// ```
+    #[must_use]
+    pub fn mix(&self, other: &Self, share: f64) -> Self {
+        let share = share.clamp(0.0, 1.0);
+        let (from, to) = (self.rgb(), other.rgb());
+        let channel = |from: u8, to: u8| {
+            let mixed = f64::from(from) * (1.0 - share) + f64::from(to) * share;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a mix of two bytes stays a byte"
+            )]
+            let channel = mixed.round() as u8;
+            channel
+        };
+        Self(format!(
+            "#{:02x}{:02x}{:02x}",
+            channel(from.0, to.0),
+            channel(from.1, to.1),
+            channel(from.2, to.2)
+        ))
+    }
+}
+
 impl From<Color> for String {
     fn from(color: Color) -> Self {
         color.0

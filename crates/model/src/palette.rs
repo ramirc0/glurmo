@@ -63,6 +63,10 @@ pub struct Palette {
     /// Logins or group names with a color of their own. For a user in two bound groups, the first wins.
     #[serde(default)]
     pub bound: Vec<(String, Color)>,
+    /// Whether `colors` stretch over every holder not bound, each taking a color mixed from the two
+    /// nearest, in place of one color each for the biggest. A ramp then covers everyone.
+    #[serde(default)]
+    pub spread: bool,
     /// The color of everyone else, or `None` for a quiet color the view takes from its theme.
     #[serde(default)]
     pub rest: Option<Color>,
@@ -96,8 +100,31 @@ impl Palette {
             by: ColorBy::User,
             colors: theme.users.clone(),
             bound: Vec::new(),
+            spread: false,
             rest: None,
         }
+    }
+
+    /// The colors for `count` holders in rank order: one each until they run out, or under `spread`
+    /// the whole list stretched over all of them.
+    fn dealt(&self, count: usize) -> Vec<Color> {
+        let last = self.colors.len().saturating_sub(1);
+        if !self.spread || last == 0 || count < 2 {
+            return self.colors.iter().take(count).cloned().collect();
+        }
+        (0..count)
+            .map(|rank| {
+                let low = rank * last / (count - 1);
+                let high = (low + 1).min(last);
+                let over = rank * last - low * (count - 1);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "counts of users and colors are small"
+                )]
+                let share = over as f64 / (count - 1) as f64;
+                self.colors[low].mix(&self.colors[high], share)
+            })
+            .collect()
     }
 
     /// Who takes which color in `cluster` right now.
@@ -132,35 +159,42 @@ impl Palette {
             groups: BTreeMap::new(),
             rest: self.rest.clone(),
         };
-        let mut colors = self.colors.iter();
         match self.by {
             ColorBy::TimeLeft { .. } => coloring.steps.clone_from(&self.colors),
             ColorBy::User => {
                 for (login, color) in &self.bound {
                     coloring.users.insert(Login(login.clone()), color.clone());
                 }
-                for (login, held) in holdings(cluster, occupancy).users {
-                    if held.cores + held.gpus > 0 && !coloring.users.contains_key(login) {
-                        let Some(color) = colors.next() else { break };
-                        coloring.users.insert(login.clone(), color.clone());
-                    }
+                let holders: Vec<&Login> = holdings(cluster, occupancy)
+                    .users
+                    .into_iter()
+                    .filter(|(login, held)| {
+                        held.cores + held.gpus > 0 && !coloring.users.contains_key(*login)
+                    })
+                    .map(|(login, _)| login)
+                    .collect();
+                for (login, color) in holders.iter().zip(self.dealt(holders.len())) {
+                    coloring.users.insert((*login).clone(), color);
                 }
             }
             ColorBy::Group => {
-                let mut ranked: Vec<&GroupName> = Vec::new();
                 for (name, color) in &self.bound {
                     coloring
                         .groups
                         .insert(GroupName(name.clone()), color.clone());
                 }
-                for group in group_holdings(cluster, occupancy) {
-                    if group.held.cores + group.held.gpus > 0
-                        && !coloring.groups.contains_key(group.name)
-                    {
-                        let Some(color) = colors.next() else { break };
-                        coloring.groups.insert(group.name.clone(), color.clone());
-                        ranked.push(group.name);
-                    }
+                let holders: Vec<&GroupName> = group_holdings(cluster, occupancy)
+                    .into_iter()
+                    .filter(|group| {
+                        group.held.cores + group.held.gpus > 0
+                            && !coloring.groups.contains_key(group.name)
+                    })
+                    .map(|group| group.name)
+                    .collect();
+                let dealt = self.dealt(holders.len());
+                let ranked = &holders[..dealt.len()];
+                for (name, color) in ranked.iter().zip(dealt) {
+                    coloring.groups.insert((*name).clone(), color);
                 }
                 let bound = self.bound.iter().map(|(name, _)| name.as_str());
                 let order: Vec<&str> = bound
@@ -372,10 +406,34 @@ mod tests {
     }
 
     #[test]
+    fn spread_colors_cover_every_holder_and_plain_ones_run_out() {
+        let mut ramp = Palette {
+            name: "ramp".into(),
+            by: ColorBy::User,
+            colors: vec![color("#000000"), color("#808080"), color("#ffffff")],
+            bound: Vec::new(),
+            spread: true,
+            rest: None,
+        };
+        let hex =
+            |colors: Vec<Color>| -> Vec<String> { colors.into_iter().map(String::from).collect() };
+        assert_eq!(
+            hex(ramp.dealt(5)),
+            ["#000000", "#404040", "#808080", "#c0c0c0", "#ffffff"]
+        );
+        assert_eq!(hex(ramp.dealt(2)), ["#000000", "#ffffff"]);
+        assert_eq!(hex(ramp.dealt(1)), ["#000000"]);
+        assert_eq!(ramp.dealt(0), []);
+        ramp.spread = false;
+        assert_eq!(hex(ramp.dealt(5)), ["#000000", "#808080", "#ffffff"]);
+    }
+
+    #[test]
     fn a_user_in_two_bound_groups_takes_the_first() {
         let palette = Palette {
             name: "labs".into(),
             by: ColorBy::Group,
+            spread: false,
             colors: Vec::new(),
             bound: vec![
                 ("mohd".into(), color("#111111")),

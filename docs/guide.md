@@ -343,7 +343,7 @@ Press `e`, or pick *Edit layout and theme* from the gear, to edit the layout, th
 
 * Click a panel to pick it, then split, remove or change it in the sidebar. Drag a panel onto another to swap them, and drag the gap between panes to resize them.
 * The theme side has a color picker for every color and imports a pasted base16 scheme.
-* The palette side sets what the palette colors by, its colors in order, the names bound to a color, and the color of everyone else. *Fill* replaces the colors with that many samples of a colormap, brightest first, and ⇄ reverses them.
+* The palette side sets what the palette colors by, its colors in order, the names bound to a color, and the color of everyone else. *Fill* replaces the colors with that many samples of a colormap, brightest first, ⇄ reverses them, and *spread* stretches them over every holder.
 * *Save in this browser* keeps the result in local storage. *Export RON* gives the file to save in the configuration directory.
 * `e` or `esc` closes the editor and drops unsaved changes.
 
@@ -391,7 +391,7 @@ Palette(
 
 * `by` is `User`, `Group` or `TimeLeft(within: Hours(24))`.
 * Names in `bound` take their colors first. They are logins, or group names under `Group`.
-* The biggest holders not bound then take `colors`, one each and in order.
+* The biggest holders not bound then take `colors`, one each and in order. With `spread: true`, the colors stretch over every holder instead, each taking a mix of the two nearest, so a ramp covers everyone.
 * Everyone else takes `rest`. Without it they take a quiet color from the theme.
 * Under `Group`, a user takes the color of the first colored group they are in: bound groups in their order, then groups by what they hold.
 * Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span, or with no limit, takes the last color. The user and group tables and the history go quiet.

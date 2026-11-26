@@ -8,7 +8,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A gear at the top right of the web view opens a menu that picks the theme and the layout by name and opens the editor.
 - A `Groups` panel lists user groups with what their members hold, in both views. In the web view, hovering a group lights its members' cores. Groups are the Unix groups of each job's owner, read from `/etc/group` and SSSD, and `groups` in the config keeps `only` some or leaves some out with `hide`.
-- Palettes decide which colors the cores take, apart from the theme. A palette colors by user, by user group or by a job's time left, and binds colors to names or hands them to the biggest holders. Pick one with `p`, from the gear, with `?palette=` or with `tui: (palette: ...)`. `mono`, `okabe-ito`, `groups`, `viridis` and `time-left` are built in, and files in `palettes/` under the config directory add more.
+- Palettes decide which colors the cores take, apart from the theme. A palette colors by user, by user group or by a job's time left, and binds colors to names, hands them to the biggest holders, or spreads them over every holder. Pick one with `p`, from the gear, with `?palette=` or with `tui: (palette: ...)`. `mono`, `okabe-ito`, `groups`, `viridis` and `time-left` are built in, and files in `palettes/` under the config directory add more.
 
 - A palette tab in the web view's editor builds palettes: colors in order, filled from a colormap if wanted, names bound to a color, and the color of everyone else. It saves in the browser and exports RON, as the theme tab does.
 

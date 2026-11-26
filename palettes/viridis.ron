@@ -1,5 +1,6 @@
 Palette(
     name: "Viridis",
     by: User,
+    spread: true,
     colors: ["#fde725", "#a0da39", "#4ac16d", "#1fa187", "#277f8e", "#365c8d", "#46327e", "#440154"],
 )
