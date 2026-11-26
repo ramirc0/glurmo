@@ -4,15 +4,16 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-25
+
 ### Added
 
 - A gear at the top right of the web view opens a menu that picks the theme and the layout by name and opens the editor.
 - A `Groups` panel lists user groups with what their members hold, in both views. In the web view, hovering a group lights its members' cores. Groups are the Unix groups of each job's owner, read from `/etc/group` and SSSD, and `groups` in the config keeps `only` some or leaves some out with `hide`.
 - Palettes decide which colors the cores take, apart from the theme. A palette colors by user, by user group or by a job's time left, and binds colors to names. It hands the others to everyone in turn, as before, to the biggest holders only, or spread over every holder. The biggest are those who held the most over the stretch the history panel shows. Pick one with `p`, from the gear, with `?palette=` or with `tui: (palette: ...)`. `mono`, `okabe-ito`, `groups`, `viridis` and `time-left` are built in, and files in `palettes/` under the config directory add more.
-
 - A palette tab in the web view's editor builds palettes: colors in order, filled from a colormap if wanted, names bound to a color, and the color of everyone else. It saves in the browser and exports RON, as the theme tab does.
-
 - History keeps each job's time limit, so a replay under a time-left palette shows cores cooling off. An existing store reads its history from accounting once more, in the background, to fill in the limits of jobs stored before this.
+- Under a time-left palette, the cores panel shows each step's hours. A job with more left than the span takes the last color, and one with no limit takes the rest color. The user and group tables show no color beside a name, and a row of the job list takes its own job's color.
 - A replay can play at 3600×, an hour of history each second, from its heading or the key `5`.
 - `reversed: true` in a palette, or *reverse the colors* in the editor, takes its colors last to first.
 
@@ -20,6 +21,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - The history panel stacks users in the order glurmo first saw them, unless its `stack` option says `Biggest` or `Name`. Before, the biggest user over the loaded history sat at the bottom, so the bands changed places when the timeline was panned or resized. `Biggest` now counts the stretch shown.
 - The history panel draws one bar per step of history at its own time, and steps start on fixed clock boundaries. Before, the chart sampled steps into fixed columns and the server grouped bins from wherever a request began, so its shape shifted as the timeline was panned or zoomed.
+- The store's layout changed, for user groups and time limits. A store migrates when this version first opens it, and an older glurmo will not open it afterward.
 - The `Die` panel is named `Tiles`. A layout that says `Die` still loads.
 - The lines the protocol client logs, such as the protocol it settles on, carry the module `glurmo_rpc`. Before, they carried `glurmo::slurm::wire`.
 - The units and `just timescale-check` run TimescaleDB 2.32.0 on PostgreSQL 18. To upgrade, pull `timescaledb-2.32.0-pg18.sif` beside the old image, install the new units, restart the database, and run `ALTER EXTENSION timescaledb UPDATE` in `psql -X` as the first command of a session.
@@ -185,7 +187,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - `glurmo record`, `pseudonymize`, `convert` and `serve --replay --speed`, for recordings, demos and test fixtures.
 - Account lookups through `/etc/passwd` and SSSD's socket, so the static binary sees directory users.
 
-[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ramirc0/glurmo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ramirc0/glurmo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ramirc0/glurmo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ramirc0/glurmo/compare/v0.3.0...v0.4.0
