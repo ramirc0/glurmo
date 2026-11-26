@@ -248,6 +248,25 @@ pub struct Coloring {
 }
 
 impl Coloring {
+    /// Whether a color says who holds a core. It does not under [`ColorBy::TimeLeft`], so tables then
+    /// show no color beside a user or a group.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_model::Cluster;
+    /// use glurmo_model::palette::Palette;
+    ///
+    /// let palette: Palette = serde_json::from_str(
+    ///     r#"{"name": "Time left", "by": {"TimeLeft": {"within": {"Hours": 24}}}}"#,
+    /// ).unwrap();
+    /// let cluster = Cluster::default();
+    /// assert!(!palette.coloring(&cluster, &cluster.occupancy()).names_owners());
+    /// ```
+    pub fn names_owners(&self) -> bool {
+        !matches!(self.by, ColorBy::TimeLeft { .. })
+    }
+
     /// The color of `login` in tables and history.
     ///
     /// # Examples

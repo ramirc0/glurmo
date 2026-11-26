@@ -55,7 +55,7 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
             };
             let mut spans = vec![Span::styled(
                 if running { "■ " } else { "□ " },
-                scene.color(&first.login),
+                scene.job_color(first),
             )];
             spans.extend(row.spans(columns, tones.text.into(), tones.subtle.into()));
             Line::from(spans)

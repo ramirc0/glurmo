@@ -105,8 +105,12 @@ pub fn History(span: Span) -> impl IntoView {
                         #[expect(clippy::cast_precision_loss, reason = "core counts fit in an f64")]
                         let h = graph_h * cores as f64 / scale as f64;
                         let color = colors.entry(login).or_insert_with(|| {
-                            let color = coloring.user(&Login(login.to_owned()));
-                            painted(&theme, coloring, color).css()
+                            if coloring.names_owners() {
+                                let color = coloring.user(&Login(login.to_owned()));
+                                painted(&theme, coloring, color).css()
+                            } else {
+                                Rgb::of(&theme.ui.subtle).css()
+                            }
                         });
                         context.set_fill_style_str(color);
                         context.fill_rect(x, y - h, COLUMN + 1.0, h);

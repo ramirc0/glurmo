@@ -131,7 +131,13 @@ fn App() -> impl IntoView {
             .with(|layout| layout.as_ref().map(|layout| layout.root.clone()))
     });
     view! {
-        <main class:tv=state.tv class:editing=move || state.editing.get()>
+        <main
+            class:tv=state.tv
+            class:editing=move || state.editing.get()
+            class:ownerless=move || {
+                state.coloring.with(|coloring| coloring.as_ref().is_some_and(|coloring| !coloring.names_owners()))
+            }
+        >
             <div class="stage">
                 {move || {
                     let editing = state.editing.get();

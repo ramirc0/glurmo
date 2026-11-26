@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::paint::{clock, display_name};
-use crate::panels::color_of;
+use crate::panels::job_color;
 use crate::state::{Highlight, State};
 
 /// The most attempts an open group lists.
@@ -298,7 +298,7 @@ impl Row {
             kind,
             group: group.key.clone(),
             members: Members::of(group),
-            color: color_of(state, &group.key.login),
+            color: job_color(state, first, at),
             name: display_name(cluster, &group.key.login),
             label: group.label(),
             title: if first.name.is_empty() {

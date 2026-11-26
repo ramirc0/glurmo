@@ -17,10 +17,26 @@ pub fn color_of(state: State, login: &Login) -> String {
     css_of(state, |coloring| coloring.user(login))
 }
 
-/// The CSS color that `pick` takes from the coloring, or the rest color when it takes none.
+/// The CSS color of a job in the job list: what its cores take at `now`. Under a palette by time left,
+/// a job that has not started has no time left to show, so it takes the plain color.
+pub fn job_color(state: State, attempt: &Attempt, now: glurmo_model::UnixTime) -> String {
+    state.theme.with(|theme| {
+        state.coloring.with(|coloring| match (theme, coloring) {
+            (Some(theme), Some(coloring)) if coloring.names_owners() || attempt.start.is_some() => {
+                painted(theme, coloring, coloring.core(attempt, now)).css()
+            }
+            (Some(_), Some(_)) => "var(--subtle)".to_owned(),
+            _ => String::new(),
+        })
+    })
+}
+
+/// The CSS color that `pick` takes from the coloring, or the rest color when it takes none. Under a
+/// palette that names no owners, bars take one plain color, and the stylesheet hides the swatches.
 fn css_of(state: State, pick: impl Fn(&Coloring) -> Option<&Color>) -> String {
     state.theme.with(|theme| {
         state.coloring.with(|coloring| match (theme, coloring) {
+            (Some(_), Some(coloring)) if !coloring.names_owners() => "var(--subtle)".to_owned(),
             (Some(theme), Some(coloring)) => painted(theme, coloring, pick(coloring)).css(),
             _ => String::new(),
         })

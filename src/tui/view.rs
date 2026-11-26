@@ -69,9 +69,23 @@ impl<'a> Scene<'a> {
         }
     }
 
-    /// The color of `login` under the palette.
+    /// The color of `login` under the palette, or a plain one under a palette that names no owners.
     pub fn color(&self, login: &Login) -> Color {
-        self.painted(self.coloring.user(login))
+        if self.coloring.names_owners() {
+            self.painted(self.coloring.user(login))
+        } else {
+            self.tones.subtle
+        }
+    }
+
+    /// The color of a job in the job list: what its cores take. Under a palette by time left, a job
+    /// that has not started has no time left to show, so it takes the plain color.
+    pub fn job_color(&self, attempt: &Attempt) -> Color {
+        if self.coloring.names_owners() || attempt.start.is_some() {
+            self.painted(self.coloring.core(attempt, self.now))
+        } else {
+            self.tones.subtle
+        }
     }
 
     /// A palette color for the terminal. `None` is the rest color, which is the palette's own or a

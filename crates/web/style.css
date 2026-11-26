@@ -275,6 +275,11 @@ td.why {
   vertical-align: -1px;
 }
 
+/* Under a palette that names no owners, such as time left, no table shows a color beside a name. */
+main.ownerless td .swatch {
+  visibility: hidden;
+}
+
 tr.lit td {
   background: var(--overlay);
 }

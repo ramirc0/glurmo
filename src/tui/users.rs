@@ -63,7 +63,11 @@ pub fn draw(scene: &Scene, area: Rect, buf: &mut Buffer, focus: Focus) -> u16 {
         .iter()
         .map(|(login, held)| {
             row(
-                "█",
+                if scene.coloring.names_owners() {
+                    "█"
+                } else {
+                    " "
+                },
                 scene.color(login),
                 scene.name(login),
                 **login == scene.app.me,

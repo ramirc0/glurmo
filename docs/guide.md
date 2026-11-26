@@ -394,7 +394,7 @@ Palette(
 * Everyone else with a job then takes `colors`, one each and in order: the biggest holders first, then users who only wait. With `spread: true`, the colors stretch over every holder instead, each taking a mix of the two nearest, so a ramp covers everyone, and users who only wait take its last color.
 * Whoever is left once the colors run out takes `rest`. Without it they take a quiet color from the theme.
 * Under `Group`, a user takes the color of the first colored group they are in: bound groups in their order, then groups by what they hold.
-* Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span, or with no limit, takes the last color. The user and group tables and the history go quiet.
+* Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span, or with no limit, takes the last color. It names no owner, so the user and group tables show no color beside a name, and the history takes one plain color. A row of the job list takes its own job's color.
 
 So a palette with no `colors` and a `rest` is mono, and one bound group with a `rest` is us and them. The built-in palettes are `mono`, `okabe-ito`, `groups`, `viridis` and `time-left`. A file in `~/.config/glurmo/palettes/` adds one or replaces a built-in. See `palettes/` for more examples.
 
