@@ -12,6 +12,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A palette tab in the web view's editor builds palettes: colors in order, filled from a colormap if wanted, names bound to a color, and the color of everyone else. It saves in the browser and exports RON, as the theme tab does.
 
+- History keeps each job's time limit, so a replay under a time-left palette shows cores cooling off. Jobs stored before this have no limit on record and take the rest color.
+
 ### Changed
 
 - The `Die` panel is named `Tiles`. A layout that says `Die` still loads.
