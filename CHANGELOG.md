@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Changed
+
+- glurmo builds against `slurm-client` 0.2.0 from crates.io, in place of a checkout beside it.
+
 ## [0.8.0] - 2026-11-26
 
 ### Added

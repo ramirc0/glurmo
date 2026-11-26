@@ -3155,7 +3155,9 @@ dependencies = [
 
 [[package]]
 name = "slurm-client"
-version = "0.0.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56753460ef5d45c666116034119409566b2d16168336a18aed268195dcfa4620"
 dependencies = [
  "bitflags 2.13.2",
  "k12",

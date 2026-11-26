@@ -12,7 +12,7 @@ authors = ["Christian Ramirez <christian.ramirez1@umassmed.edu>"]
 
 [dependencies]
 glurmo-model.workspace = true
-slurm-client = { path = "../../slurm-rs/main" }
+slurm-client = "0.2.0"
 anyhow.workspace = true
 axum = "0.8.9"
 bytes = "1.12.1"
