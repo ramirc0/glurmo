@@ -101,6 +101,32 @@ pub fn horizon(seconds: i64) -> String {
     }
 }
 
+/// Labels for steps of time left that end at `ends`, in seconds, soonest first: `<4h` for a step that
+/// ends, and `20h+` for the last, which also takes everything beyond it.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::units::step_labels;
+///
+/// assert_eq!(step_labels([28_800, 57_600, 86_400]), ["<8h", "<16h", "16h+"]);
+/// assert_eq!(step_labels([86_400]), ["0h+"]);
+/// ```
+pub fn step_labels(ends: impl IntoIterator<Item = i64>) -> Vec<String> {
+    let ends: Vec<i64> = ends.into_iter().collect();
+    let mut from = 0;
+    let mut labels = Vec::new();
+    for (step, end) in ends.iter().enumerate() {
+        labels.push(if step + 1 == ends.len() {
+            format!("{}h+", from / 3_600)
+        } else {
+            format!("<{}", horizon(*end))
+        });
+        from = *end;
+    }
+    labels
+}
+
 /// How long ago `then` was at `now`.
 ///
 /// # Examples

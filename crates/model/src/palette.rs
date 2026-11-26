@@ -30,8 +30,8 @@ pub enum ColorBy {
     Group,
     /// How long until a job reaches its time limit.
     TimeLeft {
-        /// The stretch the palette's colors split into equal steps. A job with more left takes the
-        /// rest color, so a step means the same hours whatever runs.
+        /// The stretch the palette's colors split into equal steps, so a step means the same hours
+        /// whatever runs. A job with more left takes the last step.
         within: Span,
     },
 }
@@ -247,7 +247,7 @@ impl Coloring {
 
     /// The color of a core or GPU that `attempt` holds at `now`: its owner's, or under
     /// [`ColorBy::TimeLeft`] the step its time left falls in. A job past its limit takes the first
-    /// step. One with more left than the span, or with no limit, takes the rest color.
+    /// step. One with more left than the span, or with no limit, takes the last.
     ///
     /// # Examples
     ///
@@ -269,7 +269,7 @@ impl Coloring {
     /// let coloring = palette.coloring(&cluster, &cluster.occupancy());
     /// let attempt: Attempt = serde_json::from_str(attempt).unwrap();
     /// let hours = |hours: i64| UnixTime(1_700_000_000 + hours * 3_600);
-    /// assert_eq!(coloring.core(&attempt, hours(1)), None, "23 hours are left");
+    /// assert_eq!(coloring.core(&attempt, hours(1)), Some(&palette.colors[1]), "23 hours are left");
     /// assert_eq!(coloring.core(&attempt, hours(13)), Some(&palette.colors[1]));
     /// assert_eq!(coloring.core(&attempt, hours(20)), Some(&palette.colors[0]));
     /// assert_eq!(coloring.core(&attempt, hours(30)), Some(&palette.colors[0]));
@@ -278,11 +278,18 @@ impl Coloring {
         let ColorBy::TimeLeft { within } = self.by else {
             return self.user(&attempt.login);
         };
-        let limit = i64::try_from(attempt.time_limit_s?).ok()?;
-        let left = (attempt.start?.0 + limit - now.0).max(0);
-        let steps = i64::try_from(self.steps.len()).ok()?;
-        let step = left.checked_mul(steps)?.checked_div(within.seconds())?;
-        self.steps.get(usize::try_from(step).ok()?)
+        let left = attempt
+            .start
+            .zip(attempt.time_limit_s)
+            .and_then(|(start, limit)| {
+                Some((start.0.checked_add(i64::try_from(limit).ok()?)? - now.0).max(0))
+            });
+        let step = left.and_then(|left| {
+            let steps = i64::try_from(self.steps.len()).ok()?;
+            usize::try_from(left.checked_mul(steps)?.checked_div(within.seconds())?).ok()
+        });
+        let last = self.steps.len().checked_sub(1)?;
+        self.steps.get(step.map_or(last, |step| step.min(last)))
     }
 
     /// The color of everyone and everything no lookup colors, or `None` for the view's quiet color.
@@ -302,7 +309,8 @@ impl Coloring {
     }
 
     /// Under [`ColorBy::TimeLeft`], each step's color with the seconds left at which it ends, soonest
-    /// first. Empty otherwise.
+    /// first. The last step has no end in effect, since it also takes every job with more left. Empty
+    /// otherwise.
     ///
     /// # Examples
     ///

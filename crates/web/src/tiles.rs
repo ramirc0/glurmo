@@ -10,7 +10,7 @@ use glurmo_model::layout::Grouping;
 use glurmo_model::palette::Coloring;
 use glurmo_model::summary::{NodeGroup, node_groups};
 use glurmo_model::theme::Theme;
-use glurmo_model::units::{gigabytes, horizon, load, thousands};
+use glurmo_model::units::{gigabytes, load, step_labels, thousands};
 use glurmo_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
 use leptos::prelude::*;
 use web_sys::CanvasRenderingContext2d;
@@ -630,8 +630,8 @@ pub fn Tiles(group: Grouping) -> impl IntoView {
     }
 }
 
-/// Under a palette by time left, each step's color with the time left at which it ends, then the rest
-/// color for jobs with more. Nothing under any other palette.
+/// Under a palette by time left, each step's color with the time left it covers. Nothing under any
+/// other palette.
 #[component]
 fn Legend() -> impl IntoView {
     let state = expect_context::<State>();
@@ -646,22 +646,12 @@ fn Legend() -> impl IntoView {
                 </span>
             }
         };
-        let mut steps: Vec<_> = coloring
-            .steps()
-            .map(|(end_s, color)| {
-                (
-                    end_s,
-                    swatch(painted(&theme, &coloring, Some(color)), horizon(end_s)),
-                )
-            })
+        let steps: Vec<_> = step_labels(coloring.steps().map(|(end_s, _)| end_s))
+            .into_iter()
+            .zip(coloring.steps())
+            .map(|(label, (_, color))| swatch(painted(&theme, &coloring, Some(color)), label))
             .collect();
-        let (last, _) = steps.last()?;
-        let rest = swatch(
-            painted(&theme, &coloring, None),
-            format!("{}+", horizon(*last)),
-        );
-        let steps: Vec<_> = steps.drain(..).map(|(_, step)| step).collect();
-        Some(view! { <div class="legend">"time left" {steps} {rest}</div> })
+        (!steps.is_empty()).then(|| view! { <div class="legend">"time left" {steps}</div> })
     }
 }
 

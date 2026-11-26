@@ -166,7 +166,7 @@ fn By() -> impl IntoView {
                                 <input type="text" spellcheck="false" prop:value=within on:change=set_within/>
                             </label>
                             <p class="note">
-                                "The colors split this span into equal steps, soonest first. A job with more left takes the rest color."
+                                "The colors split this span into equal steps, soonest first. A job with more left takes the last."
                             </p>
                         }
                     })

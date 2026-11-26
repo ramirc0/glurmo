@@ -12,7 +12,7 @@ use ratatui::widgets::Block;
 use super::view::{Focus, Scene, scrolled};
 use glurmo_model::layout::Grouping;
 use glurmo_model::summary::{NodeGroup, node_groups};
-use glurmo_model::units::{horizon, load, thousands};
+use glurmo_model::units::{load, step_labels, thousands};
 use glurmo_model::{Node, NodeFlag, NodeState};
 
 /// Columns between node entries.
@@ -60,22 +60,17 @@ pub fn draw(scene: &Scene, grouping: Grouping, area: Rect, buf: &mut Buffer, foc
     limit
 }
 
-/// Under a palette by time left, each step's color with the time left at which it ends, then the
-/// rest color for jobs with more. Empty under any other palette.
+/// Under a palette by time left, each step's color with the time left it covers. Empty under any other
+/// palette.
 fn legend(scene: &Scene) -> Line<'static> {
+    let labels = step_labels(scene.coloring.steps().map(|(end_s, _)| end_s));
     let mut spans = Vec::new();
-    let mut last = 0;
-    for (end_s, color) in scene.coloring.steps() {
+    for (label, (_, color)) in labels.into_iter().zip(scene.coloring.steps()) {
         spans.push(Span::styled(" ■", scene.painted(Some(color))));
-        spans.push(Span::styled(horizon(end_s), scene.tones.muted));
-        last = end_s;
+        spans.push(Span::styled(label, scene.tones.muted));
     }
-    if last > 0 {
-        spans.push(Span::styled(" ■", scene.painted(None)));
-        spans.push(Span::styled(
-            format!("{}+ ", horizon(last)),
-            scene.tones.muted,
-        ));
+    if !spans.is_empty() {
+        spans.push(Span::raw(" "));
     }
     Line::from(spans)
 }
