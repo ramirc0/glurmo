@@ -73,6 +73,28 @@ pub struct Usage {
     pub steps: Vec<Step>,
 }
 
+impl Column<'_> {
+    /// This column with its logins stacked by `place`, lowest first, then by login. A place that never
+    /// changes for a login, such as the order it was first seen in, keeps a graph's bands in one order
+    /// however the graph is panned or resized.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_model::usage::Column;
+    ///
+    /// let column = Column { cores: vec![("otter", 12), ("heron", 4), ("newt", 1)], waiting: 0 };
+    /// let stacked = column.stacked_by(|login| if login == "heron" { 0 } else { 1 });
+    /// assert_eq!(stacked.cores, [("heron", 4), ("newt", 1), ("otter", 12)]);
+    /// ```
+    #[must_use]
+    pub fn stacked_by(mut self, place: impl Fn(&str) -> u64) -> Self {
+        self.cores
+            .sort_by_cached_key(|(login, _)| (place(login), *login));
+        self
+    }
+}
+
 impl Usage {
     /// Core-seconds held by each login or partition in steps that start from `from` up to `to`.
     ///

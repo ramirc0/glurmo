@@ -55,7 +55,17 @@ pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
         inner.width - LABELS,
         inner.height - 2,
     );
-    let columns = usage.columns(from, span_s, graph.width);
+    let users = &scene.cluster().users;
+    let place = |login: &str| {
+        users
+            .get(&Login(login.to_owned()))
+            .map_or(u64::MAX, |user| u64::from(user.color_slot))
+    };
+    let columns: Vec<Column> = usage
+        .columns(from, span_s, graph.width)
+        .into_iter()
+        .map(|column| column.stacked_by(place))
+        .collect();
     stack(scene, &columns, graph, buf);
     queue(
         scene,

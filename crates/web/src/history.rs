@@ -88,7 +88,7 @@ pub fn History(span: Span) -> impl IntoView {
                 reason = "a panel is far narrower than u16::MAX columns"
             )]
             let count = (graph_w / COLUMN).floor() as u16;
-            let columns = usage.columns(from, span_s, count);
+            let columns = stacked(state, usage, from, span_s, count);
             let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
             let peak = columns.iter().map(total).max().unwrap_or(0);
             let scale = installed.get().max(peak).max(1);
@@ -398,6 +398,23 @@ impl Spot {
             room: frame.width() - x,
         })
     }
+}
+
+/// The chart's columns, each stacked in the order its users were first seen. That order never changes,
+/// so the bands keep their places however the timeline is panned or resized.
+fn stacked(state: State, usage: &Usage, from: i64, span_s: i64, count: u16) -> Vec<Column<'_>> {
+    let seen: HashMap<String, u64> = state.cluster.with(|cluster| {
+        let users = cluster.users.values();
+        users
+            .map(|user| (user.login.0.clone(), u64::from(user.color_slot)))
+            .collect()
+    });
+    let place = |login: &str| seen.get(login).copied().unwrap_or(u64::MAX);
+    usage
+        .columns(from, span_s, count)
+        .into_iter()
+        .map(|column| column.stacked_by(place))
+        .collect()
 }
 
 /// Where the chart ends: where the timeline was panned to, else where `usage` was read up to.

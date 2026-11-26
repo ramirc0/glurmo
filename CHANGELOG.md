@@ -18,6 +18,7 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ### Changed
 
+- The history panel stacks users in the order glurmo first saw them. Before, the biggest user over the loaded history sat at the bottom, so the bands changed places when the timeline was panned or resized.
 - The `Die` panel is named `Tiles`. A layout that says `Die` still loads.
 - The lines the protocol client logs, such as the protocol it settles on, carry the module `glurmo_rpc`. Before, they carried `glurmo::slurm::wire`.
 - The units and `just timescale-check` run TimescaleDB 2.32.0 on PostgreSQL 18. To upgrade, pull `timescaledb-2.32.0-pg18.sif` beside the old image, install the new units, restart the database, and run `ALTER EXTENSION timescaledb UPDATE` in `psql -X` as the first command of a session.
