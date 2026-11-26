@@ -3,7 +3,7 @@
 //! the page at once.
 
 use glurmo_model::layout::Span;
-use glurmo_model::palette::{ColorBy, Palette};
+use glurmo_model::palette::{ColorBy, Deal, Palette};
 use glurmo_model::theme::Color;
 use glurmo_model::units::horizon;
 use leptos::prelude::*;
@@ -100,28 +100,49 @@ pub fn PalettePanel() -> impl IntoView {
                 />
             </label>
             <By/>
-            <h3>{move || if timed.get() { "steps" } else { "colors, biggest holder first" }}</h3>
+            <h3>{move || if timed.get() { "steps" } else { "colors" }}</h3>
             <Colors/>
             <Fill/>
             {move || (!timed.get()).then(|| view! {
-                <label class="check">
-                    <input
-                        type="checkbox"
-                        prop:checked=move || {
-                            state.draft_palette.with(|draft| draft.as_ref().is_some_and(|palette| palette.spread))
-                        }
-                        on:change=move |event| {
-                            let spread = event_target_checked(&event);
-                            edit(state, |palette| palette.spread = spread);
-                        }
-                    />
-                    "spread the colors over every holder"
-                </label>
+                <Dealing/>
                 <h3>"bound"</h3>
                 <Bound/>
             })}
             <Rest/>
         </section>
+    }
+}
+
+/// How the colors are handed out.
+#[component]
+fn Dealing() -> impl IntoView {
+    let state = expect_context::<State>();
+    let deal = move || {
+        state
+            .draft_palette
+            .with(|draft| draft.as_ref().map(|palette| palette.deal))
+    };
+    let choose = move |event: leptos::ev::Event| {
+        let deal = match event_target_value(&event).as_str() {
+            "Biggest" => Deal::Biggest,
+            "Spread" => Deal::Spread,
+            _ => Deal::Cycle,
+        };
+        edit(state, |palette| palette.deal = deal);
+    };
+    view! {
+        <label>
+            "hand out"
+            <select on:change=choose>
+                <option value="Cycle" selected=move || deal() == Some(Deal::Cycle)>"to everyone, in turn"</option>
+                <option value="Biggest" selected=move || deal() == Some(Deal::Biggest)>
+                    "to the biggest holders"
+                </option>
+                <option value="Spread" selected=move || deal() == Some(Deal::Spread)>
+                    "spread over every holder"
+                </option>
+            </select>
+        </label>
     }
 }
 

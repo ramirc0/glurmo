@@ -343,7 +343,7 @@ Press `e`, or pick *Edit layout and theme* from the gear, to edit the layout, th
 
 * Click a panel to pick it, then split, remove or change it in the sidebar. Drag a panel onto another to swap them, and drag the gap between panes to resize them.
 * The theme side has a color picker for every color and imports a pasted base16 scheme.
-* The palette side sets what the palette colors by, its colors in order, the names bound to a color, and the color of everyone else. *Fill* replaces the colors with that many samples of a colormap, brightest first, ⇄ reverses them, and *spread* stretches them over every holder.
+* The palette side sets what the palette colors by, its colors in order, the names bound to a color, and the color of everyone else. *Fill* replaces the colors with that many samples of a colormap, brightest first, ⇄ reverses them, and *hand out* picks who takes them.
 * *Save in this browser* keeps the result in local storage. *Export RON* gives the file to save in the configuration directory.
 * `e` or `esc` closes the editor and drops unsaved changes.
 
@@ -377,12 +377,13 @@ A file in `~/.config/glurmo/themes/` or `~/.config/glurmo/layouts/` adds one, or
 
 ## Palettes
 
-A theme styles the page. A palette decides which colors the cores take, and every panel follows it. Pick one with `p`, from the gear, or with `?palette=mono` in the address. With none picked, the theme's own user colors go to the users who hold the most.
+A theme styles the page. A palette decides which colors the cores take, and every panel follows it. Pick one with `p`, from the gear, or with `?palette=mono` in the address. With none picked, every user takes one of the theme's own user colors in turn.
 
 ```ron
 Palette(
     name: "Us and them",
     by: Group,
+    deal: Cycle,
     colors: [],
     bound: [("lab-a", "#9ccfd8")],
     rest: "#6e6a86",
@@ -391,7 +392,7 @@ Palette(
 
 * `by` is `User`, `Group` or `TimeLeft(within: Hours(24))`.
 * Names in `bound` take their colors first. They are logins, or group names under `Group`.
-* Everyone else with a job then takes `colors`, one each and in order: the biggest holders first, then users who only wait. With `spread: true`, the colors stretch over every holder instead, each taking a mix of the two nearest, so a ramp covers everyone, and users who only wait take its last color.
+* Everyone else takes `colors` as `deal` says. `Cycle`, the default, gives every user a color by the order glurmo first saw them, and comes around again once the colors run out. `Biggest` gives one color each to the biggest holders, then to users who only wait. `Spread` stretches the colors over every holder, each taking a mix of the two nearest, so a ramp covers everyone.
 * Whoever is left once the colors run out takes `rest`. Without it they take a quiet color from the theme.
 * Under `Group`, a user takes the color of the first colored group they are in: bound groups in their order, then groups by what they hold.
 * Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span takes the last color. One with no limit takes `rest`, and so does one from history kept before glurmo stored limits. It names no owner, so the user and group tables show no color beside a name, and the history takes one plain color. A row of the job list takes its own job's color.

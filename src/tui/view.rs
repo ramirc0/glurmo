@@ -511,7 +511,7 @@ pub(super) mod tests {
             .collect();
         assert!(held.users[2].1.cores > 0, "three users hold cores");
         let two =
-            from_ron(r##"Palette(name: "two", colors: ["#111111", "#222222"], rest: "#333333")"##)
+            from_ron(r##"Palette(name: "two", deal: Biggest, colors: ["#111111", "#222222"], rest: "#333333")"##)
                 .unwrap();
         app.library.palettes.insert("two".into(), two);
         app.palette = Some("two".into());

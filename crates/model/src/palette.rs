@@ -1,7 +1,7 @@
 //! Palettes: which colors cores take, apart from the theme that styles the rest. A palette colors by
 //! user, by user group, or by how much time a job has left.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,10 +36,33 @@ pub enum ColorBy {
     },
 }
 
+/// How a palette hands its colors to users or groups that are not bound.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::palette::Deal;
+///
+/// assert_eq!(Deal::default(), Deal::Cycle);
+/// assert_eq!(serde_json::from_str::<Deal>(r#""Spread""#).unwrap(), Deal::Spread);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Deal {
+    /// Everyone takes a color and keeps it: a user by the order glurmo first saw them, a group by its
+    /// place among the group names. The colors come around again once they run out.
+    #[default]
+    Cycle,
+    /// One color each, in order, to the biggest holders and then to those who only wait. Whoever is
+    /// left once the colors run out takes the rest color.
+    Biggest,
+    /// The colors stretch over every holder, each taking a mix of the two nearest, so a ramp covers
+    /// everyone. Those who only wait take the last color.
+    Spread,
+}
+
 /// A palette. Names in `bound` take their colors first. Under [`ColorBy::User`] and
-/// [`ColorBy::Group`], the rest then take `colors`, one each: the biggest holders first, then those who
-/// only wait. Whoever is left once the colors run out takes `rest`. Under [`ColorBy::TimeLeft`],
-/// `colors` are the steps, soonest first.
+/// [`ColorBy::Group`], the others then take `colors` as `deal` says, and whoever it leaves out takes
+/// `rest`. Under [`ColorBy::TimeLeft`], `colors` are the steps, soonest first.
 ///
 /// # Examples
 ///
@@ -64,10 +87,9 @@ pub struct Palette {
     /// Logins or group names with a color of their own. For a user in two bound groups, the first wins.
     #[serde(default)]
     pub bound: Vec<(String, Color)>,
-    /// Whether `colors` stretch over every holder not bound, each taking a color mixed from the two
-    /// nearest, in place of one color each for the biggest. A ramp then covers everyone.
+    /// How `colors` are handed to those not bound.
     #[serde(default)]
-    pub spread: bool,
+    pub deal: Deal,
     /// The color of everyone else, or `None` for a quiet color the view takes from its theme.
     #[serde(default)]
     pub rest: Option<Color>,
@@ -101,17 +123,17 @@ impl Palette {
             by: ColorBy::User,
             colors: theme.users.clone(),
             bound: Vec::new(),
-            spread: false,
+            deal: Deal::Cycle,
             rest: None,
         }
     }
 
     /// The colors for everyone listed, in rank order, the first `holders` of whom hold cores or GPUs
-    /// and the rest only wait: one each until the colors run out. Under `spread`, the whole list
-    /// stretches over the holders, and those who only wait take its last color.
+    /// and the rest only wait: one each until the colors run out. Under [`Deal::Spread`], the
+    /// whole list stretches over the holders, and those who only wait take its last color.
     fn dealt(&self, holders: usize, listed: usize) -> Vec<Color> {
         let last = self.colors.len().saturating_sub(1);
-        if !self.spread || self.colors.is_empty() {
+        if self.deal != Deal::Spread || self.colors.is_empty() {
             return self.colors.iter().take(listed).cloned().collect();
         }
         (0..listed)
@@ -147,7 +169,7 @@ impl Palette {
     /// use glurmo_model::palette::Palette;
     ///
     /// let palette: Palette = serde_json::from_str(
-    ///     r##"{"name": "Us", "colors": ["#111111"], "bound": [["heron", "#222222"]]}"##,
+    ///     r##"{"name": "Us", "deal": "Biggest", "colors": ["#111111"], "bound": [["heron", "#222222"]]}"##,
     /// ).unwrap();
     /// let mut cluster = Cluster::default();
     /// let attempt: Attempt = serde_json::from_str(attempt).unwrap();
@@ -170,6 +192,17 @@ impl Palette {
             ColorBy::User => {
                 for (login, color) in &self.bound {
                     coloring.users.insert(Login(login.clone()), color.clone());
+                }
+                if self.deal == Deal::Cycle {
+                    for user in cluster.users.values() {
+                        let slot = usize::try_from(user.color_slot).unwrap_or_default();
+                        if let Some(color) = self.colors.get(slot % self.colors.len().max(1))
+                            && !coloring.users.contains_key(&user.login)
+                        {
+                            coloring.users.insert(user.login.clone(), color.clone());
+                        }
+                    }
+                    return coloring;
                 }
                 let listed: Vec<(&Login, bool)> = holdings(cluster, occupancy)
                     .users
@@ -194,7 +227,22 @@ impl Palette {
                     .map(|group| (group.name, group.held.cores + group.held.gpus > 0))
                     .collect();
                 let holders = listed.iter().filter(|(_, holds)| *holds).count();
-                let dealt = self.dealt(holders, listed.len());
+                let dealt = if self.deal == Deal::Cycle {
+                    let names: BTreeSet<&GroupName> = cluster
+                        .users
+                        .values()
+                        .flat_map(|user| &user.groups)
+                        .collect();
+                    listed
+                        .iter()
+                        .filter_map(|(name, _)| {
+                            let place = names.iter().position(|known| known == name)?;
+                            self.colors.get(place % self.colors.len().max(1)).cloned()
+                        })
+                        .collect()
+                } else {
+                    self.dealt(holders, listed.len())
+                };
                 let ranked: Vec<&GroupName> = listed
                     .iter()
                     .take(dealt.len())
@@ -432,7 +480,7 @@ mod tests {
             by: ColorBy::User,
             colors: vec![color("#000000"), color("#808080"), color("#ffffff")],
             bound: Vec::new(),
-            spread: true,
+            deal: Deal::Spread,
             rest: None,
         };
         let hex =
@@ -447,8 +495,35 @@ mod tests {
         );
         assert_eq!(hex(ramp.dealt(1, 2)), ["#000000", "#ffffff"]);
         assert_eq!(ramp.dealt(0, 0), []);
-        ramp.spread = false;
+        ramp.deal = Deal::Biggest;
         assert_eq!(hex(ramp.dealt(2, 5)), ["#000000", "#808080", "#ffffff"]);
+    }
+
+    #[test]
+    fn cycled_colors_follow_first_sight_and_come_around_again() {
+        let palette = Palette {
+            name: "two".into(),
+            by: ColorBy::User,
+            colors: vec![color("#111111"), color("#222222")],
+            bound: vec![("heron".into(), color("#999999"))],
+            deal: Deal::Cycle,
+            rest: None,
+        };
+        let mut cluster = cluster(&[("otter", &[]), ("heron", &[]), ("newt", &[]), ("wren", &[])]);
+        for (slot, login) in ["otter", "heron", "newt", "wren"].iter().enumerate() {
+            let user = cluster.users.get_mut(&Login((*login).to_owned())).unwrap();
+            user.color_slot = u32::try_from(slot).unwrap();
+        }
+        let coloring = palette.coloring(&cluster, &cluster.occupancy());
+        let of = |login: &str| coloring.user(&Login(login.to_owned())).cloned();
+        assert_eq!(of("otter"), Some(color("#111111")));
+        assert_eq!(
+            of("heron"),
+            Some(color("#999999")),
+            "bound names keep their own color"
+        );
+        assert_eq!(of("newt"), Some(color("#111111")));
+        assert_eq!(of("wren"), Some(color("#222222")));
     }
 
     #[test]
@@ -456,7 +531,7 @@ mod tests {
         let palette = Palette {
             name: "labs".into(),
             by: ColorBy::Group,
-            spread: false,
+            deal: Deal::Biggest,
             colors: Vec::new(),
             bound: vec![
                 ("mohd".into(), color("#111111")),
