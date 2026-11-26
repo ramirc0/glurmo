@@ -660,8 +660,13 @@ mod tests {
         };
         assert_eq!(wired.jobs_submitted, printed.jobs_submitted);
         assert_eq!(wired.backfilled_jobs, printed.backfilled_jobs);
+        // An older sdiag prints the number of a message type that only a newer release names.
+        let named = |kind: &str| {
+            kind.parse()
+                .map_or_else(|_| kind.to_owned(), stats::rpc_name)
+        };
         let kinds = |stats: &glurmo_model::Stats| {
-            let mut kinds: Vec<String> = stats.rpcs.iter().map(|rpc| rpc.kind.clone()).collect();
+            let mut kinds: Vec<String> = stats.rpcs.iter().map(|rpc| named(&rpc.kind)).collect();
             kinds.sort();
             kinds
         };

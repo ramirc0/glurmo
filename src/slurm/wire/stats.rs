@@ -79,7 +79,7 @@ fn mean(sum: u64, count: u32) -> Option<u64> {
 }
 
 /// `rpc_num2string`.
-fn rpc_name(kind: u16) -> String {
+pub(super) fn rpc_name(kind: u16) -> String {
     RPCS.binary_search_by_key(&kind, |&(number, _)| number)
         .map_or_else(|_| kind.to_string(), |i| RPCS[i].1.to_owned())
 }
