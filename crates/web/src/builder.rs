@@ -1,7 +1,7 @@
 //! The panel builder: covers to pick panels by and drag them onto each other to swap them, grips to
 //! resize panes by, and the sidebar half that edits the picked pane.
 
-use glurmo_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span};
+use glurmo_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span, StackBy};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, PointerEvent};
@@ -25,6 +25,7 @@ const PANELS: [Pane; 12] = [
     Pane::Nodes,
     Pane::History {
         span: Span::Hours(24),
+        stack: StackBy::FirstSeen,
     },
     Pane::Mine,
     Pane::Jobs,
@@ -75,9 +76,11 @@ pub fn label(pane: &Pane) -> String {
         Pane::Queue { by: QueueBy::Login } => "Queue by user".to_owned(),
         Pane::History {
             span: Span::Hours(hours),
+            ..
         } => format!("History, {hours} h"),
         Pane::History {
             span: Span::Days(days),
+            ..
         } => format!("History, {days} d"),
         other => kind(other).to_owned(),
     }
@@ -576,7 +579,25 @@ fn PanelControl(
             </label>
         }
         .into_any(),
-        Some(Pane::History { span }) => view! { <SpanControl span=span replace=replace/> }.into_any(),
+        Some(Pane::History { span, stack }) => view! {
+            <SpanControl span=span stack=stack replace=replace/>
+            <label>
+                "stack by"
+                <select on:change=move |event| {
+                    let stack = match event_target_value(&event).as_str() {
+                        "biggest" => StackBy::Biggest,
+                        "name" => StackBy::Name,
+                        _ => StackBy::FirstSeen,
+                    };
+                    replace(Pane::History { span, stack });
+                }>
+                    <option value="first" selected=stack == StackBy::FirstSeen>"first seen"</option>
+                    <option value="biggest" selected=stack == StackBy::Biggest>"biggest holder"</option>
+                    <option value="name" selected=stack == StackBy::Name>"name"</option>
+                </select>
+            </label>
+        }
+        .into_any(),
         _ => ().into_any(),
     }
     };
@@ -591,7 +612,11 @@ fn PanelControl(
 
 /// How far back a History panel looks.
 #[component]
-fn SpanControl(span: Span, replace: impl Fn(Pane) + Copy + Send + Sync + 'static) -> impl IntoView {
+fn SpanControl(
+    span: Span,
+    stack: StackBy,
+    replace: impl Fn(Pane) + Copy + Send + Sync + 'static,
+) -> impl IntoView {
     let (count, days) = match span {
         Span::Hours(hours) => (hours, false),
         Span::Days(days) => (days, true),
@@ -602,7 +627,7 @@ fn SpanControl(span: Span, replace: impl Fn(Pane) + Copy + Send + Sync + 'static
         } else {
             Span::Hours(count)
         };
-        replace(Pane::History { span });
+        replace(Pane::History { span, stack });
     };
     view! {
         <label>
@@ -658,7 +683,8 @@ mod tests {
     fn labels_say_the_options() {
         assert_eq!(
             label(&Pane::History {
-                span: Span::Days(7)
+                span: Span::Days(7),
+                stack: StackBy::Biggest,
             }),
             "History, 7 d"
         );

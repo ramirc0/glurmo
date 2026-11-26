@@ -60,7 +60,7 @@ fn panel(pane: &Pane) -> AnyView {
         Pane::Queue { by } => view! { <Queue by=by/> }.into_any(),
         Pane::Partitions => view! { <Partitions/> }.into_any(),
         Pane::Nodes => view! { <Nodes/> }.into_any(),
-        Pane::History { span } => view! { <History span=span/> }.into_any(),
+        Pane::History { span, stack } => view! { <History span=span stack=stack/> }.into_any(),
         Pane::Mine => view! { <Mine/> }.into_any(),
         Pane::Jobs => view! { <Jobs/> }.into_any(),
         Pane::Ticker => view! { <Ticker/> }.into_any(),

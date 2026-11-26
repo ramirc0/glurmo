@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use glurmo_model::layout::Span;
+use glurmo_model::layout::{Span, StackBy};
 use glurmo_model::units::thousands;
 use glurmo_model::usage::{Column, Usage};
 use glurmo_model::{Login, UnixTime};
@@ -44,7 +44,7 @@ const NEAR_NOW_S: f64 = 60.0;
 
 /// The history panel, showing `span` unless the timeline picks another.
 #[component]
-pub fn History(span: Span) -> impl IntoView {
+pub fn History(span: Span, stack: StackBy) -> impl IntoView {
     let state = expect_context::<State>();
     let span_s = move || {
         state
@@ -88,7 +88,7 @@ pub fn History(span: Span) -> impl IntoView {
                 reason = "a panel is far narrower than u16::MAX columns"
             )]
             let count = (graph_w / COLUMN).floor() as u16;
-            let columns = stacked(state, usage, from, span_s, count);
+            let columns = stacked(state, stack, usage, from, span_s, count);
             let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
             let peak = columns.iter().map(total).max().unwrap_or(0);
             let scale = installed.get().max(peak).max(1);
@@ -400,16 +400,29 @@ impl Spot {
     }
 }
 
-/// The chart's columns, each stacked in the order its users were first seen. That order never changes,
-/// so the bands keep their places however the timeline is panned or resized.
-fn stacked(state: State, usage: &Usage, from: i64, span_s: i64, count: u16) -> Vec<Column<'_>> {
-    let seen: HashMap<String, u64> = state.cluster.with(|cluster| {
+/// The chart's columns, each stacked as `stack` says. Every order holds still while the stretch shown
+/// does, so the bands keep their places as the chart redraws.
+fn stacked(
+    state: State,
+    stack: StackBy,
+    usage: &Usage,
+    from: i64,
+    span_s: i64,
+    count: u16,
+) -> Vec<Column<'_>> {
+    let held = usage.totals(from, from + span_s);
+    let seen: HashMap<String, u32> = state.cluster.with(|cluster| {
         let users = cluster.users.values();
         users
-            .map(|user| (user.login.0.clone(), u64::from(user.color_slot)))
+            .map(|user| (user.login.0.clone(), user.color_slot))
             .collect()
     });
-    let place = |login: &str| seen.get(login).copied().unwrap_or(u64::MAX);
+    let place = |login: &str| {
+        stack.place(
+            seen.get(login).copied(),
+            held.get(login).copied().unwrap_or(0),
+        )
+    };
     usage
         .columns(from, span_s, count)
         .into_iter()

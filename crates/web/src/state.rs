@@ -370,7 +370,7 @@ fn longest_history(pane: &Pane) -> Option<i64> {
             .iter()
             .filter_map(|(_, child)| longest_history(child))
             .max(),
-        Pane::History { span } => Some(span.seconds()),
+        Pane::History { span, .. } => Some(span.seconds()),
         _ => None,
     }
 }

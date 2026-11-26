@@ -129,7 +129,7 @@ impl App {
         view::panels(&self.layout().root)
             .into_iter()
             .filter_map(|pane| match pane {
-                Pane::History { span } => Some(span.seconds()),
+                Pane::History { span, .. } => Some(span.seconds()),
                 _ => None,
             })
             .max()

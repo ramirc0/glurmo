@@ -333,7 +333,7 @@ The `Jobs` panel lists running and pending jobs:
 
 The history panel is a timeline:
 
-* It stacks cores in use by user, in the order glurmo first saw each user, so a band keeps its place as the timeline moves.
+* It stacks cores in use by user, in the order glurmo first saw each user, so a band keeps its place as the timeline moves. The editor's *stack by* changes that to the biggest holder over the stretch shown at the bottom, or to the order of logins. A layout file says `History(span: Hours(24), stack: Biggest)`, with `FirstSeen`, `Biggest` or `Name`.
 * The wheel pans it back. Shift or ctrl with the wheel, or a pinch, zooms it around the pointer. A drag highlights a stretch, and letting go zooms to it. A white line marks the moment under the pointer, with its time.
 * Type a span such as `6h` or `3d` in its heading, and *now* brings it back.
 * A click replays the cluster from that moment, paused. The heading then offers 1×, 10×, 60×, 600× and 3600×, pause and *live*. The keys `1` to `5`, `0` and `esc` do the same.

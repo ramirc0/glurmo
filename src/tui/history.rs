@@ -10,7 +10,7 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use super::view::{Focus, Scene};
 use glurmo_model::Login;
-use glurmo_model::layout::Span;
+use glurmo_model::layout::{Span, StackBy};
 use glurmo_model::units::thousands;
 use glurmo_model::usage::Column;
 
@@ -24,7 +24,7 @@ const LABELS: u16 = 7;
 const LABEL_EVERY_H: [i64; 9] = [1, 2, 3, 6, 12, 24, 48, 168, 336];
 
 /// Draws the stacked cores, the queue line and the time axis over `span`.
-pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
+pub fn draw(scene: &Scene, span: Span, order: StackBy, area: Rect, buf: &mut Buffer) {
     let span_s = span.seconds();
     let label = match span {
         Span::Hours(hours) => format!("{hours} h"),
@@ -56,10 +56,12 @@ pub fn draw(scene: &Scene, span: Span, area: Rect, buf: &mut Buffer) {
         inner.height - 2,
     );
     let users = &scene.cluster().users;
+    let held = usage.totals(from, from + span_s);
     let place = |login: &str| {
-        users
+        let seen = users
             .get(&Login(login.to_owned()))
-            .map_or(u64::MAX, |user| u64::from(user.color_slot))
+            .map(|user| user.color_slot);
+        order.place(seen, held.get(login).copied().unwrap_or(0))
     };
     let columns: Vec<Column> = usage
         .columns(from, span_s, graph.width)
@@ -233,7 +235,13 @@ mod tests {
         app.update(Update::Usage(Err("connection refused".into())));
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
-        draw(&Scene::new(&app), Span::Hours(1), area, &mut buf);
+        draw(
+            &Scene::new(&app),
+            Span::Hours(1),
+            StackBy::FirstSeen,
+            area,
+            &mut buf,
+        );
         let text = text(&buf);
         assert!(text.contains('█'), "the graph stays:\n{text}");
         assert!(text.contains("connection refused"), "{text}");

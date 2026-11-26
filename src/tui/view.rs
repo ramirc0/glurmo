@@ -244,7 +244,7 @@ fn walk(scene: &Scene, pane: &Pane, area: Rect, buf: &mut Buffer, limits: &mut V
         }
         Pane::Header => return header::header(scene, area, buf),
         Pane::Keys => return header::keys(scene, area, buf),
-        Pane::History { span } => return history::draw(scene, *span, area, buf),
+        Pane::History { span, stack } => return history::draw(scene, *span, *stack, area, buf),
         Pane::Tiles { group } => tiles::draw(scene, *group, area, buf, focus),
         Pane::Users => users::draw(scene, area, buf, focus),
         Pane::Groups => groups::draw(scene, area, buf, focus),

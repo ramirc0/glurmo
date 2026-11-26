@@ -665,7 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_built_layout_and_an_edited_theme_round_trip_through_ron() {
-        use glurmo_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span};
+        use glurmo_model::layout::{Direction, Grouping, Pane, QueueBy, Size, Span, StackBy};
         let dir = tempfile::tempdir().unwrap();
         let (router, _) = app(&dir);
         let layout = Layout {
@@ -698,6 +698,7 @@ mod tests {
                         Size::Length(12),
                         Pane::History {
                             span: Span::Days(7),
+                            stack: StackBy::Biggest,
                         },
                     ),
                     (Size::Length(1), Pane::Keys),

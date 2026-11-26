@@ -66,6 +66,9 @@ pub enum Pane {
     History {
         /// How far back to show.
         span: Span,
+        /// The order its users stack in.
+        #[serde(default)]
+        stack: StackBy,
     },
     /// Your own jobs.
     Mine,
@@ -147,6 +150,42 @@ pub enum QueueBy {
     Partition,
     /// One row per user.
     Login,
+}
+
+/// The order a history panel stacks its users in, from the bottom up.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::layout::StackBy;
+///
+/// assert_eq!(StackBy::default(), StackBy::FirstSeen);
+/// assert!(StackBy::Biggest.place(Some(3), 900) < StackBy::Biggest.place(Some(0), 100));
+/// assert!(StackBy::FirstSeen.place(Some(0), 100) < StackBy::FirstSeen.place(Some(3), 900));
+/// assert_eq!(StackBy::Name.place(Some(3), 900), StackBy::Name.place(None, 0));
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StackBy {
+    /// In the order glurmo first saw each user, which never changes.
+    #[default]
+    FirstSeen,
+    /// Whoever held the most over the stretch shown, at the bottom.
+    Biggest,
+    /// By login.
+    Name,
+}
+
+impl StackBy {
+    /// Where a user stacks, lowest at the bottom, given the slot they were first seen in and the
+    /// core-seconds they held over the stretch shown. Users with one place stack by login.
+    #[must_use]
+    pub fn place(self, seen: Option<u32>, held_core_s: u64) -> u64 {
+        match self {
+            Self::FirstSeen => seen.map_or(u64::MAX, u64::from),
+            Self::Biggest => u64::MAX - held_core_s,
+            Self::Name => 0,
+        }
+    }
 }
 
 /// A stretch of time back from now.
