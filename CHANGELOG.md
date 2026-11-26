@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- The guide walks through hosting the web view outside the cluster, with the chisel tunnel unit and the stack in `deploy/coolify`.
+
 ## [0.8.1] - 2026-11-26
 
 ### Changed

@@ -100,6 +100,7 @@ The units write their logs to `~/.local/state/glurmo`, because some clusters mak
 | `postgres.log` | The Apptainer TimescaleDB's messages |
 | `backup.log` | What `pg_dump` printed, and a line for each run |
 | `logrotate.log` | Errors from the rotation |
+| `tunnel.log` | chisel's messages, if you [host glurmo outside the cluster](#host-it-outside-the-cluster) |
 
 glurmo's lines start with the local time. It logs a warning when a call, the store or a login lookup starts failing, and one line when it works again, with how long the failures lasted. Each hour it sums up the queue and how each kind of call fared, so a missing summary marks the server or host down.
 
@@ -113,6 +114,76 @@ Environment=GLURMO_LOG=debug
 ```
 
 `glurmo=debug` keeps other crates at their default level. The paths in the units are spelled out because systemd 252, as RHEL 9 ships it, expands `%S` to `~/.config` in a user unit.
+
+## Host it outside the cluster
+
+`serve` has no TLS and no login, and most clusters take no connections from outside. A tunnel that the cluster opens outward gets around both. [chisel](https://github.com/jpillora/chisel) carries one over HTTPS, on a port most clusters let out.
+
+Two parts come with glurmo:
+
+* `deploy/coolify` is a Docker Compose stack for a host you control. Its `tunnel` service is the chisel server. Its `edge` service is an nginx that caches the page's files, so the page loads from that host.
+* `systemd/glurmo-tunnel.service` runs on the cluster. It dials the server and offers it glurmo's port.
+
+The login is yours to add, at your proxy or with a service such as Cloudflare Access. Whoever reaches the page sees every user's login and job names. Put the login in place before step 5.
+
+The commands are for bash.
+
+1. On the cluster, install chisel 1.12.0, the version the stack's image runs:
+
+   ```sh
+   release=https://github.com/jpillora/chisel/releases/download/v1.12.0
+   curl -fsSL "$release/chisel_1.12.0_linux_amd64.gz" | gunzip > ~/.local/bin/chisel
+   chmod +x ~/.local/bin/chisel
+   ```
+
+2. Make the server's key, which starts with `ck-`, and a password:
+
+   ```sh
+   chisel server --keygen -
+   openssl rand -hex 24
+   ```
+
+3. Deploy the stack on the outside host. In [Coolify](https://coolify.io), add a Docker Compose resource from this repository with the base directory `/deploy/coolify`. Elsewhere, run `docker compose up -d` in that directory, behind your reverse proxy.
+
+   * Set `TUNNEL_KEY` to the key and `TUNNEL_PASSWORD` to the password.
+   * Send the page's hostname to the `edge` service on port 80.
+   * Send a second hostname to the `tunnel` service on port 8080. Leave it without a login, because the chisel client cannot sign in. The key and the password guard it.
+
+   The `tunnel` service logs the key's fingerprint as it starts, in a line such as `server: Fingerprint tvNe…jFk=`.
+
+4. On the cluster, fetch the unit and tie it to this host, as for `glurmo.service` above:
+
+   ```sh
+   units=~/.config/systemd/user
+   curl -fsSL -o "$units/glurmo-tunnel.service" \
+       https://raw.githubusercontent.com/ramirc0/glurmo/main/systemd/glurmo-tunnel.service
+   mkdir -p "$units/glurmo-tunnel.service.d"
+   printf '[Unit]\nConditionHost=\nConditionHost=%s\n' "$(hostname)" > "$units/glurmo-tunnel.service.d/host.conf"
+   ```
+
+   Write its settings to `~/.config/glurmo/tunnel.env`, and run `chmod 600` on the file:
+
+   ```ini
+   TUNNEL_SERVER=https://chisel.example.org
+   TUNNEL_FINGERPRINT=tvNe…jFk=
+   AUTH=glurmo:the password
+   ```
+
+5. Start it:
+
+   ```sh
+   systemctl --user daemon-reload
+   systemctl --user enable --now glurmo-tunnel
+   tail -n 3 ~/.local/state/glurmo/tunnel.log
+   ```
+
+   The log ends with `client: Connected`.
+
+`systemctl --user disable --now glurmo-tunnel` stops the data at once. The page then still loads from the edge, with nothing in it.
+
+The server's login may open port 8765 inside the `tunnel` container and nothing else. Someone who steals the password can serve a page in your place. They gain no way into the cluster.
+
+The unit offers `127.0.0.1:8765`, glurmo's default. If `server.listen` names another port, override the unit's `ExecStart` in a drop-in.
 
 ## Configure
 
