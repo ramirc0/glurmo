@@ -908,17 +908,28 @@ aside.editor a {
   cursor: pointer;
 }
 
-.jobs tr.group td:first-child::before {
-  content: "▸ ";
+/* Every row keeps room for the arrow, so rows with and without one line up. */
+.jobs tbody td:first-child::before {
+  content: "";
+  display: inline-block;
+  width: 15px;
   color: var(--muted);
 }
 
+.jobs tr.group td:first-child::before {
+  content: "▸";
+}
+
 .jobs tr.group.open td:first-child::before {
-  content: "▾ ";
+  content: "▾";
+}
+
+.jobs th:first-child {
+  padding-left: 15px;
 }
 
 .jobs tr.child td:first-child {
-  padding-left: 22px;
+  padding-left: 12px;
 }
 
 .jobs .full,
