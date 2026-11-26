@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "glurmo"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "glurmo-model"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ron",
  "serde",
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "glurmo-web"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gloo-net 0.7.0",
  "glurmo-model",
