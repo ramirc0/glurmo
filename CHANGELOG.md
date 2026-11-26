@@ -4,6 +4,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-26
+
 ### Changed
 
 - glurmo builds against `slurm-client` 0.2.0 from crates.io, in place of a checkout beside it.
@@ -205,7 +207,8 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 - `glurmo record`, `pseudonymize`, `convert` and `serve --replay --speed`, for recordings, demos and test fixtures.
 - Account lookups through `/etc/passwd` and SSSD's socket, so the static binary sees directory users.
 
-[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ramirc0/glurmo/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/ramirc0/glurmo/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ramirc0/glurmo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ramirc0/glurmo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ramirc0/glurmo/compare/v0.5.0...v0.6.0
