@@ -1,7 +1,7 @@
 //! Palettes: which colors cores take, apart from the theme that styles the rest. A palette colors by
 //! user, by user group, or by how much time a job has left.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +180,38 @@ impl Palette {
     /// assert_eq!(coloring.user(&Login("newt".into())), None, "newt has no job");
     /// ```
     pub fn coloring(&self, cluster: &Cluster, occupancy: &Occupancies) -> Coloring {
+        self.coloring_over(cluster, occupancy, &HashMap::new())
+    }
+
+    /// Who takes which color, ranking by `used`: the core-seconds each login held over a stretch of
+    /// history, as [`Usage::totals`](crate::usage::Usage::totals) gives them. Ranks then hold still
+    /// while that stretch does, where ranks by what each holds right now shift with every job. A user
+    /// with no usage there ranks after the rest, by what they hold now. With `used` empty, this is
+    /// [`Palette::coloring`]. [`Deal::Cycle`] and [`ColorBy::TimeLeft`] rank no one, so it changes
+    /// nothing for them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use glurmo_model::{Cluster, Login};
+    /// use glurmo_model::palette::Palette;
+    ///
+    /// let palette: Palette = serde_json::from_str(
+    ///     r##"{"name": "Top", "deal": "Biggest", "colors": ["#111111"]}"##,
+    /// ).unwrap();
+    /// let cluster = Cluster::default();
+    /// let used = HashMap::from([("otter", 7_200), ("heron", 3_600)]);
+    /// let coloring = palette.coloring_over(&cluster, &cluster.occupancy(), &used);
+    /// assert_eq!(coloring.user(&Login("otter".into())), Some(&palette.colors[0]));
+    /// assert_eq!(coloring.user(&Login("heron".into())), None);
+    /// ```
+    pub fn coloring_over(
+        &self,
+        cluster: &Cluster,
+        occupancy: &Occupancies,
+        used: &HashMap<&str, u64>,
+    ) -> Coloring {
         let mut coloring = Coloring {
             by: self.by,
             steps: Vec::new(),
@@ -204,15 +236,18 @@ impl Palette {
                     }
                     return coloring;
                 }
-                let listed: Vec<(&Login, bool)> = holdings(cluster, occupancy)
+                let now = holdings(cluster, occupancy)
                     .users
                     .into_iter()
-                    .filter(|(login, _)| !coloring.users.contains_key(*login))
-                    .map(|(login, held)| (login, held.cores + held.gpus > 0))
-                    .collect();
+                    .map(|(login, held)| (login.clone(), held.cores + held.gpus > 0));
+                let used = used
+                    .iter()
+                    .map(|(login, core_s)| (Login((*login).to_owned()), *core_s));
+                let mut listed = ranked(now.collect(), used.collect());
+                listed.retain(|(login, _)| !coloring.users.contains_key(login));
                 let holders = listed.iter().filter(|(_, holds)| *holds).count();
                 for ((login, _), color) in listed.iter().zip(self.dealt(holders, listed.len())) {
-                    coloring.users.insert((*login).clone(), color);
+                    coloring.users.insert(login.clone(), color);
                 }
             }
             ColorBy::Group => {
@@ -221,11 +256,18 @@ impl Palette {
                         .groups
                         .insert(GroupName(name.clone()), color.clone());
                 }
-                let listed: Vec<(&GroupName, bool)> = group_holdings(cluster, occupancy)
+                let now = group_holdings(cluster, occupancy)
                     .into_iter()
-                    .filter(|group| !coloring.groups.contains_key(group.name))
-                    .map(|group| (group.name, group.held.cores + group.held.gpus > 0))
-                    .collect();
+                    .map(|group| (group.name.clone(), group.held.cores + group.held.gpus > 0));
+                let mut by_group: BTreeMap<GroupName, u64> = BTreeMap::new();
+                for (login, core_s) in used {
+                    let member = cluster.users.get(&Login((*login).to_owned()));
+                    for group in member.into_iter().flat_map(|member| &member.groups) {
+                        *by_group.entry(group.clone()).or_default() += core_s;
+                    }
+                }
+                let mut listed = ranked(now.collect(), by_group);
+                listed.retain(|(name, _)| !coloring.groups.contains_key(name));
                 let holders = listed.iter().filter(|(_, holds)| *holds).count();
                 let dealt = if self.deal == Deal::Cycle {
                     let names: BTreeSet<&GroupName> = cluster
@@ -236,7 +278,7 @@ impl Palette {
                     listed
                         .iter()
                         .filter_map(|(name, _)| {
-                            let place = names.iter().position(|known| known == name)?;
+                            let place = names.iter().position(|known| *known == name)?;
                             self.colors.get(place % self.colors.len().max(1)).cloned()
                         })
                         .collect()
@@ -246,7 +288,7 @@ impl Palette {
                 let ranked: Vec<&GroupName> = listed
                     .iter()
                     .take(dealt.len())
-                    .map(|(name, _)| *name)
+                    .map(|(name, _)| name)
                     .collect();
                 for (name, color) in ranked.iter().zip(dealt) {
                     coloring.groups.insert((*name).clone(), color);
@@ -269,6 +311,32 @@ impl Palette {
         }
         coloring
     }
+}
+
+/// `now`, which lists who holds or waits right now with whether they hold, ranked by `used` first: most
+/// core-seconds first, then in the order of `now`. Whoever has usage counts as a holder. With no
+/// usage at all, it is `now` unchanged.
+fn ranked<K: Ord + Clone>(now: Vec<(K, bool)>, mut used: BTreeMap<K, u64>) -> Vec<(K, bool)> {
+    used.retain(|_, core_s| *core_s > 0);
+    if used.is_empty() {
+        return now;
+    }
+    let mut listed: Vec<(u64, usize, K, bool)> = Vec::new();
+    for (place, (key, holds)) in now.into_iter().enumerate() {
+        let core_s = used.remove(&key).unwrap_or(0);
+        listed.push((core_s, place, key, holds || core_s > 0));
+    }
+    listed.extend(
+        used.into_iter()
+            .map(|(key, core_s)| (core_s, usize::MAX, key, true)),
+    );
+    listed.sort_by(|a, b| {
+        (std::cmp::Reverse(a.0), a.1, &a.2).cmp(&(std::cmp::Reverse(b.0), b.1, &b.2))
+    });
+    listed
+        .into_iter()
+        .map(|(_, _, key, holds)| (key, holds))
+        .collect()
 }
 
 /// Who takes which color: a [`Palette`] worked out for one moment of a cluster. `None` from a lookup
@@ -524,6 +592,22 @@ mod tests {
         );
         assert_eq!(of("newt"), Some(color("#111111")));
         assert_eq!(of("wren"), Some(color("#222222")));
+    }
+
+    #[test]
+    fn usage_ranks_ahead_of_what_is_held_now() {
+        let now = vec![("heron", true), ("otter", true), ("newt", false)];
+        let used = BTreeMap::from([("otter", 9), ("wren", 5), ("newt", 0)]);
+        assert_eq!(
+            ranked(now.clone(), used),
+            [
+                ("otter", true),
+                ("wren", true),
+                ("heron", true),
+                ("newt", false)
+            ]
+        );
+        assert_eq!(ranked(now.clone(), BTreeMap::new()), now);
     }
 
     #[test]

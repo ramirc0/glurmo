@@ -73,6 +73,39 @@ pub struct Usage {
     pub steps: Vec<Step>,
 }
 
+impl Usage {
+    /// Core-seconds held by each login or partition in steps that start from `from` up to `to`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_model::UnixTime;
+    /// use glurmo_model::usage::{Step, Usage};
+    ///
+    /// let step = |at, key: &str, core_s| Step { at: UnixTime(at), key: key.into(), core_s, wait_s: 0 };
+    /// let usage = Usage {
+    ///     from: UnixTime(0),
+    ///     to: UnixTime(900),
+    ///     step_s: 300,
+    ///     steps: vec![step(0, "heron", 300), step(300, "otter", 600), step(600, "otter", 600)],
+    /// };
+    /// let totals = usage.totals(300, 900);
+    /// assert_eq!(totals.get("otter"), Some(&1_200));
+    /// assert_eq!(totals.get("heron"), None);
+    /// ```
+    pub fn totals(&self, from: i64, to: i64) -> HashMap<&str, u64> {
+        let mut totals: HashMap<&str, u64> = HashMap::new();
+        for step in self
+            .steps
+            .iter()
+            .filter(|step| (from..to).contains(&step.at.0))
+        {
+            *totals.entry(&step.key).or_default() += step.core_s;
+        }
+        totals
+    }
+}
+
 /// A step that gives at most about 600 steps over `span_s`, in whole five-minute bins.
 ///
 /// # Examples

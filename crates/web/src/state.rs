@@ -101,7 +101,8 @@ pub struct State {
     /// The layout shown: the draft, else the one asked for once layouts have loaded.
     pub layout: Memo<Option<Layout>>,
     /// Who takes which color: the palette asked for, else the theme's own, worked out for the cluster
-    /// as it stands. `None` until a theme has loaded.
+    /// as it stands, with ranks by usage over the stretch the timeline shows. `None` until a theme
+    /// has loaded.
     pub coloring: Memo<Option<Coloring>>,
     /// Whether the editor is open. A memo, so views that only care whether it is open are not rebuilt
     /// on every edit of the draft.
@@ -219,7 +220,7 @@ impl State {
     pub fn new(address: Address) -> Self {
         let cluster = RwSignal::new(Cluster::default());
         let themes = RwSignal::new(BTreeMap::<String, Theme>::new());
-        let layouts = RwSignal::new(BTreeMap::new());
+        let layouts = RwSignal::new(BTreeMap::<String, Layout>::new());
         let theme_name = RwSignal::new(address.theme);
         let layout_name = RwSignal::new(address.layout);
         let draft_theme = RwSignal::new(None);
@@ -244,11 +245,37 @@ impl State {
                 .or_else(|| palettes.with(|palettes| palettes.get(&palette_name.get()).cloned()))
                 .or_else(|| theme.with(|theme| theme.as_ref().map(Palette::of_theme)))
         });
+        let usage = RwSignal::new(Ok(Usage::default()));
+        let timeline = RwSignal::new(Timeline::default());
+        let layout = Memo::new(move |_| {
+            draft_layout.get().or_else(|| {
+                layouts.with(|layouts| {
+                    pick(layouts, &layout_name.get(), DEFAULT_LAYOUT)
+                        .map(|(_, layout)| layout.clone())
+                })
+            })
+        });
+        let history_span_s = move || {
+            timeline
+                .with(|timeline| timeline.span_s)
+                .unwrap_or_else(|| {
+                    layout.with(|layout| {
+                        layout
+                            .as_ref()
+                            .and_then(|layout| longest_history(&layout.root))
+                            .unwrap_or(86_400)
+                    })
+                })
+        };
         let coloring = Memo::new(move |_| {
             palette.with(|palette| {
                 let palette = palette.as_ref()?;
-                Some(cluster.with(|cluster| {
-                    occupancy.with(|occupancy| palette.coloring(cluster, occupancy))
+                let (span_s, end) = (history_span_s(), timeline.with(|timeline| timeline.end));
+                Some(usage.with(|usage| {
+                    let used = used_over(usage, end, span_s);
+                    cluster.with(|cluster| {
+                        occupancy.with(|occupancy| palette.coloring_over(cluster, occupancy, &used))
+                    })
                 }))
             })
         });
@@ -258,7 +285,7 @@ impl State {
             cluster_name: RwSignal::new(String::new()),
             link: RwSignal::new(Link::Connecting),
             ticker: RwSignal::new(Ticker::default()),
-            usage: RwSignal::new(Ok(Usage::default())),
+            usage,
             themes,
             layouts,
             palettes,
@@ -271,14 +298,7 @@ impl State {
             palette,
             theme,
             coloring,
-            layout: Memo::new(move |_| {
-                draft_layout.get().or_else(|| {
-                    layouts.with(|layouts| {
-                        pick(layouts, &layout_name.get(), DEFAULT_LAYOUT)
-                            .map(|(_, layout)| layout.clone())
-                    })
-                })
-            }),
+            layout,
             editing: Memo::new(move |_| draft_layout.with(Option::is_some)),
             highlight,
             row_highlights,
@@ -286,7 +306,7 @@ impl State {
             fonts: RwSignal::new(0),
             zoom: RwSignal::new(crate::paint::zoom()),
             now: RwSignal::new(crate::paint::now()),
-            timeline: RwSignal::new(Timeline::default()),
+            timeline,
             replay: RwSignal::new(None),
             engine: StoredValue::new(Engine::default()),
             filled: RwSignal::new(None),
@@ -314,6 +334,22 @@ impl State {
                 })
             })
     }
+}
+
+/// Core-seconds each login held over the `span_s` the timeline shows, which ends at `end` or where
+/// `usage` was read up to. Nothing when usage could not be read.
+fn used_over(
+    usage: &Result<Usage, String>,
+    end: Option<UnixTime>,
+    span_s: i64,
+) -> std::collections::HashMap<&str, u64> {
+    usage.as_ref().map_or_else(
+        |_| std::collections::HashMap::new(),
+        |usage| {
+            let to = end.map_or(usage.to.0, |end| end.0);
+            usage.totals(to - span_s, to)
+        },
+    )
 }
 
 /// The entry named `name`, else `fallback`, else the first, with the name it goes by.

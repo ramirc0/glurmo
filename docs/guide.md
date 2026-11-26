@@ -393,6 +393,7 @@ Palette(
 * `by` is `User`, `Group` or `TimeLeft(within: Hours(24))`.
 * Names in `bound` take their colors first. They are logins, or group names under `Group`.
 * Everyone else takes `colors` as `deal` says. `Cycle`, the default, gives every user a color by the order glurmo first saw them, and comes around again once the colors run out. `Biggest` gives one color each to the biggest holders, then to users who only wait. `Spread` stretches the colors over every holder, each taking a mix of the two nearest, so a ramp covers everyone.
+* `Biggest` and `Spread` rank users by the core time they held over the stretch the history panel shows, so colors hold still while a replay plays. A user with none there ranks by what they hold now.
 * Whoever is left once the colors run out takes `rest`. Without it they take a quiet color from the theme.
 * Under `Group`, a user takes the color of the first colored group they are in: bound groups in their order, then groups by what they hold.
 * Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span takes the last color. One with no limit takes `rest`, and so does one from history kept before glurmo stored limits. It names no owner, so the user and group tables show no color beside a name, and the history takes one plain color. A row of the job list takes its own job's color.

@@ -49,7 +49,12 @@ impl<'a> Scene<'a> {
         Self {
             app,
             tones: ThemeColors::of(app.theme()),
-            coloring: app.palette().coloring(&app.cluster, &occupancy),
+            coloring: app.palette().coloring_over(
+                &app.cluster,
+                &occupancy,
+                &app.usage
+                    .totals(app.usage.to.0 - app.history_span_s(), app.usage.to.0),
+            ),
             occupancy,
             now: app.cluster.at.unwrap_or_default(),
             filter: Words::of(app.filter().unwrap_or_default()),
