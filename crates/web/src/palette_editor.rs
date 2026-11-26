@@ -286,10 +286,20 @@ fn Colors() -> impl IntoView {
             >
                 "+"
             </button>
-            <button title="Reverse the order" on:click=move |_| edit(state, |palette| palette.colors.reverse())>
-                "⇄"
-            </button>
         </div>
+        <label class="check">
+            <input
+                type="checkbox"
+                prop:checked=move || {
+                    state.draft_palette.with(|draft| draft.as_ref().is_some_and(|palette| palette.reversed))
+                }
+                on:change=move |event| {
+                    let reversed = event_target_checked(&event);
+                    edit(state, |palette| palette.reversed = reversed);
+                }
+            />
+            "reverse the colors"
+        </label>
     }
 }
 

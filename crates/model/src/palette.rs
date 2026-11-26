@@ -90,6 +90,9 @@ pub struct Palette {
     /// How `colors` are handed to those not bound.
     #[serde(default)]
     pub deal: Deal,
+    /// Whether `colors` are taken last to first, which turns a ramp around.
+    #[serde(default)]
+    pub reversed: bool,
     /// The color of everyone else, or `None` for a quiet color the view takes from its theme.
     #[serde(default)]
     pub rest: Option<Color>,
@@ -124,6 +127,7 @@ impl Palette {
             colors: theme.users.clone(),
             bound: Vec::new(),
             deal: Deal::Cycle,
+            reversed: false,
             rest: None,
         }
     }
@@ -207,6 +211,22 @@ impl Palette {
     /// assert_eq!(coloring.user(&Login("heron".into())), None);
     /// ```
     pub fn coloring_over(
+        &self,
+        cluster: &Cluster,
+        occupancy: &Occupancies,
+        used: &HashMap<&str, u64>,
+    ) -> Coloring {
+        if self.reversed {
+            let mut turned = self.clone();
+            turned.colors.reverse();
+            turned.reversed = false;
+            return turned.in_order(cluster, occupancy, used);
+        }
+        self.in_order(cluster, occupancy, used)
+    }
+
+    /// [`Palette::coloring_over`] with `colors` taken first to last.
+    fn in_order(
         &self,
         cluster: &Cluster,
         occupancy: &Occupancies,
@@ -549,6 +569,7 @@ mod tests {
             colors: vec![color("#000000"), color("#808080"), color("#ffffff")],
             bound: Vec::new(),
             deal: Deal::Spread,
+            reversed: false,
             rest: None,
         };
         let hex =
@@ -575,6 +596,7 @@ mod tests {
             colors: vec![color("#111111"), color("#222222")],
             bound: vec![("heron".into(), color("#999999"))],
             deal: Deal::Cycle,
+            reversed: false,
             rest: None,
         };
         let mut cluster = cluster(&[("otter", &[]), ("heron", &[]), ("newt", &[]), ("wren", &[])]);
@@ -592,6 +614,19 @@ mod tests {
         );
         assert_eq!(of("newt"), Some(color("#111111")));
         assert_eq!(of("wren"), Some(color("#222222")));
+    }
+
+    #[test]
+    fn a_reversed_palette_takes_its_colors_last_to_first() {
+        let palette: Palette = serde_json::from_str(
+            r##"{"name": "Time left", "by": {"TimeLeft": {"within": {"Hours": 12}}},
+                 "colors": ["#111111", "#222222"], "reversed": true}"##,
+        )
+        .unwrap();
+        let cluster = Cluster::default();
+        let coloring = palette.coloring(&cluster, &cluster.occupancy());
+        let steps: Vec<&Color> = coloring.steps().map(|(_, color)| color).collect();
+        assert_eq!(steps, [&color("#222222"), &color("#111111")]);
     }
 
     #[test]
@@ -616,6 +651,7 @@ mod tests {
             name: "labs".into(),
             by: ColorBy::Group,
             deal: Deal::Biggest,
+            reversed: false,
             colors: Vec::new(),
             bound: vec![
                 ("mohd".into(), color("#111111")),
