@@ -195,7 +195,7 @@ Config(
     sample: (jobs: "10s", nodes: "30s", partitions: "10m", lookups: 25),
     store: (keep: Forever, backfill: Days(30)),
     server: (listen: "127.0.0.1:8765"),
-    tui: (server: "http://head:8765", layout: "tui", theme: "rose-pine", me: "otter"),
+    tui: (server: "http://head:8765", layout: "tui", theme: "miami", me: "otter"),
     names: FullName,
     groups: (only: ["lab-a", "lab-b"]),
     gpu_models: {"gpu": "V100", "gpuh200": "H200"},
@@ -443,7 +443,7 @@ The terminal view writes its messages to `~/.local/state/glurmo/tui.log`. In emb
 
 ![The web view in Rosé Pine Dawn](media/web-dawn.png)
 
-Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pine-moon` and `rose-pine-dawn`, plus 20 base16 schemes such as `catppuccin-mocha`, `gruvbox-light` and `tokyo-night-dark`. The built-in layouts are `tui`, `web`, `tv` and `jobs`.
+Themes and layouts are RON files. The built-in themes are `rose-pine`, `rose-pine-moon` and `rose-pine-dawn`, plus 20 base16 schemes such as `catppuccin-mocha`, `gruvbox-light` and `tokyo-night-dark`. Both views start in `miami`, one of those schemes. The built-in layouts are `tui`, `web`, `tv` and `jobs`.
 
 A file in `~/.config/glurmo/themes/` or `~/.config/glurmo/layouts/` adds one, or replaces the built-in of the same name. Views reload them within 2 seconds of an edit. See `themes/` and `layouts/` for the format.
 

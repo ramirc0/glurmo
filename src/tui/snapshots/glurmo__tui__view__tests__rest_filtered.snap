@@ -51,4 +51,4 @@ expression: terminal.backend()
 "│3964433       job4             4hours       8   0  R     11s/4h  z1062                        ││22:59:53 ■ end   heron          8 cpu  4hours                 │"
 "│3964430       job4             4hours       8   0  R     18s/4h  z1057                        ││22:59:51 ▶ start heron          8 cpu  4hours                 │"
 "│3964431       job4             4hours       8   0  R     18s/4h  z1074                        │╰──────────────────────────────────────────────────────────────╯"
-"╰────────────────────────────────────────────────────────────────────── 177 running, 0 pending ╯ q  quit         filter “4hours”   rest · Rosé Pine · Rosé Pine "
+"╰────────────────────────────────────────────────────────────────────── 177 running, 0 pending ╯ q  quit   tab  focus    filter “4hours”   rest · Miami · Miami "

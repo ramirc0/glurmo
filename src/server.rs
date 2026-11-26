@@ -635,6 +635,13 @@ mod tests {
         assert_eq!(headers[header::CONTENT_TYPE], "text/css");
         assert!(css.contains("--base: #232136;"));
 
+        let (status, _, css) = get(&router, "/theme.css").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            css.contains("--base: #000000;"),
+            "miami when no theme is named"
+        );
+
         let (status, _, _) = get(&router, "/api/themes/neon").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }

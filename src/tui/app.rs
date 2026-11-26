@@ -362,7 +362,7 @@ mod tests {
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.layout, "tui");
         press(&mut app, KeyCode::Char('t'));
-        assert_eq!(app.theme, "rose-pine-dawn");
+        assert_eq!(app.theme, "onedark", "the next by name after miami");
 
         press(&mut app, KeyCode::Char('/'));
         for c in "4hq".chars() {

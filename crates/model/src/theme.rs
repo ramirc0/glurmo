@@ -150,9 +150,9 @@ pub struct Theme {
 /// ```
 /// use glurmo_model::theme::DEFAULT_THEME;
 ///
-/// assert_eq!(DEFAULT_THEME, "rose-pine");
+/// assert_eq!(DEFAULT_THEME, "miami");
 /// ```
-pub const DEFAULT_THEME: &str = "rose-pine";
+pub const DEFAULT_THEME: &str = "miami";
 
 /// Backgrounds and text, from darkest to lightest in a dark theme.
 ///

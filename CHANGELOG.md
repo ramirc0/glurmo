@@ -8,6 +8,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - The guide walks through hosting the web view outside the cluster, with the chisel tunnel unit and the stack in `deploy/coolify`.
 
+### Changed
+
+- Both views start in the `miami` theme. Before, they started in `rose-pine`. `?theme=rose-pine` in the address or `tui: (theme: "rose-pine")` in the config brings it back.
+
 ## [0.8.1] - 2026-11-26
 
 ### Changed

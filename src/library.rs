@@ -183,6 +183,7 @@ fn ron_files(dir: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use glurmo_model::layout::Pane;
+    use glurmo_model::theme::DEFAULT_THEME;
 
     #[test]
     fn built_ins_parse() {
@@ -191,6 +192,7 @@ mod tests {
         assert_eq!(library.palettes.len(), PALETTES.len());
         assert_eq!(library.layouts.len(), LAYOUTS.len());
         assert!(matches!(library.layouts["tui"].root, Pane::Split(..)));
+        assert_eq!(library.themes[DEFAULT_THEME].name, "Miami");
     }
 
     #[test]
