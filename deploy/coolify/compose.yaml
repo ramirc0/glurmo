@@ -1,0 +1,24 @@
+# The public end of a tunnel that brings `glurmo serve` out of a cluster, as a Coolify Docker Compose
+# resource with this directory as its base. `edge` takes the page's domain on port 80, and `tunnel` takes
+# the chisel server's on port 8080. systemd/glurmo-tunnel.service is the cluster's end.
+services:
+  tunnel:
+    image: jpillora/chisel:1.12.0@sha256:e5538d0a8432f53788bf63089d918a4b9979e6df408a2f1aa36575917eacd314
+    command: server --reverse --authfile /users.json
+    environment:
+      CHISEL_KEY_FILE: ${TUNNEL_KEY:?}
+    configs:
+      - source: users
+        target: /users.json
+    restart: unless-stopped
+
+  edge:
+    build: edge
+    restart: unless-stopped
+
+configs:
+  users:
+    # The one login may open port 8765 inside the tunnel's container and nothing else. Compose reads `$$`
+    # as one dollar sign.
+    content: |
+      {"glurmo:${TUNNEL_PASSWORD:?}": ["^R:0\\.0\\.0\\.0:8765$$"]}

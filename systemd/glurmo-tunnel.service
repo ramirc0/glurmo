@@ -1,0 +1,24 @@
+# A systemd user unit that carries glurmo's web view out to a chisel server, such as the one in
+# deploy/coolify. Copy chisel to ~/.local/bin and this file to ~/.config/systemd/user. Write
+# ~/.config/glurmo/tunnel.env, readable by you alone, with three lines:
+#   TUNNEL_SERVER=https://chisel.example.org
+#   TUNNEL_FINGERPRINT=the fingerprint the server logs when it starts
+#   AUTH=glurmo:the server's password
+# Set ConditionHost as in glurmo.service. Then run
+#   systemctl --user enable --now glurmo-tunnel
+[Unit]
+Description=glurmo: carry the web view out to a chisel server
+After=network-online.target glurmo.service
+ConditionHost=login
+
+[Service]
+EnvironmentFile=%h/.config/glurmo/tunnel.env
+# chisel reads the password from AUTH, which keeps it off the command line.
+ExecStart=%h/.local/bin/chisel client --max-retry-interval 30s --fingerprint ${TUNNEL_FINGERPRINT} ${TUNNEL_SERVER} R:0.0.0.0:8765:127.0.0.1:8765
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/.local/state/glurmo/tunnel.log
+StandardError=append:%h/.local/state/glurmo/tunnel.log
+
+[Install]
+WantedBy=default.target

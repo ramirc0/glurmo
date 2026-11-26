@@ -4,6 +4,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- A way to serve the web view on a public hostname from a cluster that allows no inbound connections. `systemd/glurmo-tunnel.service` dials a chisel server over HTTPS and offers it the web view. `deploy/coolify` is that server as a Docker Compose stack, with an nginx in front that caches the page's files and still serves the page while the cluster is out of reach. Neither adds a login, so put one in front.
+
 ## [0.7.0] - 2026-11-25
 
 ### Added
