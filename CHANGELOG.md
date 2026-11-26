@@ -8,6 +8,14 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - A way to serve the web view on a public hostname from a cluster that allows no inbound connections. `systemd/glurmo-tunnel.service` dials a chisel server over HTTPS and offers it the web view. `deploy/coolify` is that server as a Docker Compose stack, with an nginx in front that caches the page's files and still serves the page while the cluster is out of reach. Neither adds a login, so put one in front.
 
+### Changed
+
+- The protocol backend runs on the `slurm-client` library, which replaces glurmo's own `glurmo-rpc` crate. Until that library is published, glurmo builds only with the `slurm-rs` repository checked out beside it, at `../../slurm-rs/main`.
+- The lines the protocol client logs carry the module `slurm_client` or `glurmo::slurm::wire`. Before, they carried `glurmo_rpc`.
+- When the config names no controller, the protocol backend signs through the daemon that `AuthType` in slurm.conf names. Before, it used munged whenever munged's socket existed.
+- Any user may decode the credential that signs a request, as with Slurm's own commands. Before, only `SlurmUser` could.
+- The reasons 76 and 77, which 23.11 used for power limits, print as their numbers.
+
 ## [0.7.0] - 2026-11-25
 
 ### Added

@@ -1131,7 +1131,6 @@ dependencies = [
  "crossterm",
  "futures-util",
  "glurmo-model",
- "glurmo-rpc",
  "insta",
  "jiff",
  "postgres",
@@ -1144,6 +1143,7 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
+ "slurm-client",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -1159,16 +1159,6 @@ dependencies = [
  "ron",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "glurmo-rpc"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1584,6 +1574,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "k12"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a8cc72399dffa4a445bc5f5a84d4af4d441c76604231bc52e9c529c1d47693"
+dependencies = [
+ "digest 0.11.3",
+ "keccak",
+ "sponge-cursor",
+]
+
+[[package]]
 name = "kasuari"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1592,6 +1593,17 @@ dependencies = [
  "hashbrown",
  "portable-atomic",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "keccak"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8f198d1db720e4940b5a493201d199d9f24f568f8f746bd13706243a2f71598"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "hybrid-array",
 ]
 
 [[package]]
@@ -3142,6 +3154,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "slurm-client"
+version = "0.0.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "k12",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3156,6 +3179,12 @@ dependencies = [
  "libc",
  "windows-sys",
 ]
+
+[[package]]
+name = "sponge-cursor"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "sqlite-wasm-rs"

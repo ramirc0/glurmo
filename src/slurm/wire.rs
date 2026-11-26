@@ -1,9 +1,18 @@
 //! The protocol backend: asks slurmctld and slurmdbd through the RPC client, and maps its records to
 //! the model.
 
+mod accounting;
+mod config;
+mod jobs;
+mod nodes;
+mod rpcs;
+mod stats;
+
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
+use slurm_client::{Auth, Client, JobQuery, Limit};
 
 use super::Lookup;
 use super::fields::{gpu_count, gpu_indices, gpu_model, gres, job_state, node_state, tres};
@@ -16,14 +25,43 @@ use glurmo_model::{
     ArrayTasks, Attempt, AttemptKey, JobId, Login, Node, NodeCells, NodeName, Partition,
     PartitionName, Placement, UnixTime,
 };
-use glurmo_rpc::{Client, INFINITE, Issuer, NO_VAL, accounting, config, jobs, nodes, stats};
+
+/// Slurm's `NO_VAL`, which marks a 32-bit value as not set.
+const NO_VAL: u32 = 0xffff_fffe;
+/// Slurm's `INFINITE`, which marks a 32-bit limit as none.
+const INFINITE: u32 = 0xffff_ffff;
+
+/// How long to wait for slurmctld and for the credential daemon. slurmdbd gets four times this.
+const TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A time as epoch seconds, where zero means none.
+fn seconds(at: Option<SystemTime>) -> i64 {
+    at.and_then(|at| at.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
+/// A time limit in minutes, as Slurm packs it: `INFINITE` for no limit and `NO_VAL` for none set.
+fn minutes(limit: Option<Limit<Duration>>) -> u32 {
+    match limit {
+        None => NO_VAL,
+        Some(Limit::Unlimited) => INFINITE,
+        Some(Limit::Finite(limit)) => u32::try_from(limit.as_secs() / 60).unwrap_or(INFINITE - 2),
+    }
+}
+
+/// The instant of a model time.
+fn instant(time: UnixTime) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(time.0).unwrap_or(0))
+}
 
 /// The site facts in the configuration.
 fn site(config: config::Config) -> Result<super::Site> {
     Ok(super::Site {
         cluster: config.cluster,
         version: config.version.parse()?,
-        min_job_age_s: u64::from(config.min_job_age_s),
+        min_job_age_s: config.min_job_age_s,
         private_data: config.private_data,
         rate_limit: super::rate_limit(config.slurmctld_parameters.as_deref().unwrap_or_default())?,
     })
@@ -196,7 +234,7 @@ fn accounted(
             tres.counts(record.tres_req.as_deref())?,
         ),
     };
-    let array = record.array_tasks()?;
+    let array = record.array_tasks();
     Ok(Attempt {
         key: accounted_key(record)?,
         array: array.map(tasks),
@@ -269,7 +307,11 @@ fn readable<T>(converted: impl Iterator<Item = Result<T>>) -> Vec<T> {
 
 /// Answers calls by speaking Slurm's protocol to slurmctld and slurmdbd.
 pub struct Wire {
-    slurm: Client,
+    /// Where the cluster is. The config call adds the protocol, the cluster's name and slurmdbd's
+    /// addresses.
+    reach: slurm_client::Config,
+    /// The client, once the config call has settled the protocol.
+    slurm: Option<Client>,
     logins: HashMap<u32, Login>,
     unknown: HashSet<u32>,
     /// The run of failed login lookups, if any.
@@ -279,19 +321,27 @@ pub struct Wire {
 }
 
 impl Wire {
-    /// A backend for the slurmctld at `addresses`, primary first, signing with munge or sack as this
-    /// host offers.
+    /// A backend for the slurmctld at `addresses`, primary first, signing with munge or SACK as this
+    /// host offers. Without addresses, slurm.conf names the controllers and the credential daemon.
     ///
     /// # Errors
     ///
-    /// Fails when this host runs neither munged nor a sack socket.
+    /// Fails when this host runs neither munged nor a SACK socket, or when no address is given and
+    /// slurm.conf is missing or names no controller.
     pub fn new(addresses: Vec<String>) -> Result<Self> {
-        Ok(Self::over(Client::new(addresses, Issuer::find()?)))
+        if addresses.is_empty() {
+            return Ok(Self::over(slurm_client::Config::discover()?));
+        }
+        let auth =
+            Auth::discover().context("neither munged nor a SACK socket runs on this host")?;
+        Ok(Self::over(slurm_client::Config::new(addresses, auth)))
     }
 
-    fn over(slurm: Client) -> Self {
+    fn over(mut reach: slurm_client::Config) -> Self {
+        reach.timeout = TIMEOUT;
         Self {
-            slurm,
+            reach,
+            slurm: None,
             logins: HashMap::new(),
             unknown: HashSet::new(),
             looking_up_logins: Streak::default(),
@@ -308,43 +358,50 @@ impl Wire {
     pub async fn answer(&mut self, call: &Call) -> Result<Answer> {
         let listed = self.next_placements.take();
         Ok(match call {
-            Call::Config => Answer::Config(site(self.slurm.connect().await?)?),
+            Call::Config => Answer::Config(site(self.connect().await?)?),
             Call::Jobs => {
-                let (jobs, records) = self.slurm.jobs().await?;
+                let (jobs, records) = jobs::views(&self.slurm()?.jobs().await?.records);
                 Answer::Jobs(self.listed(&jobs, &records).await?)
             }
             Call::Nodes => {
-                let nodes = self.slurm.nodes().await?;
+                let slurm = self.slurm()?;
+                let partitions = slurm.partitions().await?.records;
+                let records = slurm.nodes().await?.records;
+                let nodes = nodes::nodes(records, &partitions, slurm.protocol())?;
                 Answer::Nodes(nodes.into_iter().map(node).collect::<Result<_>>()?)
             }
             Call::Partitions => {
-                let partitions = self.slurm.partitions().await?;
+                let partitions = self.slurm()?.partitions().await?.records;
                 Answer::Partitions(
                     partitions
-                        .into_iter()
-                        .map(partition)
+                        .iter()
+                        .map(|record| partition(nodes::partition(record)))
                         .collect::<Result<_>>()?,
                 )
             }
             Call::Placements => Answer::Placements(if let Some(placements) = listed {
                 placements?
             } else {
-                let (_, records) = self.slurm.jobs().await?;
+                let (_, records) = jobs::views(&self.slurm()?.jobs().await?.records);
                 records.iter().map(placed).collect::<Result<_>>()?
             }),
-            Call::Lookup { key, .. } => Answer::Lookup(match self.slurm.job(key.job.0).await? {
-                Some(found) => Lookup::Found(placed(&found)?),
-                None => Lookup::Gone,
-            }),
+            Call::Lookup { key, .. } => {
+                let records = self.slurm()?.job(slurm_client::JobId(key.job.0)).await?;
+                let (_, placements) = jobs::views(&records);
+                let found = placements.iter().find(|job| job.id == key.job.0);
+                Answer::Lookup(match found {
+                    Some(found) => Lookup::Found(placed(found)?),
+                    None => Lookup::Gone,
+                })
+            }
             Call::Outcomes(ids) => {
-                let ids: Vec<u32> = ids.iter().map(|id| id.0).collect();
-                let query = accounting::Query::Jobs(&ids);
-                let (records, _) = self.slurm.accounting(&query, UnixTime::now().0).await?;
+                let ids = ids.iter().map(|id| slurm_client::JobId(id.0));
+                let (records, _) = self.accounting(JobQuery::by_id(ids)).await?;
                 Answer::Outcomes(readable(records.iter().map(outcome)))
             }
             Call::History { from, to } => {
-                let window = accounting::Query::Window(from.0, to.0);
-                let (records, tres) = self.slurm.accounting(&window, UnixTime::now().0).await?;
+                let window = JobQuery::since(instant(*from)).until(instant(*to));
+                let (records, tres) = self.accounting(window).await?;
                 self.learn_logins(records.iter().map(|record| record.user_id))
                     .await;
                 Answer::History(readable(
@@ -353,8 +410,54 @@ impl Wire {
                         .map(|record| accounted(record, tres, &self.logins)),
                 ))
             }
-            Call::Stats => Answer::Stats(stats(self.slurm.stats().await?)),
+            Call::Stats => Answer::Stats(stats(stats::stats(&self.slurm()?.statistics().await?))),
         })
+    }
+
+    /// The client, which the config call makes.
+    fn slurm(&self) -> Result<&Client> {
+        self.slurm
+            .as_ref()
+            .context("the configuration call must come first")
+    }
+
+    /// Settles on the newest protocol the controller accepts and reads its configuration, which
+    /// names the cluster, slurmdbd and munged's socket.
+    async fn connect(&mut self) -> Result<config::Config> {
+        let slurm = Client::connect(self.reach.clone()).await?;
+        let config = config::config(slurm.configuration().await?)?;
+        self.reach.protocol = Some(slurm.protocol());
+        self.reach.cluster = Some(config.cluster.clone());
+        self.reach.accounting.clone_from(&config.accounting);
+        if let (Auth::Munge { socket }, Some(named)) = (&mut self.reach.auth, &config.munge) {
+            socket.clone_from(named);
+        }
+        tracing::info!(
+            "slurmctld at {} speaks protocol {:?}, signed through {:?}; slurmdbd at {}",
+            self.reach.controllers.join(", "),
+            slurm.protocol(),
+            self.reach.auth,
+            self.reach.accounting.join(", ")
+        );
+        self.slurm = Some(Client::connect(self.reach.clone()).await?);
+        Ok(config)
+    }
+
+    /// The allocations `query` selects in slurmdbd, as `sacct -X -D` lists them: every requeued
+    /// attempt, without steps. They come with the TRES IDs that read their TRES strings.
+    async fn accounting(
+        &self,
+        query: JobQuery,
+    ) -> Result<(Vec<accounting::Record>, accounting::Tres)> {
+        self.slurm()?;
+        let mut reach = self.reach.clone();
+        reach.timeout = TIMEOUT * 4;
+        let mut slurmdbd = Client::connect(reach).await?.accounting().await?;
+        let tres = accounting::Tres::among(&slurmdbd.tres().await?);
+        let records = slurmdbd
+            .jobs(&query.every_attempt().without_steps())
+            .await?;
+        Ok((records.iter().map(accounting::record).collect(), tres))
     }
 
     /// The jobs of a listing as the model lists them. Keeps the listing's placements for the
@@ -401,7 +504,6 @@ impl Wire {
 mod tests {
     use super::*;
     use crate::slurm::cli::Cli;
-    use glurmo_rpc::controllers;
 
     #[test]
     fn an_unconvertible_record_is_skipped() {
@@ -412,7 +514,8 @@ mod tests {
     #[tokio::test]
     async fn placements_right_after_jobs_reuse_their_reply() {
         let dir = tempfile::tempdir().unwrap();
-        let nowhere = Client::new(Vec::new(), Issuer::Sack(dir.path().join("no.socket")));
+        let socket = dir.path().join("no.socket");
+        let nowhere = slurm_client::Config::new(Vec::new(), Auth::Slurm { socket });
         let mut wire = Wire::over(nowhere);
         let none = Answer::Placements(Vec::new());
         wire.listed(&[], &[]).await.unwrap();
@@ -433,7 +536,7 @@ mod tests {
     /// Both backends, connected. The live tests compare them on zlurm, where the cluster can change
     /// between the two answers.
     async fn backends() -> (Wire, Cli) {
-        let mut wire = Wire::new(controllers().unwrap()).unwrap();
+        let mut wire = Wire::new(Vec::new()).unwrap();
         let mut cli = Cli::default();
         let (Answer::Config(wired), Answer::Config(printed)) = (
             wire.answer(&Call::Config).await.unwrap(),
@@ -729,7 +832,6 @@ mod tests {
             min_job_age_s: 300,
             private_data: vec!["jobs".into()],
             slurmctld_parameters: Some("rl_enable,rl_bucket_size=50".into()),
-            slurm_uid: 450,
             accounting: Vec::new(),
             munge: None,
         };

@@ -1,5 +1,5 @@
 //! The only code in the binary that knows Slurm: the backend over its protocol, its commands, and
-//! their quirks. The protocol itself is the `glurmo-rpc` crate.
+//! their quirks. The protocol itself is the `slurm-client` crate.
 
 pub mod cli;
 pub mod fields;
@@ -182,7 +182,7 @@ pub enum Lookup {
 /// Where answers come from.
 pub enum Source {
     /// Slurm's protocol, spoken to slurmctld and slurmdbd.
-    Wire(Wire),
+    Wire(Box<Wire>),
     /// Slurm's commands, run on this host.
     Cli(Cli),
     /// A recording.
@@ -197,10 +197,7 @@ impl Source {
     /// Fails when the protocol backend finds no controller.
     pub fn live(reach: &Reach) -> Result<Self> {
         Ok(match reach.backend {
-            Backend::Wire if reach.controller.is_empty() => {
-                Self::Wire(Wire::new(glurmo_rpc::controllers()?)?)
-            }
-            Backend::Wire => Self::Wire(Wire::new(reach.controller.clone())?),
+            Backend::Wire => Self::Wire(Box::new(Wire::new(reach.controller.clone())?)),
             Backend::Cli => Self::Cli(Cli::default()),
         })
     }
