@@ -144,12 +144,19 @@ main.tv {
   flex-direction: column;
 }
 
+/* The legend sits in the panel's corner as the editor's tag does. */
 .tiles .legend {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
   display: flex;
-  gap: 14px;
-  padding: 0 4px 4px;
-  font: 500 11px var(--mono);
-  color: var(--muted);
+  gap: 12px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: var(--overlay);
+  color: var(--text);
+  font: 600 11px/18px var(--sans);
 }
 
 .tiles .legend .swatch {
