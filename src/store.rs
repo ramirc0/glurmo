@@ -29,7 +29,7 @@ const GRACE_S: i64 = 30;
 
 /// SQLite's schema changes, applied in order. `PRAGMA user_version` counts how many have run.
 /// A change to the schema goes into both this list and [`TIMESCALE_MIGRATIONS`].
-const SQLITE_MIGRATIONS: [&str; 5] = [
+const SQLITE_MIGRATIONS: [&str; 6] = [
     "
     CREATE TABLE attempts (
         job INTEGER NOT NULL,
@@ -91,11 +91,12 @@ const SQLITE_MIGRATIONS: [&str; 5] = [
     "ALTER TABLE users ADD COLUMN member_of TEXT;",
     // An attempt's time limit in seconds, or NULL for none or for one stored before the column.
     "ALTER TABLE attempts ADD COLUMN time_limit_s INTEGER;",
+    REREAD,
 ];
 
 /// TimescaleDB's schema changes, applied in order. The `schema` key in `meta` counts how many have run.
 /// The tables are SQLite's, with `attempts` and `usage` as hypertables in 30-day chunks.
-const TIMESCALE_MIGRATIONS: [&str; 3] = [
+const TIMESCALE_MIGRATIONS: [&str; 4] = [
     r#"
     CREATE EXTENSION IF NOT EXISTS timescaledb;
     CREATE TABLE attempts (
@@ -153,7 +154,15 @@ const TIMESCALE_MIGRATIONS: [&str; 3] = [
 "#,
     "ALTER TABLE users ADD COLUMN member_of TEXT;",
     "ALTER TABLE attempts ADD COLUMN time_limit_s BIGINT;",
+    REREAD,
 ];
+
+/// Marks the history a store already holds to be read from accounting once more, back from where the
+/// samples reach. Attempts stored before `time_limit_s` have no limit, and accounting knows it. A new
+/// store has no `complete_to` yet, so nothing is marked.
+const REREAD: &str =
+    "INSERT INTO meta SELECT 'reread_from', value FROM meta WHERE key = 'complete_to'
+                      ON CONFLICT (key) DO NOTHING;";
 
 /// Compresses chunks once they are 7 days old. It runs with the first TimescaleDB migration, on a
 /// server whose license allows compression. The columns to segment by are named, because
@@ -571,6 +580,7 @@ impl Store {
 
     /// The next stretch of accounting to read, at most `span_s` long. A gap since the last sample comes
     /// first, starting `overlap_s` early. Then history goes back a stretch at a time to the backfill horizon.
+    /// Last comes history that a migration marked to be read once more, back to where history starts.
     /// Nothing is read until a listing that [`Store::sampled`] noted, as after a failed write.
     ///
     /// # Errors
@@ -601,11 +611,21 @@ impl Store {
             Coverage::Current => {}
         }
         let horizon = created.0 - i64::from(self.settings.backfill_days) * DAY_S;
-        Ok((from.0 > horizon).then(|| Window {
-            from: UnixTime((from.0 - span_s).max(horizon)),
-            to: from,
-            gap: false,
-        }))
+        if from.0 > horizon {
+            return Ok(Some(Window {
+                from: UnixTime((from.0 - span_s).max(horizon)),
+                to: from,
+                gap: false,
+            }));
+        }
+        Ok(self
+            .meta("reread_from")?
+            .filter(|reread| *reread > from)
+            .map(|reread| Window {
+                from: UnixTime((reread.0 - span_s).max(from.0)),
+                to: reread,
+                gap: false,
+            }))
     }
 
     /// Writes what accounting holds for `window`, as [`Store::next_backfill`] gave it, and rolls up its bins again.
@@ -632,8 +652,21 @@ impl Store {
         }
         tx.commit()?;
         if !window.gap {
-            tracing::debug!("history reaches back to {}", logging::local(window.from));
-            self.set_meta("history_from", window.from)?;
+            if self.meta("reread_from")? == Some(window.to) {
+                if self
+                    .meta("history_from")?
+                    .is_some_and(|from| window.from > from)
+                {
+                    self.set_meta("reread_from", window.from)?;
+                } else {
+                    tracing::info!("history has been read from accounting once more");
+                    self.db
+                        .execute("DELETE FROM meta WHERE key = 'reread_from'", params![])?;
+                }
+            } else {
+                tracing::debug!("history reaches back to {}", logging::local(window.from));
+                self.set_meta("history_from", window.from)?;
+            }
         } else if let Coverage::Behind { since } = self.coverage {
             if window.to >= since {
                 tracing::info!(
@@ -2073,6 +2106,58 @@ mod tests {
     }
 
     #[test]
+    fn history_marked_to_be_read_once_more_is_read_back_to_its_start_and_gains_limits() {
+        let home = StoreHome::new();
+        let mut store = home.open(2);
+        let now = UnixTime(T0);
+        store.sampled(now, 300).unwrap();
+        while let Some(window) = store.next_backfill(now, 300, DAY_S).unwrap() {
+            store.backfill(window, &[], &HashSet::new(), now).unwrap();
+        }
+        let old = attempt(
+            7,
+            JobState::Ended(EndState::Completed),
+            Some(T0 - DAY_S - 600),
+            Some(T0 - DAY_S),
+        );
+        store
+            .record(
+                UnixTime(T0 - DAY_S),
+                &[Event::Started {
+                    attempt: old.clone(),
+                }],
+            )
+            .unwrap();
+        store.db.execute_batch(REREAD).unwrap();
+
+        let limited = Attempt {
+            time_limit_s: Some(3_600),
+            ..old
+        };
+        let mut windows = Vec::new();
+        while let Some(window) = store.next_backfill(now, 300, DAY_S).unwrap() {
+            store
+                .backfill(window, std::slice::from_ref(&limited), &HashSet::new(), now)
+                .unwrap();
+            windows.push((window.from.0 - T0, window.to.0 - T0));
+        }
+        assert_eq!(windows, [(-DAY_S, 0), (-2 * DAY_S, -DAY_S)]);
+        assert_eq!(
+            store.meta("history_from").unwrap(),
+            Some(UnixTime(T0 - 2 * DAY_S))
+        );
+        let limit: Option<i64> = store
+            .db
+            .query_row(
+                "SELECT time_limit_s FROM attempts WHERE job = 7",
+                params![],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(limit, Some(3_600));
+    }
+
+    #[test]
     fn a_restart_closes_vanished_attempts_until_accounting_gives_their_ends() {
         let home = StoreHome::new();
         let mut store = home.open(2);
@@ -2587,6 +2672,7 @@ mod tests {
             .execute_batch(
                 "ALTER TABLE users DROP COLUMN member_of;
                  ALTER TABLE attempts DROP COLUMN time_limit_s;
+                 DELETE FROM meta WHERE key = 'reread_from';
                  PRAGMA user_version = 2",
             )
             .unwrap();
