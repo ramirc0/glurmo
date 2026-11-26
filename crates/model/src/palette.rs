@@ -307,7 +307,8 @@ impl Coloring {
 
     /// The color of a core or GPU that `attempt` holds at `now`: its owner's, or under
     /// [`ColorBy::TimeLeft`] the step its time left falls in. A job past its limit takes the first
-    /// step. One with more left than the span, or with no limit, takes the last.
+    /// step, and one with more left than the span takes the last. One with no limit, or none known,
+    /// takes the rest color.
     ///
     /// # Examples
     ///
@@ -338,18 +339,11 @@ impl Coloring {
         let ColorBy::TimeLeft { within } = self.by else {
             return self.user(&attempt.login);
         };
-        let left = attempt
-            .start
-            .zip(attempt.time_limit_s)
-            .and_then(|(start, limit)| {
-                Some((start.0.checked_add(i64::try_from(limit).ok()?)? - now.0).max(0))
-            });
-        let step = left.and_then(|left| {
-            let steps = i64::try_from(self.steps.len()).ok()?;
-            usize::try_from(left.checked_mul(steps)?.checked_div(within.seconds())?).ok()
-        });
-        let last = self.steps.len().checked_sub(1)?;
-        self.steps.get(step.map_or(last, |step| step.min(last)))
+        let limit = i64::try_from(attempt.time_limit_s?).ok()?;
+        let left = (attempt.start?.0.checked_add(limit)? - now.0).max(0);
+        let steps = i64::try_from(self.steps.len()).ok()?;
+        let step = usize::try_from(left.checked_mul(steps)?.checked_div(within.seconds())?).ok()?;
+        self.steps.get(step.min(self.steps.len().checked_sub(1)?))
     }
 
     /// The color of everyone and everything no lookup colors, or `None` for the view's quiet color.

@@ -29,7 +29,7 @@ const GRACE_S: i64 = 30;
 
 /// SQLite's schema changes, applied in order. `PRAGMA user_version` counts how many have run.
 /// A change to the schema goes into both this list and [`TIMESCALE_MIGRATIONS`].
-const SQLITE_MIGRATIONS: [&str; 4] = [
+const SQLITE_MIGRATIONS: [&str; 5] = [
     "
     CREATE TABLE attempts (
         job INTEGER NOT NULL,
@@ -89,11 +89,13 @@ const SQLITE_MIGRATIONS: [&str; 4] = [
 ",
     // A user's groups as a JSON list of names, or NULL until they are looked up.
     "ALTER TABLE users ADD COLUMN member_of TEXT;",
+    // An attempt's time limit in seconds, or NULL for none or for one stored before the column.
+    "ALTER TABLE attempts ADD COLUMN time_limit_s INTEGER;",
 ];
 
 /// TimescaleDB's schema changes, applied in order. The `schema` key in `meta` counts how many have run.
 /// The tables are SQLite's, with `attempts` and `usage` as hypertables in 30-day chunks.
-const TIMESCALE_MIGRATIONS: [&str; 2] = [
+const TIMESCALE_MIGRATIONS: [&str; 3] = [
     r#"
     CREATE EXTENSION IF NOT EXISTS timescaledb;
     CREATE TABLE attempts (
@@ -150,6 +152,7 @@ const TIMESCALE_MIGRATIONS: [&str; 2] = [
     SELECT set_integer_now_func('usage', 'unix_now');
 "#,
     "ALTER TABLE users ADD COLUMN member_of TEXT;",
+    "ALTER TABLE attempts ADD COLUMN time_limit_s BIGINT;",
 ];
 
 /// Compresses chunks once they are 7 days old. It runs with the first TimescaleDB migration, on a
@@ -176,7 +179,7 @@ const TABLES: [(&str, &str, Option<&str>); 5] = [
     (
         "attempts",
         r#"job, submit, array_job, task_range, tasks, login, partition, cpus, cores, gpus, mem_mb,
-           start, "end", state, nodes, placement, exact, origin"#,
+           start, "end", state, nodes, placement, exact, origin, time_limit_s"#,
         Some("submit"),
     ),
     (
@@ -1257,13 +1260,14 @@ fn upsert(
     tx.execute(
         r#"INSERT INTO attempts
                (job, submit, array_job, task_range, tasks, login, partition, cpus, cores, gpus, mem_mb,
-                start, "end", state, nodes, origin)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                start, "end", state, nodes, origin, time_limit_s)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
            ON CONFLICT (job, submit) DO UPDATE SET
                array_job = excluded.array_job, task_range = excluded.task_range,
                tasks = excluded.tasks, login = excluded.login, partition = excluded.partition,
                cpus = excluded.cpus, cores = coalesce(excluded.cores, attempts.cores),
                gpus = excluded.gpus, mem_mb = excluded.mem_mb,
+               time_limit_s = coalesce(excluded.time_limit_s, attempts.time_limit_s),
                start = coalesce(excluded.start, attempts.start),
                "end" = coalesce(excluded."end", attempts."end"),
                state = coalesce(excluded.state, attempts.state),
@@ -1284,7 +1288,8 @@ fn upsert(
             end.map(|time| time.0),
             state,
             serde_json::to_string(&attempt.nodes)?,
-            origin
+            origin,
+            attempt.time_limit_s.map(i64::try_from).transpose()?
         ],
     )?;
     tx.execute(
@@ -1431,7 +1436,7 @@ fn spans(db: &Connection, from: UnixTime, to: UnixTime) -> Result<Vec<Span>> {
 
 /// The columns [`stored`] reads, in its order.
 const STORED: &str = r#"job, submit, array_job, task_range, tasks, login, partition, cpus, gpus,
-                        mem_mb, start, "end", state, nodes, placement"#;
+                        mem_mb, start, "end", state, nodes, placement, time_limit_s"#;
 
 /// Runs `sql`, which selects [`STORED`], and reads each row.
 fn stored(db: &Connection, sql: &str, params: &[Value]) -> Result<Vec<Stored>> {
@@ -1463,7 +1468,7 @@ fn stored(db: &Connection, sql: &str, params: &[Value]) -> Result<Vec<Stored>> {
             cpus: row.get(7)?,
             mem_mb: row.get(9)?,
             gpus: row.get(8)?,
-            time_limit_s: None,
+            time_limit_s: row.get(15)?,
             start: None,
             end: None,
             nodes: serde_json::from_str(&row.get::<String>(13)?)?,
@@ -1804,6 +1809,35 @@ mod tests {
             home.open(2).new_users().unwrap(),
             [otter, user("heron", Some("Grey Heron"), 1)]
         );
+    }
+
+    #[test]
+    fn a_time_limit_is_kept_and_not_lost_to_a_later_record_without_one() {
+        let home = StoreHome::new();
+        let mut store = home.open(2);
+        let limited = Attempt {
+            time_limit_s: Some(3_600),
+            ..attempt(7, JobState::Running, Some(T0), None)
+        };
+        let limit = |store: &Store| -> Option<i64> {
+            store
+                .db
+                .query_row(
+                    "SELECT time_limit_s FROM attempts WHERE job = 7",
+                    params![],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        store
+            .record(UnixTime(T0), &[Event::Started { attempt: limited }])
+            .unwrap();
+        assert_eq!(limit(&store), Some(3_600));
+        let unlimited = attempt(7, JobState::Running, Some(T0), None);
+        store
+            .record(UnixTime(T0 + 10), &[Event::Started { attempt: unlimited }])
+            .unwrap();
+        assert_eq!(limit(&store), Some(3_600));
     }
 
     #[test]
@@ -2550,7 +2584,11 @@ mod tests {
         assert_eq!(wait_s(&store), 890, "the start in 2106 kept it waiting");
         store
             .db
-            .execute_batch("ALTER TABLE users DROP COLUMN member_of; PRAGMA user_version = 2")
+            .execute_batch(
+                "ALTER TABLE users DROP COLUMN member_of;
+                 ALTER TABLE attempts DROP COLUMN time_limit_s;
+                 PRAGMA user_version = 2",
+            )
             .unwrap();
         drop(store);
 

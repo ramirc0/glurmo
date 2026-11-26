@@ -11,7 +11,7 @@ use glurmo_model::palette::Coloring;
 use glurmo_model::summary::{NodeGroup, node_groups};
 use glurmo_model::theme::Theme;
 use glurmo_model::units::{gigabytes, load, step_labels, thousands};
-use glurmo_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner};
+use glurmo_model::{Cluster, Node, NodeFlag, NodeState, Occupancies, Owner, UnixTime};
 use leptos::prelude::*;
 use web_sys::CanvasRenderingContext2d;
 
@@ -589,6 +589,14 @@ pub fn Tiles(group: Grouping) -> impl IntoView {
                 let board = board(&groups, width, height);
                 let needed = (board.height > height).then(|| board.height.ceil());
                 overflow.maybe_update(|overflow| std::mem::replace(overflow, needed) != needed);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "seconds since 1970 fit in an i64"
+                )]
+                let now = playhead.map_or_else(
+                    || cluster.at.unwrap_or_default(),
+                    |playhead| UnixTime(playhead.at as i64),
+                );
                 state.engine.with_value(|engine| {
                     let ink = Ink {
                         context,
@@ -597,6 +605,7 @@ pub fn Tiles(group: Grouping) -> impl IntoView {
                         occupancy,
                         highlight: highlight.as_ref(),
                         coloring: &coloring,
+                        now,
                         effects: playhead.map(|playhead| (&engine.effects, playhead.at)),
                     };
                     ink.board(&groups, &board);
@@ -663,6 +672,8 @@ struct Ink<'a> {
     occupancy: &'a Occupancies,
     highlight: Option<&'a Highlight>,
     coloring: &'a Coloring,
+    /// The moment drawn: the playhead of a replay, else the cluster's latest sample.
+    now: UnixTime,
     /// While replaying, the cells that just changed hands and the playhead.
     effects: Option<(&'a Effects, f64)>,
 }
@@ -758,8 +769,7 @@ impl Ink<'_> {
             Some(Owner::Attempt(key)) => match self.cluster.running.get(&key) {
                 Some(running) => {
                     let login = &running.attempt.login;
-                    let now = self.cluster.at.unwrap_or_default();
-                    let color = self.coloring.core(&running.attempt, now);
+                    let color = self.coloring.core(&running.attempt, self.now);
                     (
                         painted(self.theme, self.coloring, color),
                         Some(login),
