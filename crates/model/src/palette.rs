@@ -37,8 +37,9 @@ pub enum ColorBy {
 }
 
 /// A palette. Names in `bound` take their colors first. Under [`ColorBy::User`] and
-/// [`ColorBy::Group`], the biggest holders not bound then take `colors`, one each and in order, and
-/// everyone else takes `rest`. Under [`ColorBy::TimeLeft`], `colors` are the steps, soonest first.
+/// [`ColorBy::Group`], the rest then take `colors`, one each: the biggest holders first, then those who
+/// only wait. Whoever is left once the colors run out takes `rest`. Under [`ColorBy::TimeLeft`],
+/// `colors` are the steps, soonest first.
 ///
 /// # Examples
 ///
@@ -105,23 +106,27 @@ impl Palette {
         }
     }
 
-    /// The colors for `count` holders in rank order: one each until they run out, or under `spread`
-    /// the whole list stretched over all of them.
-    fn dealt(&self, count: usize) -> Vec<Color> {
+    /// The colors for everyone listed, in rank order, the first `holders` of whom hold cores or GPUs
+    /// and the rest only wait: one each until the colors run out. Under `spread`, the whole list
+    /// stretches over the holders, and those who only wait take its last color.
+    fn dealt(&self, holders: usize, listed: usize) -> Vec<Color> {
         let last = self.colors.len().saturating_sub(1);
-        if !self.spread || last == 0 || count < 2 {
-            return self.colors.iter().take(count).cloned().collect();
+        if !self.spread || self.colors.is_empty() {
+            return self.colors.iter().take(listed).cloned().collect();
         }
-        (0..count)
+        (0..listed)
             .map(|rank| {
-                let low = rank * last / (count - 1);
+                if rank >= holders || holders < 2 || last == 0 {
+                    return self.colors[if rank >= holders { last } else { 0 }].clone();
+                }
+                let low = rank * last / (holders - 1);
                 let high = (low + 1).min(last);
-                let over = rank * last - low * (count - 1);
+                let over = rank * last - low * (holders - 1);
                 #[expect(
                     clippy::cast_precision_loss,
                     reason = "counts of users and colors are small"
                 )]
-                let share = over as f64 / (count - 1) as f64;
+                let share = over as f64 / (holders - 1) as f64;
                 self.colors[low].mix(&self.colors[high], share)
             })
             .collect()
@@ -149,7 +154,8 @@ impl Palette {
     /// cluster.queue.insert(attempt.key, attempt);
     /// let coloring = palette.coloring(&cluster, &cluster.occupancy());
     /// assert_eq!(coloring.user(&Login("heron".into())), Some(&palette.bound[0].1));
-    /// assert_eq!(coloring.user(&Login("otter".into())), None, "otter waits and holds nothing");
+    /// assert_eq!(coloring.user(&Login("otter".into())), Some(&palette.colors[0]), "otter only waits");
+    /// assert_eq!(coloring.user(&Login("newt".into())), None, "newt has no job");
     /// ```
     pub fn coloring(&self, cluster: &Cluster, occupancy: &Occupancies) -> Coloring {
         let mut coloring = Coloring {
@@ -165,15 +171,14 @@ impl Palette {
                 for (login, color) in &self.bound {
                     coloring.users.insert(Login(login.clone()), color.clone());
                 }
-                let holders: Vec<&Login> = holdings(cluster, occupancy)
+                let listed: Vec<(&Login, bool)> = holdings(cluster, occupancy)
                     .users
                     .into_iter()
-                    .filter(|(login, held)| {
-                        held.cores + held.gpus > 0 && !coloring.users.contains_key(*login)
-                    })
-                    .map(|(login, _)| login)
+                    .filter(|(login, _)| !coloring.users.contains_key(*login))
+                    .map(|(login, held)| (login, held.cores + held.gpus > 0))
                     .collect();
-                for (login, color) in holders.iter().zip(self.dealt(holders.len())) {
+                let holders = listed.iter().filter(|(_, holds)| *holds).count();
+                for ((login, _), color) in listed.iter().zip(self.dealt(holders, listed.len())) {
                     coloring.users.insert((*login).clone(), color);
                 }
             }
@@ -183,16 +188,18 @@ impl Palette {
                         .groups
                         .insert(GroupName(name.clone()), color.clone());
                 }
-                let holders: Vec<&GroupName> = group_holdings(cluster, occupancy)
+                let listed: Vec<(&GroupName, bool)> = group_holdings(cluster, occupancy)
                     .into_iter()
-                    .filter(|group| {
-                        group.held.cores + group.held.gpus > 0
-                            && !coloring.groups.contains_key(group.name)
-                    })
-                    .map(|group| group.name)
+                    .filter(|group| !coloring.groups.contains_key(group.name))
+                    .map(|group| (group.name, group.held.cores + group.held.gpus > 0))
                     .collect();
-                let dealt = self.dealt(holders.len());
-                let ranked = &holders[..dealt.len()];
+                let holders = listed.iter().filter(|(_, holds)| *holds).count();
+                let dealt = self.dealt(holders, listed.len());
+                let ranked: Vec<&GroupName> = listed
+                    .iter()
+                    .take(dealt.len())
+                    .map(|(name, _)| *name)
+                    .collect();
                 for (name, color) in ranked.iter().zip(dealt) {
                     coloring.groups.insert((*name).clone(), color);
                 }
@@ -418,14 +425,17 @@ mod tests {
         let hex =
             |colors: Vec<Color>| -> Vec<String> { colors.into_iter().map(String::from).collect() };
         assert_eq!(
-            hex(ramp.dealt(5)),
+            hex(ramp.dealt(5, 5)),
             ["#000000", "#404040", "#808080", "#c0c0c0", "#ffffff"]
         );
-        assert_eq!(hex(ramp.dealt(2)), ["#000000", "#ffffff"]);
-        assert_eq!(hex(ramp.dealt(1)), ["#000000"]);
-        assert_eq!(ramp.dealt(0), []);
+        assert_eq!(
+            hex(ramp.dealt(2, 4)),
+            ["#000000", "#ffffff", "#ffffff", "#ffffff"]
+        );
+        assert_eq!(hex(ramp.dealt(1, 2)), ["#000000", "#ffffff"]);
+        assert_eq!(ramp.dealt(0, 0), []);
         ramp.spread = false;
-        assert_eq!(hex(ramp.dealt(5)), ["#000000", "#808080", "#ffffff"]);
+        assert_eq!(hex(ramp.dealt(2, 5)), ["#000000", "#808080", "#ffffff"]);
     }
 
     #[test]

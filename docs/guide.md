@@ -391,8 +391,8 @@ Palette(
 
 * `by` is `User`, `Group` or `TimeLeft(within: Hours(24))`.
 * Names in `bound` take their colors first. They are logins, or group names under `Group`.
-* The biggest holders not bound then take `colors`, one each and in order. With `spread: true`, the colors stretch over every holder instead, each taking a mix of the two nearest, so a ramp covers everyone.
-* Everyone else takes `rest`. Without it they take a quiet color from the theme.
+* Everyone else with a job then takes `colors`, one each and in order: the biggest holders first, then users who only wait. With `spread: true`, the colors stretch over every holder instead, each taking a mix of the two nearest, so a ramp covers everyone, and users who only wait take its last color.
+* Whoever is left once the colors run out takes `rest`. Without it they take a quiet color from the theme.
 * Under `Group`, a user takes the color of the first colored group they are in: bound groups in their order, then groups by what they hold.
 * Under `TimeLeft`, `colors` split the span into equal steps, soonest first, and the cores panel shows the steps. A job with more time left than the span, or with no limit, takes the last color. The user and group tables and the history go quiet.
 
