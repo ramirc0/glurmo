@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use leptos::prelude::*;
 
 use crate::editor::Editor;
-use crate::state::{DEFAULT_LAYOUT, DEFAULT_THEME, State, pick};
+use crate::state::{DEFAULT_LAYOUT, State, pick};
+use glurmo_model::theme::DEFAULT_THEME;
 
 /// The menu's id, which the gear names as its popover.
 const MENU: &str = "settings";

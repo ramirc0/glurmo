@@ -14,7 +14,7 @@ use crate::slurm::Site;
 use glurmo_model::layout::{Layout, Pane};
 use glurmo_model::palette::Palette;
 use glurmo_model::summary::Ticker;
-use glurmo_model::theme::Theme;
+use glurmo_model::theme::{DEFAULT_THEME, Theme};
 use glurmo_model::usage::Usage;
 use glurmo_model::{Cluster, Delta, Login};
 
@@ -114,12 +114,12 @@ impl App {
             .unwrap_or_else(|| Palette::of_theme(self.theme()))
     }
 
-    /// The theme drawn with: the one picked, else `rose-pine`, else the first there is.
+    /// The theme drawn with: the one picked, else the default, else the first there is.
     pub fn theme(&self) -> &Theme {
         let themes = &self.library.themes;
         themes
             .get(&self.theme)
-            .or_else(|| themes.get("rose-pine"))
+            .or_else(|| themes.get(DEFAULT_THEME))
             .or_else(|| themes.values().next())
             .expect("the built-in themes are always there")
     }

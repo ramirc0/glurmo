@@ -10,14 +10,11 @@ use crate::tree::Path;
 use glurmo_model::layout::{Layout, Pane};
 use glurmo_model::palette::{Coloring, Palette};
 use glurmo_model::summary::Ticker;
-use glurmo_model::theme::Theme;
+use glurmo_model::theme::{DEFAULT_THEME, Theme};
 use glurmo_model::usage::Usage;
 use glurmo_model::{
     AttemptKey, Cluster, GroupName, Login, Node, NodeName, Occupancies, PartitionName, UnixTime,
 };
-
-/// The theme drawn with when the address names none, or one that does not exist.
-pub const DEFAULT_THEME: &str = "rose-pine";
 
 /// The layout shown when the address names none, or one that does not exist.
 pub const DEFAULT_LAYOUT: &str = "web";

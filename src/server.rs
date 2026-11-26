@@ -27,7 +27,7 @@ use crate::sampler::Health;
 use crate::store::{By, History, UsageQuery};
 use glurmo_model::layout::Layout;
 use glurmo_model::palette::Palette;
-use glurmo_model::theme::Theme;
+use glurmo_model::theme::{DEFAULT_THEME, Theme};
 use glurmo_model::{Delta, Outage, UnixTime};
 
 /// How long a browser waits before it reconnects a dropped stream.
@@ -350,12 +350,12 @@ struct CssParams {
     name: Option<String>,
 }
 
-/// A theme as CSS variables, `rose-pine` unless `name` says otherwise.
+/// A theme as CSS variables, the default one unless `name` says otherwise.
 async fn theme_css(
     State(app): State<App>,
     Query(params): Query<CssParams>,
 ) -> Result<impl IntoResponse, Failure> {
-    let name = params.name.unwrap_or_else(|| "rose-pine".to_owned());
+    let name = params.name.unwrap_or_else(|| DEFAULT_THEME.to_owned());
     let library = app.library.borrow();
     let theme = library
         .themes

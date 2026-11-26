@@ -143,6 +143,17 @@ pub struct Theme {
     pub fonts: Fonts,
 }
 
+/// The file name of the theme both views draw with when none is picked, or the one picked does not exist.
+///
+/// # Examples
+///
+/// ```
+/// use glurmo_model::theme::DEFAULT_THEME;
+///
+/// assert_eq!(DEFAULT_THEME, "rose-pine");
+/// ```
+pub const DEFAULT_THEME: &str = "rose-pine";
+
 /// Backgrounds and text, from darkest to lightest in a dark theme.
 ///
 /// # Examples

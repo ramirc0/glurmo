@@ -9,6 +9,7 @@ use ron::extensions::Extensions;
 use serde::{Deserialize, Serialize};
 
 use crate::slurm::{Backend, Intervals};
+use glurmo_model::theme::DEFAULT_THEME;
 use glurmo_model::{GroupName, Login};
 
 /// Everything `config.ron` can set. Every field has a default.
@@ -119,7 +120,7 @@ impl Default for Tui {
         Self {
             server: None,
             layout: "tui".to_owned(),
-            theme: "rose-pine".to_owned(),
+            theme: DEFAULT_THEME.to_owned(),
             palette: None,
             me: None,
         }
