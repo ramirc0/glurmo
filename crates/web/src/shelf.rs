@@ -1,4 +1,4 @@
-//! Layouts and themes saved in this browser, which add to the server's and replace them by file name.
+//! Layouts, themes and palettes saved in this browser, which add to the server's and replace them by file name.
 
 use std::collections::BTreeMap;
 
@@ -12,6 +12,8 @@ pub enum Shelf {
     Layouts,
     /// Themes.
     Themes,
+    /// Palettes.
+    Palettes,
 }
 
 impl Shelf {
@@ -20,6 +22,7 @@ impl Shelf {
         match self {
             Self::Layouts => "layout",
             Self::Themes => "theme",
+            Self::Palettes => "palette",
         }
     }
 
@@ -27,6 +30,7 @@ impl Shelf {
         match self {
             Self::Layouts => "glurmo.layouts",
             Self::Themes => "glurmo.themes",
+            Self::Palettes => "glurmo.palettes",
         }
     }
 

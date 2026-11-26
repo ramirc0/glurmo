@@ -146,8 +146,8 @@ pub fn watch_fonts(state: State) {
     loaded.forget();
 }
 
-/// Reads the server's themes, palettes and layouts into `state`, with the themes and layouts saved in
-/// this browser on top.
+/// Reads the server's themes, palettes and layouts into `state`, with the ones saved in this browser on
+/// top.
 pub fn load_library(state: State) {
     spawn_local(async move {
         match fetch::<BTreeMap<String, Theme>>("/api/themes").await {
@@ -158,7 +158,8 @@ pub fn load_library(state: State) {
             Err(error) => web_sys::console::error_1(&format!("no themes: {error}").into()),
         }
         match fetch::<BTreeMap<String, Palette>>("/api/palettes").await {
-            Ok(palettes) => {
+            Ok(mut palettes) => {
+                palettes.extend(Shelf::Palettes.all());
                 state.palettes.try_set(palettes);
             }
             Err(error) => web_sys::console::error_1(&format!("no palettes: {error}").into()),

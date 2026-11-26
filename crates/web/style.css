@@ -658,6 +658,21 @@ aside.editor input[type="color"] {
   padding: 1px;
 }
 
+aside.editor .swatches .pair select {
+  flex: 2 1 0;
+}
+
+aside.editor .bound {
+  display: grid;
+  grid-template-columns: 1fr 36px auto;
+  gap: 6px;
+}
+
+aside.editor label.check {
+  grid-template-columns: auto 1fr;
+  color: var(--text);
+}
+
 aside.editor .user {
   display: flex;
 }

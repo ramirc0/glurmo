@@ -339,10 +339,11 @@ The history panel is a timeline:
 * The address can start a replay too, as in `?at=1794700000&speed=60`.
 * A replay shows no load, free memory, pending reasons or job names, because the history does not keep them.
 
-Press `e`, or pick *Edit layout and theme* from the gear, to edit the layout and theme on the live page:
+Press `e`, or pick *Edit layout and theme* from the gear, to edit the layout, theme and palette on the live page:
 
 * Click a panel to pick it, then split, remove or change it in the sidebar. Drag a panel onto another to swap them, and drag the gap between panes to resize them.
 * The theme side has a color picker for every color and imports a pasted base16 scheme.
+* The palette side sets what the palette colors by, its colors in order, the names bound to a color, and the color of everyone else. *Fill* replaces the colors with that many samples of a colormap, brightest first, and ⇄ reverses them.
 * *Save in this browser* keeps the result in local storage. *Export RON* gives the file to save in the configuration directory.
 * `e` or `esc` closes the editor and drops unsaved changes.
 

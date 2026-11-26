@@ -8,11 +8,13 @@
 
 mod base16;
 mod builder;
+mod colormap;
 mod editor;
 mod feed;
 mod history;
 mod jobs;
 mod paint;
+mod palette_editor;
 mod pane;
 mod panels;
 mod replay;

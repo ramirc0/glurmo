@@ -1,4 +1,4 @@
-//! The editor: a sidebar that builds layouts and themes on the live page, saves them in this browser,
+//! The editor: a sidebar that builds layouts, themes and palettes on the live page, saves them in this browser,
 //! and exports them as RON for the server's config directory.
 
 use std::collections::BTreeMap;
@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::builder::LayoutPanel;
 use crate::feed;
+use crate::palette_editor::PalettePanel;
 use crate::shelf::Shelf;
 use crate::state::State;
 use crate::theme_editor::ThemePanel;
@@ -21,6 +22,8 @@ pub enum Tab {
     Layout,
     /// The theme editor.
     Theme,
+    /// The palette editor.
+    Palette,
 }
 
 /// What the editor tracks beside the drafts, which live in [`State`].
@@ -34,6 +37,8 @@ pub struct Editor {
     pub layout_file: RwSignal<String>,
     /// The file name the theme saves and exports as.
     pub theme_file: RwSignal<String>,
+    /// The file name the palette saves and exports as.
+    pub palette_file: RwSignal<String>,
     /// The half that shows.
     pub tab: RwSignal<Tab>,
 }
@@ -45,6 +50,7 @@ impl Default for Editor {
             carried: RwSignal::new(None),
             layout_file: RwSignal::new(String::new()),
             theme_file: RwSignal::new(String::new()),
+            palette_file: RwSignal::new(String::new()),
             tab: RwSignal::new(Tab::Layout),
         }
     }
@@ -58,6 +64,13 @@ impl Editor {
         self.theme_file.set(state.theme_name.get_untracked());
         self.picked.set(Path::root());
         state.draft_theme.set(state.theme.get_untracked());
+        let palette = state.palette.get_untracked();
+        let picked = state.palette_name.get_untracked();
+        self.palette_file.set(match &palette {
+            Some(palette) if picked.is_empty() => file_name_for(&palette.name),
+            _ => picked,
+        });
+        state.draft_palette.set(palette);
         state.draft_layout.set(state.layout.get_untracked());
     }
 
@@ -65,6 +78,7 @@ impl Editor {
     pub fn close(state: State) {
         state.draft_layout.set(None);
         state.draft_theme.set(None);
+        state.draft_palette.set(None);
     }
 }
 
@@ -120,7 +134,8 @@ fn unaccented(c: char) -> Option<&'static str> {
     })
 }
 
-/// The sidebar: the panel builder or the theme editor, each with its save and export block.
+/// The sidebar: the panel builder, the theme editor or the palette editor, each with its save and
+/// export block.
 #[component]
 pub fn Sidebar() -> impl IntoView {
     let state = expect_context::<State>();
@@ -137,6 +152,7 @@ pub fn Sidebar() -> impl IntoView {
             <nav>
                 {tab(Tab::Layout, "Layout")}
                 {tab(Tab::Theme, "Theme")}
+                {tab(Tab::Palette, "Palette")}
                 <button class="close" title="Esc" on:click=move |_| Editor::close(state)>
                     "Close"
                 </button>
@@ -164,6 +180,19 @@ pub fn Sidebar() -> impl IntoView {
                             draft=state.draft_theme
                             library=state.themes
                             picked=state.theme_name
+                        />
+                    }
+                        .into_any()
+                }
+                Tab::Palette => {
+                    view! {
+                        <PalettePanel/>
+                        <Keep
+                            shelf=Shelf::Palettes
+                            file=editor.palette_file
+                            draft=state.draft_palette
+                            library=state.palettes
+                            picked=state.palette_name
                         />
                     }
                         .into_any()

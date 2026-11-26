@@ -61,13 +61,28 @@ fn picker(
     read: impl Fn(&Theme) -> Option<String> + Send + Sync + 'static,
     write: impl Fn(&mut Theme, Color) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
+    color_input(
+        move || {
+            state
+                .draft_theme
+                .with(|draft| draft.as_ref().and_then(&read))
+        },
+        move |color| edit(state, |theme| write(theme, color)),
+    )
+}
+
+/// A color picker that shows what `read` gives and hands each pick to `write`.
+pub fn color_input(
+    read: impl Fn() -> Option<String> + Send + Sync + 'static,
+    write: impl Fn(Color) + 'static,
+) -> impl IntoView {
     view! {
         <input
             type="color"
-            prop:value=move || state.draft_theme.with(|draft| draft.as_ref().and_then(&read))
+            prop:value=read
             on:input=move |event| {
                 if let Ok(color) = Color::try_from(event_target_value(&event)) {
-                    edit(state, |theme| write(theme, color));
+                    write(color);
                 }
             }
         />

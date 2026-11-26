@@ -434,7 +434,7 @@ fn length(span_s: i64) -> String {
 }
 
 /// A span typed as a count of hours or days, such as `6h` or `3 d`.
-fn parse_span(text: &str) -> Option<i64> {
+pub fn parse_span(text: &str) -> Option<i64> {
     let text = text.trim();
     let (count, unit) = text.split_at(text.find(|c: char| !c.is_ascii_digit())?);
     let unit = match unit.trim() {
