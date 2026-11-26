@@ -928,7 +928,8 @@ impl History {
     }
 
     /// Core and wait seconds summed per step, by login or partition, in time then key order. Steps with
-    /// neither are left out. Bins the sampler has rolled
+    /// neither are left out. A step starts on a whole multiple of its length, so the first
+    /// can start before the query does. Bins the sampler has rolled
     /// up come from the usage table. Later bins are rolled up from the attempts, counting up to the
     /// query's end or `now`, whichever comes first.
     ///
@@ -941,7 +942,9 @@ impl History {
             return Ok(Vec::new());
         };
         let step_s = (query.step_s.max(1) + BIN_S - 1) / BIN_S * BIN_S;
-        let from = bin_of(query.from);
+        // Steps start on whole multiples of their length, wherever the query starts. Two queries then
+        // group the same bins the same way, so a graph keeps its shape as it is panned.
+        let from = UnixTime(bin_of(query.from).0.div_euclid(step_s) * step_s);
         let to = query.to.min(now);
         let step_of = |bin: UnixTime| from.0 + (bin.0 - from.0) / step_s * step_s;
         let column = match query.by {
@@ -2455,6 +2458,23 @@ mod tests {
                 (0, "long".into(), 2_400),
                 (600, "4hours".into(), 1_600),
             ]
+        );
+        let later = UsageQuery {
+            from: UnixTime(T0 + 300),
+            to: UnixTime(T0 + 1_200),
+            step_s: 600,
+            by: By::Login,
+        };
+        let starts: Vec<i64> = history
+            .usage(&later, UnixTime(T0 + 1_000))
+            .unwrap()
+            .into_iter()
+            .map(|step| step.at.0 - T0)
+            .collect();
+        assert_eq!(
+            starts,
+            [0, 0, 600],
+            "steps start on multiples of their length, wherever the query starts"
         );
     }
 

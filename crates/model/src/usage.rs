@@ -188,36 +188,72 @@ impl Usage {
     /// assert_eq!(so_far.columns(0, 600, 2)[1].cores, [("otter", 4)]);
     /// ```
     pub fn columns(&self, from: i64, span_s: i64, count: u16) -> Vec<Column<'_>> {
-        let step_s = self.step_s.max(1);
-        let covered = |at: i64| u64::try_from((self.to.0 - at).clamp(1, step_s)).unwrap_or(1);
-        let mut by_time: BTreeMap<i64, Vec<(&str, u64)>> = BTreeMap::new();
-        let mut wait_s: HashMap<i64, u64> = HashMap::new();
-        let mut totals: HashMap<&str, u64> = HashMap::new();
-        for step in &self.steps {
-            let cores = by_time.entry(step.at.0).or_default();
-            cores.push((&step.key, step.core_s / covered(step.at.0)));
-            *wait_s.entry(step.at.0).or_default() += step.wait_s;
-            *totals.entry(&step.key).or_default() += step.core_s;
-        }
+        let by_time = self.by_step();
         let count = i64::from(count);
         (0..count)
             .map(|i| {
                 let time = from + (2 * i + 1) * span_s / (2 * count);
-                let Some((at, cores)) = by_time
+                by_time
                     .range(..=time)
                     .next_back()
                     .filter(|(at, _)| **at + self.step_s > time)
-                else {
-                    return Column::default();
-                };
-                let mut cores = cores.clone();
-                cores.sort_by_cached_key(|(login, _)| (std::cmp::Reverse(totals[login]), *login));
-                Column {
-                    cores,
-                    waiting: wait_s[at] / covered(*at),
-                }
+                    .map_or_else(Column::default, |(_, column)| column.clone())
             })
             .collect()
+    }
+
+    /// Each step that reaches into `from` up to `to`, with when it starts, earliest first. A graph that
+    /// draws one bar per step at its own time keeps its shape as it is panned or zoomed, where
+    /// [`Usage::columns`] samples again at every move.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use glurmo_model::UnixTime;
+    /// use glurmo_model::usage::{Step, Usage};
+    ///
+    /// let step = |at, key: &str, core_s| Step { at: UnixTime(at), key: key.into(), core_s, wait_s: 0 };
+    /// let usage = Usage {
+    ///     from: UnixTime(0),
+    ///     to: UnixTime(900),
+    ///     step_s: 300,
+    ///     steps: vec![step(0, "heron", 300), step(300, "otter", 600), step(600, "otter", 900)],
+    /// };
+    /// let bars = usage.bars(400, 700);
+    /// let starts: Vec<i64> = bars.iter().map(|(at, _)| at.0).collect();
+    /// assert_eq!(starts, [300, 600]);
+    /// assert_eq!(bars[1].1.cores, [("otter", 3)]);
+    /// ```
+    pub fn bars(&self, from: i64, to: i64) -> Vec<(UnixTime, Column<'_>)> {
+        self.by_step()
+            .into_iter()
+            .filter(|(at, _)| *at + self.step_s.max(1) > from && *at < to)
+            .map(|(at, column)| (UnixTime(at), column))
+            .collect()
+    }
+
+    /// Every step as a column, by when it starts: mean cores per login, biggest user overall first,
+    /// and mean tasks waiting. The last step may still be filling, so it averages over what it covers.
+    fn by_step(&self) -> BTreeMap<i64, Column<'_>> {
+        let step_s = self.step_s.max(1);
+        let covered = |at: i64| u64::try_from((self.to.0 - at).clamp(1, step_s)).unwrap_or(1);
+        let mut by_time: BTreeMap<i64, Column> = BTreeMap::new();
+        let mut totals: HashMap<&str, u64> = HashMap::new();
+        for step in &self.steps {
+            let column = by_time.entry(step.at.0).or_default();
+            column
+                .cores
+                .push((&step.key, step.core_s / covered(step.at.0)));
+            column.waiting += step.wait_s;
+            *totals.entry(&step.key).or_default() += step.core_s;
+        }
+        for (at, column) in &mut by_time {
+            column.waiting /= covered(*at);
+            column
+                .cores
+                .sort_by_cached_key(|(login, _)| (std::cmp::Reverse(totals[login]), *login));
+        }
+        by_time
     }
 }
 

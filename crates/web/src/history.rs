@@ -29,7 +29,7 @@ const LABEL_EVERY_S: [i64; 14] = [
     1_209_600, 2_592_000,
 ];
 const LABEL_GAP: f64 = 90.0;
-/// The shortest and longest spans the timeline zooms to: an hour, and 90 days.
+/// The shortest and longest edges the timeline zooms to: an hour, and 90 days.
 const SPANS_S: (i64, i64) = (3_600, 90 * 86_400);
 /// How far the pointer moves before a press is a drag rather than a click.
 const DRAG_PX: f64 = 4.0;
@@ -82,24 +82,31 @@ pub fn History(span: Span, stack: StackBy) -> impl IntoView {
             }
             let span_s = span_s();
             let from = chart_end(state, usage) - span_s;
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a panel is far narrower than u16::MAX columns"
-            )]
-            let count = (graph_w / COLUMN).floor() as u16;
-            let columns = stacked(state, stack, usage, from, span_s, count);
+            let bars = stacked(state, stack, usage, from, span_s);
+            // A bar edges whole pixels from its step's start to the next one's, so neighbors meet
+            // and each keeps its place in time however the chart is panned or zoomed.
+            #[expect(clippy::cast_precision_loss, reason = "seconds in view fit in an f64")]
+            let edge = |at: i64| {
+                let across = (at - from) as f64 / span_s as f64;
+                LABELS + (across * graph_w).clamp(0.0, graph_w).floor()
+            };
+            let edges: Vec<(f64, f64)> = bars
+                .iter()
+                .map(|(at, _)| (edge(at.0), edge(at.0 + usage.step_s.max(1))))
+                .collect();
             let total = |column: &Column| column.cores.iter().map(|(_, cores)| cores).sum::<u64>();
-            let peak = columns.iter().map(total).max().unwrap_or(0);
+            let peak = bars
+                .iter()
+                .map(|(_, column)| total(column))
+                .max()
+                .unwrap_or(0);
             let scale = installed.get().max(peak).max(1);
             let mut colors: HashMap<&str, String> = HashMap::new();
             state.coloring.with(|coloring| {
                 let Some(coloring) = coloring else {
                     return;
                 };
-                for (i, column) in columns.iter().enumerate() {
-                    #[expect(clippy::cast_precision_loss, reason = "a small count")]
-                    let x = LABELS + i as f64 * COLUMN;
+                for ((_, column), &(x, right)) in bars.iter().zip(&edges) {
                     let mut y = graph_h;
                     for &(login, cores) in column.cores.iter().filter(|(_, cores)| *cores > 0) {
                         #[expect(clippy::cast_precision_loss, reason = "core counts fit in an f64")]
@@ -113,7 +120,7 @@ pub fn History(span: Span, stack: StackBy) -> impl IntoView {
                             }
                         });
                         context.set_fill_style_str(color);
-                        context.fill_rect(x, y - h, COLUMN + 1.0, h);
+                        context.fill_rect(x, y - h, right - x, h);
                         y -= h;
                     }
                 }
@@ -124,7 +131,7 @@ pub fn History(span: Span, stack: StackBy) -> impl IntoView {
             let _ = context.fill_text("0", LABELS - 6.0, graph_h);
             let _ = context.fill_text("queue", LABELS - 6.0, graph_h + QUEUE - 6.0);
             context.set_text_align("left");
-            queue(context, &columns, graph_h, Rgb::of(&theme.state.drain));
+            queue(context, &bars, &edges, graph_h, Rgb::of(&theme.state.drain));
             axis(context, from, span_s, graph_w, height, muted);
         });
     };
@@ -400,16 +407,15 @@ impl Spot {
     }
 }
 
-/// The chart's columns, each stacked as `stack` says. Every order holds still while the stretch shown
-/// does, so the bands keep their places as the chart redraws.
+/// The chart's bars, one per step of `usage` in view, each stacked as `stack` says. Every order holds
+/// still while the stretch shown does, so the bands keep their places as the chart redraws.
 fn stacked(
     state: State,
     stack: StackBy,
     usage: &Usage,
     from: i64,
     span_s: i64,
-    count: u16,
-) -> Vec<Column<'_>> {
+) -> Vec<(UnixTime, Column<'_>)> {
     let held = usage.totals(from, from + span_s);
     let seen: HashMap<String, u32> = state.cluster.with(|cluster| {
         let users = cluster.users.values();
@@ -424,9 +430,9 @@ fn stacked(
         )
     };
     usage
-        .columns(from, span_s, count)
+        .bars(from, from + span_s)
         .into_iter()
-        .map(|column| column.stacked_by(place))
+        .map(|(at, column)| (at, column.stacked_by(place)))
         .collect()
 }
 
@@ -559,25 +565,24 @@ fn note(context: &CanvasRenderingContext2d, text: &str, color: Rgb) {
 }
 
 /// Each column's tasks waiting, as bars up from the strip's floor, scaled to the deepest.
-fn queue(context: &CanvasRenderingContext2d, columns: &[Column], top: f64, color: Rgb) {
-    let deepest = columns
-        .iter()
-        .map(|column| column.waiting)
-        .max()
-        .unwrap_or(0)
-        .max(1);
+fn queue(
+    context: &CanvasRenderingContext2d,
+    bars: &[(UnixTime, Column)],
+    edges: &[(f64, f64)],
+    top: f64,
+    color: Rgb,
+) {
+    let waiting = |(_, column): &(UnixTime, Column)| column.waiting;
+    let deepest = bars.iter().map(waiting).max().unwrap_or(0).max(1);
     context.set_fill_style_str(&color.css());
     let floor = top + QUEUE - 4.0;
-    for (i, column) in columns.iter().enumerate() {
-        if column.waiting == 0 {
+    for (bar, &(x, right)) in bars.iter().zip(edges) {
+        if waiting(bar) == 0 {
             continue;
         }
         #[expect(clippy::cast_precision_loss, reason = "counts fit in an f64")]
-        let (x, h) = (
-            LABELS + i as f64 * COLUMN,
-            (QUEUE - 8.0) * column.waiting as f64 / deepest as f64,
-        );
-        context.fill_rect(x, floor - h.max(1.0), COLUMN + 1.0, h.max(1.0));
+        let h = ((QUEUE - 8.0) * waiting(bar) as f64 / deepest as f64).max(1.0);
+        context.fill_rect(x, floor - h, right - x, h);
     }
 }
 
