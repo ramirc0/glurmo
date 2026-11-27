@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use leptos::prelude::*;
 
+use crate::feed::Unread;
 use crate::replay::{Engine, Playhead};
 use crate::tree::Path;
 use glurmo_model::layout::{Layout, Pane};
@@ -72,7 +73,7 @@ pub struct State {
     /// Recent starts and ends, latest first.
     pub ticker: RwSignal<Ticker>,
     /// Usage history, or why it could not be read.
-    pub usage: RwSignal<Result<Usage, String>>,
+    pub usage: RwSignal<Result<Usage, Unread>>,
     /// Themes by file name.
     pub themes: RwSignal<BTreeMap<String, Theme>>,
     /// Layouts by file name.
@@ -336,7 +337,7 @@ impl State {
 /// Core-seconds each login held over the `span_s` the timeline shows, which ends at `end` or where
 /// `usage` was read up to. Nothing when usage could not be read.
 fn used_over(
-    usage: &Result<Usage, String>,
+    usage: &Result<Usage, Unread>,
     end: Option<UnixTime>,
     span_s: i64,
 ) -> std::collections::HashMap<&str, u64> {

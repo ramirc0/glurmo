@@ -1,6 +1,7 @@
 //! What the server sends: the live stream, the themes and layouts, and usage history.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::time::Duration;
 
 use glurmo_model::layout::Layout;
@@ -14,7 +15,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::Closure;
-use web_sys::{EventSource, MessageEvent};
+use web_sys::{EventSource, MessageEvent, RequestRedirect, ResponseType};
 
 use crate::replay::update_live;
 use crate::shelf::Shelf;
@@ -28,6 +29,25 @@ const USAGE_EVERY: Duration = Duration::from_secs(60);
 
 /// How long the timeline must rest before usage is read for it.
 const SETTLE: Duration = Duration::from_millis(150);
+
+/// Why a read from the server gave nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unread {
+    /// The read was redirected, which glurmo never does. A login in front of it does once it has ended,
+    /// and only loading the page again can sign in.
+    SignedOut,
+    /// Any other reason, in words.
+    Failed(String),
+}
+
+impl fmt::Display for Unread {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SignedOut => f.write_str("signed out, reload the page to sign in again"),
+            Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
 
 /// The first event of a stream: the site and the whole cluster.
 #[derive(Deserialize)]
@@ -205,7 +225,7 @@ pub fn watch_usage(state: State) {
 }
 
 /// Usage by login for a span of `span_s` ending at `end`, or now, with a span either side as far as now.
-async fn usage(span_s: i64, end: Option<UnixTime>) -> Result<Usage, String> {
+async fn usage(span_s: i64, end: Option<UnixTime>) -> Result<Usage, Unread> {
     let now = crate::paint::now().0;
     let end = end.map_or(now, |end| end.0.min(now));
     let from = end - 2 * span_s;
@@ -221,16 +241,27 @@ async fn usage(span_s: i64, end: Option<UnixTime>) -> Result<Usage, String> {
     })
 }
 
-/// Reads JSON from `url` on the server.
-pub async fn fetch<T: DeserializeOwned>(url: &str) -> Result<T, String> {
+/// Reads JSON from `url` on the server. A redirect is not followed, because it leads to a login page on
+/// another site, which the browser refuses to read with an error that names no cause.
+pub async fn fetch<T: DeserializeOwned>(url: &str) -> Result<T, Unread> {
     let response = gloo_net::http::Request::get(url)
+        .redirect(RequestRedirect::Manual)
         .send()
         .await
-        .map_err(|error| error.to_string())?;
-    if !response.ok() {
-        return Err(format!("{url} answered {}", response.status()));
+        .map_err(|error| Unread::Failed(format!("cannot reach the server ({error})")))?;
+    if response.type_() == ResponseType::Opaqueredirect {
+        return Err(Unread::SignedOut);
     }
-    response.json().await.map_err(|error| error.to_string())
+    if !response.ok() {
+        return Err(Unread::Failed(format!(
+            "{url} answered {}",
+            response.status()
+        )));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| Unread::Failed(error.to_string()))
 }
 
 /// The RON the server writes for `value`, a `kind` such as `layout`, to save in a file.

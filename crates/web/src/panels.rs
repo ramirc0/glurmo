@@ -7,6 +7,7 @@ use glurmo_model::units::{percent, since, span, thousands};
 use glurmo_model::{Attempt, JobState, Login, NodeName, NodeState, PartitionName};
 use leptos::prelude::*;
 
+use crate::feed::Unread;
 use crate::paint::{Rgb, clock, display_name, painted};
 use crate::state::{Highlight, Link, State};
 use glurmo_model::palette::Coloring;
@@ -181,11 +182,18 @@ pub fn Header() -> impl IntoView {
     }
 }
 
-/// Why the page may be stale: no server, or no answers from Slurm.
+/// Why the page may be stale: a login that ended, no server, or no answers from Slurm.
 #[component]
 fn Trouble() -> impl IntoView {
     let state = expect_context::<State>();
     let trouble = move || {
+        let signed_out = Unread::SignedOut;
+        if state
+            .usage
+            .with(|usage| usage.as_ref().err() == Some(&signed_out))
+        {
+            return Some(signed_out.to_string());
+        }
         let link = state.link.get();
         let outage = state.cluster.with(|cluster| cluster.outage.clone());
         match (link, outage) {

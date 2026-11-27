@@ -124,7 +124,7 @@ Two parts come with glurmo:
 * `deploy/coolify` is a Docker Compose stack for a host you control. Its `tunnel` service is the chisel server. Its `edge` service is an nginx that caches the page's files, so the page loads from that host.
 * `systemd/glurmo-tunnel.service` runs on the cluster. It dials the server and offers it glurmo's port.
 
-The login is yours to add, at your proxy or with a service such as Cloudflare Access. Whoever reaches the page sees every user's login and job names. Put the login in place before step 5.
+The login is yours to add, at your proxy or with a service such as Cloudflare Access. Whoever reaches the page sees every user's login and job names. Put the login in place before step 5. When a session ends, the open page says `signed out`, and a reload signs in again.
 
 The commands are for bash.
 

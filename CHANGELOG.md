@@ -12,6 +12,10 @@ All notable changes to glurmo are listed here. The format follows [Keep a Change
 
 - Both views start in the `miami` theme. Before, they started in `rose-pine`. `?theme=rose-pine` in the address or `tui: (theme: "rose-pine")` in the config brings it back.
 
+### Fixed
+
+- The web view says `signed out, reload the page to sign in again` when a login in front of it has ended, in the header and in the history panel. Before, the history panel showed the browser's `TypeError: Failed to fetch`, and the header said the server was unreachable. A read that fails on the network now leads with `cannot reach the server`.
+
 ## [0.8.1] - 2026-11-26
 
 ### Changed
